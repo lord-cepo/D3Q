@@ -21,7 +21,7 @@ MODULE linewidth_program
   CONTAINS
   SUBROUTINE LW_QBZ_LINE(input, qpath, S, fc2, fc3)
     USE fc2_interpolate,    ONLY : fftinterp_mat2, mat2_diag, freq_phq_path
-    USE linewidth,          ONLY : linewidth_q, selfnrg_q, spectre_q
+    USE linewidth,          ONLY : linewidth_q_tetra, selfnrg_q, spectre_q
     USE constants,          ONLY : RY_TO_CMM1
     USE q_grids,            ONLY : q_grid, setup_grid
     USE mc_grids,           ONLY : setup_poptimized_grid
@@ -169,7 +169,7 @@ MODULE linewidth_program
       ELSE IF (TRIM(input%mode) == "real" .or. TRIM(input%mode) == "imag") THEN
       !
           timer_CALL t_lwphph%start()
-        lw = linewidth_q(qpath%xq(:,iq), input%nconf, input%T,  sigma_ry, &
+        lw = linewidth_q_tetra(qpath%xq(:,iq), input%nconf, input%T, &
                         S, grid, fc2, fc3, w2, D)
           timer_CALL t_lwphph%stop()
         !
@@ -505,12 +505,13 @@ PROGRAM linewidth
   USE kinds,            ONLY : DP
   USE linewidth_program
   USE input_fc,         ONLY : forceconst2_grid, ph_system_info
-  USE q_grids,          ONLY : q_grid !, setup_grid
+  USE q_grids,          ONLY : q_grid
   USE fc3_interpolate,  ONLY : forceconst3
   USE code_input,       ONLY : READ_INPUT, code_input_type
   USE mpi_thermal,      ONLY : start_mpi, stop_mpi, ionode
   USE more_constants,   ONLY : print_citations_linewidth
   USE mc_grids,         ONLY : print_optimized_stats
+  USE thtetra,          ONLY : tetra_init
   IMPLICIT NONE
   !
   TYPE(forceconst2_grid) :: fc2
@@ -521,6 +522,7 @@ PROGRAM linewidth
 
 !   CALL mp_world_start(world_comm)
 !   CALL environment_start('LW')
+
   CALL start_mpi()
   CALL init_nanoclock()
   !
@@ -528,6 +530,7 @@ PROGRAM linewidth
 
   ! READ_INPUT also reads force constants from disk, using subroutine READ_DATA
   CALL READ_INPUT("LW", lwinput, qpath, S, fc2, fc3)
+  ! if (ionode) CALL tetra_init( lwinput%nk, S%bg, .true.)
   !
   IF(    TRIM(lwinput%calculation) == "lw"   &
     .or. TRIM(lwinput%calculation) == "grid" &
@@ -565,6 +568,8 @@ PROGRAM linewidth
       CALL t_iodata%print()
       ioWRITE(*,'(a)') "*** * Contributions to ph-ph linewidth time:"
       CALL t_freq%print()
+      CALL t_freqd%print()
+      CALL t_thtetra%print()
       CALL t_bose%print()
       CALL t_sum%print()
       CALL t_fc3int%print()

@@ -176,7 +176,6 @@ MODULE quter_module
     INTEGER,INTENT(in)    :: iR,nat
     INTEGER,INTENT(inout) :: nR
     COMPLEX(DP),POINTER   :: auxR(:,:,:,:,:)
-    INTEGER :: i,j,a,b,r
     !
     IF(.not.associated(matR))THEN
 !       print*, "new matR space created"
@@ -188,27 +187,11 @@ MODULE quter_module
     !
     IF(iR<=nR) RETURN
     !
+!     print*, "expanded matR to hold", nR, "R vectors"
     auxR => matR
     ALLOCATE(matR(3,3,nat,nat,iR))
-    !print*, "expanded matR to hold", nR, "R vectors", size(matR), size(auxR)
-    DO r = 1,nR+1
-        DO b = 1,nat
-          DO a = 1,nat
-            DO j = 1,3
-              DO i = 1,3
-                IF(r<=nR) THEN
-                   matR(i,j,a,b,r) = auxR(i,j,a,b,r) 
-                ELSE
-                  matR(i,j,a,b,r) = 0._dp
-                ENDIF
-            ENDDO
-          ENDDO
-        ENDDO
-      ENDDO
-    ENDDO
-    ! vector form is miscompiled with intel fortran 2024
-    !matR(1:3,1:3,1:nat,1:nat,1:nR) = auxR(1:3,1:3,1:nat,1:nat,1:nR) 
-    !matR(1:3,1:3,1:nat,1:nat,nR+1:iR) = 0._dp
+    matR(1:3,1:3,1:nat,1:nat,1:nR) = auxR(1:3,1:3,1:nat,1:nat,1:nR) 
+    matR(1:3,1:3,1:nat,1:nat,nR+1:iR) = 0._dp
     DEALLOCATE(auxR)
     nR = iR
   END SUBROUTINE
