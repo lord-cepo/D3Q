@@ -56,7 +56,7 @@ CONTAINS
       REAL(DP),ALLOCATABLE    :: V3sq(:,:,:)
       INTEGER :: iq, jq, it, nu0(3), j_un, ibnd, jbnd, index_double, skip
       INTEGER,PARAMETER :: normal=1, umklapp=2
-      REAL(DP) :: threshold
+      REAL(DP) :: threshold, xq_cryst(3)
       REAL(DP) :: freqs_doubled_X(S%nat3**2, grid%nq), freqs_doubled_C(S%nat3**2, grid%nq)
       REAL(DP), ALLOCATABLE :: gather_doubled_X(:,:), gather_doubled_C(:,:)
       !
@@ -116,8 +116,8 @@ CONTAINS
       timer_CALL t_freqd%stop()
       timer_CALL t_thtetra%start()
       DO ibnd = 1, S%nat3
-         weights_X(ibnd,:,:) = tetra_weights_delta(grid%nqtot, S%nat3**2, gather_doubled_X, freq(ibnd,1))
-         weights_C(ibnd,:,:) = tetra_weights_delta(grid%nqtot, S%nat3**2, gather_doubled_C, freq(ibnd,1))
+         weights_X(ibnd,:,:) = tetra_weights_delta(grid%nqtot, S%nat3**2, gather_doubled_X, freq(ibnd,1), .false.)
+         weights_C(ibnd,:,:) = tetra_weights_delta(grid%nqtot, S%nat3**2, gather_doubled_C, freq(ibnd,1), .false.)
       ENDDO
       IF(grid%scattered) THEN
          DO iq = 1, grid%nqtot
@@ -188,6 +188,11 @@ CONTAINS
          ENDDO
          !
       ENDDO
+      ! open(unit=10, file='points.txt', status='replace', action='write')
+      ! CALL cryst_to_cart(grid%nq, grid%xq, S%at, -1)
+      ! WRITE(10,*) grid%xq
+      ! CALL cryst_to_cart(grid%nq, grid%xq, S%bg, 1)
+      ! close(10)
 
       ! ioWRITE(*,*) "numero di skippati", skip
       !

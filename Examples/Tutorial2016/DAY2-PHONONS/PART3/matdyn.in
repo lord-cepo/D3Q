@@ -1,9 +1,0 @@
-&input
-    asr='simple',
-    flfrc='../PART2/Silicon.444.fc',
-    flfrq='Silicon.freq'
-    fldyn='dyn.matdyn.__QPOINT__'
- /
- 1
- __QPOINT__
-

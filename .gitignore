@@ -1,0 +1,8 @@
+*.o
+*.mod
+*.a
+*.x
+*i90
+/minpack
+
+/Examples

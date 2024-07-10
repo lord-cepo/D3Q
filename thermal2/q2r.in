@@ -1,0 +1,5 @@
+&INPUT
+  fildyn = 'reference/dyn' ! same as ph.in
+  flfrc = 'MATDYN/mat2R' ! output file
+  zasr = 'crystal'
+/

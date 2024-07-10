@@ -227,7 +227,7 @@ CONTAINS
    !
 
    !--------------------------------------------------------------------------------------
-   FUNCTION tetra_weights_delta( nqs, nbnd, et, ef) RESULT(wg)
+   FUNCTION tetra_weights_delta( nqs, nbnd, et, ef, print) RESULT(wg)
       !-----------------------------------------------------------------------------------
       !! Calculate weights for an integral of the kind int(Ak delta(ef-ek))
       !! The resulting wg can be used as sum(Ak * wk)
@@ -242,11 +242,13 @@ CONTAINS
       !! Integration weight of each k
       REAL(DP), INTENT(IN) :: ef
       !! The Fermi energy
-      !
+      LOGICAL, INTENT(IN) :: print
+      !! prints the 1->2 surface scattering
+
       ! ... local variables
       !
       INTEGER :: ik, nt, ibnd, i, ii, itetra(4), my_id_, num_procs_
-      REAL(DP) :: e(4), wg0(4), C, a(4,4)
+      REAL(DP) :: e(4), wg0(4), C, a(4,4), print_surface(nqs)
 
       EXTERNAL hpsort
       !
@@ -279,6 +281,11 @@ CONTAINS
             CALL hpsort( 4, e, itetra )
             !
             IF( ef < e(4) .AND. ef > e(1) ) THEN
+               IF(ibnd == 2 .and. print) THEN
+                  DO ii = 1,4
+                     print_surface(tetra(ii,nt)) = .true.
+                  ENDDO
+               ENDIF
                DO ii = 1, 4
                   DO i = 1, 4
                      IF ( ABS(e(i)-e(ii)) < 1.d-12 ) THEN
@@ -339,6 +346,12 @@ CONTAINS
       !
       !
       ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
+      open(unit=10, file='surf.txt', status='replace', action='write')
+      do i = 1, nqs
+         write(10, *) print_surface(i)
+      end do
+      close(10)
+
 
    END FUNCTION tetra_weights_delta
    !

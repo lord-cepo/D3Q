@@ -419,6 +419,7 @@ CONTAINS
       grid%n(2) = n2
       grid%n(3) = n3
       grid%nq = n1*n2*n3
+      grid%nqtot = grid%nq
       !
       IF(allocated(grid%xq)) CALL errore("setup_simple_grid", "grid is already allocated", 1)
       ALLOCATE(grid%xq(3,grid%nq))
