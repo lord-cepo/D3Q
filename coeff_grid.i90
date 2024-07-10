@@ -1,0 +1,117 @@
+# 1 "/linkhome/rech/genimp01/unr46rr/work/qe-7.2-tetra/D3Q/coeff_grid.f90"
+
+MODULE coeff_grid
+   USE kinds,            ONLY: DP
+   USE ph_system,        ONLY : ph_system_info
+   USE q_grids,          ONLY : q_grid
+!
+   EXTERNAL cryst_to_cart, errore
+!> contains all the coefficients of the approximated polynomial, in terms like <eqs|D(R)|eqs>.
+!> You only need ph_system_info and a quality factor to initiate it.
+   TYPE cgrid
+      INTEGER :: nR = 0
+!! equal to n(1)*n(2)*n(3) in ph/el calculation
+      TYPE(q_grid) :: qgrid
+!! final q grid in which coefficients are defined
+      REAL(DP), ALLOCATABLE :: coefficients(:,:,:)
+!! <eqs|D(R)|eqs>, size: nat3,nR,nout
+   CONTAINS
+      PROCEDURE :: setup => cgrid_setup
+      PROCEDURE :: destroy => cgrid_destroy
+      PROCEDURE :: coeffs => cgrid_coeffs
+      PROCEDURE :: coeffs1 => cgrid_coeffs1
+   END TYPE cgrid
+!
+CONTAINS
+   SUBROUTINE cgrid_setup(grid, S, fc2, quality)
+      USE input_fc,         ONLY : forceconst2_grid
+      USE fc2_interpolate,  ONLY : freq_phq_safe
+      USE q_grids,          ONLY : q_grid, setup_simple_grid
+
+      IMPLICIT NONE
+
+      TYPE(ph_system_info), INTENT(IN) :: S
+      TYPE(forceconst2_grid), INTENT(IN) :: fc2
+      INTEGER, INTENT(IN) :: quality
+!! the q-grid will have dimensions multiplied by this number
+      CLASS(cgrid), INTENT(INOUT) :: grid
+! local variables
+      TYPE(q_grid) :: fine_grid
+      INTEGER :: iq, iR, ibnd
+      REAL(DP) :: freq(S%nat3)
+      COMPLEX(DP) :: U(S%nat3,S%nat3), UDU(S%nat3,S%nat3)
+
+      grid%nR = fc2%nq(1)*fc2%nq(2)*fc2%nq(3)
+
+      CALL setup_simple_grid(S%bg, fc2%nq(1)*quality, fc2%nq(2)*quality, fc2%nq(3)*quality, fine_grid)
+      grid%qgrid = fine_grid
+      IF(ALLOCATED(grid%coefficients)) CALL errore('cgrid_setup', 'routine called twice', 1)
+      ALLOCATE(grid%coefficients(S%nat3,grid%nR,fine_grid%nq))
+
+      DO iq = 1, fine_grid%nq
+         CALL freq_phq_safe(fine_grid%xq(:,iq), S, fc2, freq, U)
+         DO iR = 1, grid%nR
+            UDU = MATMUL(TRANSPOSE(U), fc2%FC(:,:,iR))
+            UDU = MATMUL(UDU, U)
+            DO ibnd = 1, S%nat3
+               grid%coefficients(ibnd,iR,iq) = UDU(ibnd, ibnd)
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE
+
+   SUBROUTINE cgrid_destroy(grid)
+      CLASS(cgrid), INTENT(INOUT) :: grid
+      IF(ALLOCATED(grid%coefficients)) DEALLOCATE(grid%coefficients)
+      grid%nR = 0
+      CALL grid%qgrid%destroy()
+   END SUBROUTINE
+
+   FUNCTION cgrid_coeffs(grid, xq_cart, S)
+      CLASS(cgrid), INTENT(IN) :: grid
+      REAL(DP), INTENT(IN) :: xq_cart(3)
+      TYPE(ph_system_info) :: S
+!! q-point in cartesian coordinates
+
+! local variables
+      REAL(DP) cgrid_coeffs(S%nat3,grid%nR)
+      REAL(DP) :: xq_cryst(3)
+      INTEGER :: iq, ijk(3)
+
+      xq_cryst = xq_cart
+      CALL cryst_to_cart(1, xq_cryst, S%at, -1)
+      ijk = NINT(xq_cryst * grid%qgrid%n)
+      iq = grid%qgrid%n(2)*grid%qgrid%n(3)*ijk(1) + grid%qgrid%n(3)*ijk(2) + ijk(3) + 1
+
+      cgrid_coeffs = grid%coefficients(:,:,iq)
+   END FUNCTION
+
+   FUNCTION cgrid_coeffs1(grid, xq_cart, S)
+      CLASS(cgrid), INTENT(IN) :: grid
+      REAL(DP), INTENT(IN) :: xq_cart(3)
+      TYPE(ph_system_info) :: S
+!! q-point in cartesian coordinates
+
+! local variables
+      REAL(DP) cgrid_coeffs1(S%nat3,grid%nR)
+      REAL(DP) :: xq_cryst(3), xq_int_cryst(3), xyz(3)
+      INTEGER :: iq0, ijk(3), iq(3)
+
+      xq_cryst = xq_cart
+      CALL cryst_to_cart(1, xq_cryst, S%at, -1)
+      ijk = INT(xq_cryst * grid%qgrid%n)
+      iq0 = grid%qgrid%n(2)*grid%qgrid%n(3)*ijk(1) + grid%qgrid%n(3)*ijk(2) + ijk(3) + 1
+      xq_int_cryst = grid%qgrid%xq(:,iq0)
+      CALL cryst_to_cart(1, xq_int_cryst, S%at, -1)
+      xyz = (xq_cryst - xq_int_cryst) * grid%qgrid%n
+
+      iq = iq0  + (/ grid%qgrid%n(2)*grid%qgrid%n(3), grid%qgrid%n(3), 1 /)
+      iq = MOD(iq, grid%qgrid%n)
+
+      cgrid_coeffs1 = grid%coefficients(:,:,iq0) * (1 - xyz(1) - xyz(2) - xyz(3)) + &
+         grid%coefficients(:,:,iq(1)) * xyz(1) + &
+         grid%coefficients(:,:,iq(2)) * xyz(2) + &
+         grid%coefficients(:,:,iq(3)) * xyz(3)
+   END FUNCTION
+
+END MODULE coeff_grid

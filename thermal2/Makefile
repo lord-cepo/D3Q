@@ -53,51 +53,11 @@ endif
 
 TLDEPS= bindir mods libs pw-lib lrmods ph-lib
 
-LIBOBJS = ../../FFTXlib/src/libqefft.a ../../LAXlib/libqela.a
+# LIBOBJS = ../../FFTXlib/src/libqefft.a ../../LAXlib/libqela.a
 
 SRC = $(shell ls *.f90 *.c|grep -v PROGRAM_)
 OBJ = $(shell ls *.f90 *.c|grep -v PROGRAM_|sed -e 's/\.f90$$/.o/' -e 's/\.c$$/.o/')
 print-%  : ; @echo $* = $($*)
-
-THERMALK2_OBJS = \
-mpi_thermal.o \
-asr2.o \
-casimir.o \
-code_input.o \
-decompose_d2.o \
-decompose_zstar.o \
-dynbubble.o \
-eos.o \
-f3_bwfft.o \
-fc2_interp.o \
-fc3_interp.o \
-final_state.o \
-functions.o \
-gruneisen.0 \
-harmonic.o \
-input_fc.o \
-isotopes.o \
-linewidth.o \
-lmdif_p.o \
-mc_grids.o \
-merge_degenerate.o \
-more_constants.o \
-nanoclock.o \
-nanosec.o \
-neutrons.o \
-nist_isotopes_db.o \
-overlap.o \
-ph_dos.o \
-ph_system.o \
-ph_velocity.o \
-posix_signal.o \
-q_grids.o \
-quter.o \
-read_md.o \
-rigid_d3.o \
-timers.o \
-variational_tk.o \
-variational_tk_symq.o
 
 #EXECUTABLES = d3_lw.x d3_tk.x d3_asr3.x d3_sqom.x d3_sparse.x d3_q2r.x d3_r2q.x d3_qq2rr.x d3_import_shengbte.x d3_recenter.x
 
@@ -105,7 +65,7 @@ MYNAME       = $(shell basename $(CURDIR))
 FATHERNAME   = $(shell cd ..; basename `pwd -P`)
 THELINKPLACE = $(FATHERNAME)/$(MYNAME)
 
-EXEC = db tk lw qha asr3 sqom sparse q2r r2q qq2rr import_shengbte recenter interpolate2 rmzeu tdph mtx impurity
+EXEC = db tk lw qha asr3 sqom sparse q2r r2q qq2rr import_shengbte recenter interpolate2 rmzeu tdph mtx
 #make_wedge decompose_d2
 #gruneisen
 #interpolate2
@@ -117,7 +77,7 @@ all : tldeps d3q-libs thermal2-libs $(EXEC)
 # Note to self: $^ expands to all dependencies, $< expands to the first dependency
 $(EXEC) : % : PROGRAM_%.o tldeps d3q-libs thermal2-libs $(MINPACK)
 	$(LD) $(LDFLAGS) -o d3_$@.x $< libthermal2.a \
-	    $(EXTOBJS) $(QEMODS) $(LIBOBJS) $(QELIBS)
+	    $(EXTOBJS) $(QELIBS)
 	$(STRIP)  d3_$@.x
 	- ( cd ../../bin && ln -fs ../D3Q/thermal2/d3_$@.x d3_$@.x )
 
@@ -133,7 +93,6 @@ distributed-libs :
 thermal2-libs : libthermal2.a
 
 libthermal2.a : $(OBJ)
-#$(THERMALK2_OBJS)
 	$(AR) $(ARFLAGS) $@ $?
 	$(RANLIB) $@ 
 
