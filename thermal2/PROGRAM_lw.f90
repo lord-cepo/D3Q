@@ -21,7 +21,7 @@ MODULE linewidth_program
 CONTAINS
   SUBROUTINE LW_QBZ_LINE(input, qpath, S, fc2, fc3)
     USE fc2_interpolate,    ONLY : fftinterp_mat2, mat2_diag, freq_phq_path
-    USE linewidth,          ONLY : linewidth_q_tetra, selfnrg_q, spectre_q, linewidth_q_dense
+    USE linewidth,          ONLY : linewidth_q, selfnrg_q, spectre_q
     USE constants,          ONLY : RY_TO_CMM1
     USE q_grids,            ONLY : q_grid, setup_grid
     USE mc_grids,           ONLY : setup_poptimized_grid
@@ -169,10 +169,7 @@ CONTAINS
       ELSE IF (TRIM(input%mode) == "real" .or. TRIM(input%mode) == "imag") THEN
         !
         timer_CALL t_lwphph%start()
-        IF(input%delta_approx == 'dense') lw = linewidth_q_dense(qpath%xq(:,iq), input%nconf, input%T, &
-          S, grid, fc2, fc3, input%quality, w2, D)
-        IF(input%delta_approx == 'tetra') lw = linewidth_q_tetra(qpath%xq(:,iq), input%nconf, input%T, &
-          S, grid, fc2, fc3, w2, D)
+        lw = linewidth_q(qpath%xq(:,iq), input, S, grid, fc2, fc3, w2, D)
         timer_CALL t_lwphph%stop()
         !
         DO it = 1,input%nconf

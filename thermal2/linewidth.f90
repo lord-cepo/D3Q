@@ -20,6 +20,37 @@ MODULE linewidth
 
 CONTAINS
 
+  FUNCTION linewidth_q(xq0, input, S, grid, fc2, fc3, freq1, U1, lw_UN)
+    USE q_grids,          ONLY : q_grid
+    USE input_fc,         ONLY : ph_system_info
+    USE code_input,       ONLY : code_input_type
+    USE fc3_interpolate,  ONLY : forceconst3
+    USE fc2_interpolate,  ONLY : forceconst2_grid
+
+    REAL(DP),INTENT(in) :: xq0(3)
+    TYPE(code_input_type), INTENT(IN) :: input
+    TYPE(forceconst2_grid),INTENT(in) :: fc2
+    CLASS(forceconst3),INTENT(in)     :: fc3
+    TYPE(ph_system_info),INTENT(in)   :: S
+    TYPE(q_grid),INTENT(in)      :: grid
+    REAL(DP),OPTIONAL,INTENT(in)    :: freq1(S%nat3)
+    COMPLEX(DP),OPTIONAL,INTENT(in) :: U1(S%nat3,S%nat3)
+    REAL(DP),OPTIONAL,INTENT(out)   :: lw_UN(S%nat3,2,input%nconf) ! Normal/Umklapp contribution
+
+    REAL(DP) :: linewidth_q(S%nat3,input%nconf)
+    EXTERNAL :: errore
+
+    IF(input%delta_approx == 'dense') THEN
+      linewidth_q = linewidth_q_dense(xq0, input%nconf, input%T, S, grid, fc2, fc3, input%quality, freq1, U1, lw_UN)
+    ELSE IF(input%delta_approx == 'tetra') THEN
+      linewidth_q = linewidth_q_tetra(xq0, input%nconf, input%T, S, grid, fc2, fc3, freq1, U1, lw_UN)
+    ELSE IF(input%delta_approx == 'gauss') THEN
+      linewidth_q = linewidth_q_gauss(xq0, input%nconf, input%T, input%sigma, S, grid, fc2, fc3, freq1, U1, lw_UN)
+    ELSE
+      CALL errore("TK_SMA", "delta_approx can be 'gauss', 'tetra' or 'dense'", 1)
+    ENDIF
+  END FUNCTION linewidth_q
+
   FUNCTION linewidth_q_dense(xq0, nconf, T, S, grid, fc2, fc3, quality, freq1, U1, lw_UN)
     USE q_grids,          ONLY : q_grid, setup_grid
     USE constants,        ONLY : pi
@@ -143,17 +174,17 @@ CONTAINS
       wgout = 0._dp
       timer_CALL t_thtetra%start()
       DO ibnd = 1, S%nat3
-      !   IF (X_flag .or. ANY(freqs_doubled_X < freq(ibnd,1))) THEN
-      !     X_flag = .true.
-          wgout(:,ibnd,X) = tetra_delta(quality**3, S%nat3**2, freqs_doubled_X, freq(ibnd,1))
-      !     ! PRINT*, "X", SUM(wgout(:,ibnd,X))
-      !   ENDIF
+        !   IF (X_flag .or. ANY(freqs_doubled_X < freq(ibnd,1))) THEN
+        !     X_flag = .true.
+        wgout(:,ibnd,X) = tetra_delta(quality**3, S%nat3**2, freqs_doubled_X, freq(ibnd,1))
+        !     ! PRINT*, "X", SUM(wgout(:,ibnd,X))
+        !   ENDIF
 
-      !   IF(ANY(C_flag .and. freqs_doubled_C - freq(ibnd,1) < 0)) THEN
-      !     C_flag = .true.
-          wgout(:,ibnd,C) = tetra_delta(quality**3, S%nat3**2, freqs_doubled_C, freq(ibnd,1))
-      !     ! PRINT*, "C", SUM(wgout(:,ibnd,C))
-      !   ENDIF
+        !   IF(ANY(C_flag .and. freqs_doubled_C - freq(ibnd,1) < 0)) THEN
+        !     C_flag = .true.
+        wgout(:,ibnd,C) = tetra_delta(quality**3, S%nat3**2, freqs_doubled_C, freq(ibnd,1))
+        !     ! PRINT*, "C", SUM(wgout(:,ibnd,C))
+        !   ENDIF
 
       END DO
       ! PRINT*, "-----------"
@@ -420,7 +451,7 @@ CONTAINS
   END FUNCTION linewidth_q_tetra
 
 ! <<^V^\\=========================================//-//-//========//O\\//
-  FUNCTION linewidth_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, freq1, U1, lw_UN)
+  FUNCTION linewidth_q_gauss(xq0, nconf, T, sigma, S, grid, fc2, fc3, freq1, U1, lw_UN)
     USE q_grids,          ONLY : q_grid
     USE input_fc,         ONLY : ph_system_info
     USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat
@@ -443,7 +474,7 @@ CONTAINS
     COMPLEX(DP),OPTIONAL,INTENT(in) :: U1(S%nat3,S%nat3)
     !
     ! FUNCTION RESULT:
-    REAL(DP) :: linewidth_q(S%nat3,nconf)
+    REAL(DP) :: linewidth_q_gauss(S%nat3,nconf)
     REAL(DP) :: lw(S%nat3,nconf) !aux
     !
     COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:)
@@ -532,11 +563,11 @@ CONTAINS
     IF(grid%scattered .and. present(lw_UN)) CALL mpi_bsum(S%nat3,2,nconf,lw_UN)
 
     timer_CALL t_mpicom%stop()
-    linewidth_q = lw
+    linewidth_q_gauss = lw
     !
     DEALLOCATE(U, V3sq, D3)
     !
-  END FUNCTION linewidth_q
+  END FUNCTION linewidth_q_gauss
 
   ! <<^V^\\=========================================//-//-//========//O\\//
   ! This function returns the complex self energy from the bubble(?) diagram:

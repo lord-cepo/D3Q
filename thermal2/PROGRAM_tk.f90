@@ -49,7 +49,7 @@ CONTAINS
   ! we multiply by 2 in order to get the full width.
   SUBROUTINE TK_SMA(input, out_grid, S, fc2, fc3)
     USE symme,              ONLY : symmatrix
-    USE linewidth,          ONLY : linewidth_q_tetra, linewidth_q, linewidth_q_dense
+    USE linewidth,          ONLY : linewidth_q
     USE constants,          ONLY : RY_TO_CMM1, K_BOLTZMANN_RY, tpi
     USE more_constants,     ONLY : RY_TO_WATTMM1KM1, write_conf, ryvel_si
     USE q_grids,            ONLY : q_grid, setup_grid
@@ -207,18 +207,7 @@ CONTAINS
       !
       IF (input%intrinsic_scattering) THEN
         timer_CALL t_lwphph%start()
-        IF(input%delta_approx == 'tetra') THEN
-          lw_phph = linewidth_q_tetra(out_grid%xq(:,iq), input%nconf, input%T,&
-            S, in_grid, fc2, fc3, lw_un=lw_un)
-        ELSEIF(input%delta_approx == 'dense') THEN
-          lw_phph = linewidth_q_dense(out_grid%xq(:,iq), input%nconf, input%T,&
-            S, in_grid, fc2, fc3, quality=input%quality, lw_un=lw_un)
-        ELSEIF(input%delta_approx == 'gauss') THEN
-          lw_phph = linewidth_q(out_grid%xq(:,iq), input%nconf, input%T,&
-            sigma_ry, S, in_grid, fc2, fc3, lw_un=lw_un)
-        ELSE
-          CALL errore("TK_SMA", "delta_approx can be 'gauss' or 'tetra'", 1)
-        ENDIF
+        lw_phph = linewidth_q(out_grid%xq(:,iq), input, S, in_grid, fc2, fc3, lw_un=lw_un)
         CALL check_negative_lw(lw_phph, S%nat3, input%nconf, "SMA:phph")
         timer_CALL t_lwphph%stop()
       ELSE
