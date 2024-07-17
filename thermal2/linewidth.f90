@@ -27,7 +27,7 @@ CONTAINS
     USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat
     USE fc2_interpolate,  ONLY : forceconst2_grid, freq_phq_safe, bose_phq, set_nu0
     USE functions,        ONLY : refold_bz
-    USE thtetra,          ONLY : tetra_init, tetra_weights_delta
+    USE thtetra,          ONLY : tetra_init, tetra_delta
     IMPLICIT NONE
     !
     REAL(DP),INTENT(in) :: xq0(3)
@@ -143,17 +143,17 @@ CONTAINS
       wgout = 0._dp
       timer_CALL t_thtetra%start()
       DO ibnd = 1, S%nat3
-        IF (X_flag .or. ANY(freqs_doubled_X < freq(ibnd,1))) THEN
-          X_flag = .true.
-          wgout(:,ibnd,X) = SUM(tetra_weights_delta(quality**3, S%nat3**2, freqs_doubled_X, freq(ibnd,1)), dim=2)
-          ! PRINT*, "X", SUM(wgout(:,ibnd,X))
-        ENDIF
+      !   IF (X_flag .or. ANY(freqs_doubled_X < freq(ibnd,1))) THEN
+      !     X_flag = .true.
+          wgout(:,ibnd,X) = tetra_delta(quality**3, S%nat3**2, freqs_doubled_X, freq(ibnd,1))
+      !     ! PRINT*, "X", SUM(wgout(:,ibnd,X))
+      !   ENDIF
 
-        IF(ANY(C_flag .and. freqs_doubled_C - freq(ibnd,1) < 0)) THEN
-          C_flag = .true.
-          wgout(:,ibnd,C) = SUM(tetra_weights_delta(quality**3, S%nat3**2, freqs_doubled_C, freq(ibnd,1)), dim=2)
-          ! PRINT*, "C", SUM(wgout(:,ibnd,C))
-        ENDIF
+      !   IF(ANY(C_flag .and. freqs_doubled_C - freq(ibnd,1) < 0)) THEN
+      !     C_flag = .true.
+          wgout(:,ibnd,C) = tetra_delta(quality**3, S%nat3**2, freqs_doubled_C, freq(ibnd,1))
+      !     ! PRINT*, "C", SUM(wgout(:,ibnd,C))
+      !   ENDIF
 
       END DO
       ! PRINT*, "-----------"

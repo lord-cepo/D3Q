@@ -34,8 +34,7 @@ MODULE thtetra
   LOGICAL :: is_mpi_flag
   !
   PUBLIC :: tetra, ntetra, nntetra, wlsm
-  PUBLIC :: tetra_init, tetra_weights_delta, deallocate_tetra, tetra_weights_theta, &
-    tetra_weights_delta_q
+  PUBLIC :: tetra_init, tetra_weights_delta, deallocate_tetra, tetra_weights_theta, tetra_delta
   !
 CONTAINS
   !
@@ -226,6 +225,93 @@ CONTAINS
     !
   END SUBROUTINE tetra_init
   !
+  !--------------------------------------------------------------------------------------
+  FUNCTION tetra_delta( nqs, nbnd, et, ef) RESULT(w)
+    !-----------------------------------------------------------------------------------
+    !! Calculate the area of the implicit surface for an integrals of the kind int(Ak delta(ef-ek))
+    !! usage: create a grid of points around a point in which you know Ak, this function gives the area
+    !! and it's the same as sum(tetra_weights_delta) over the grid
+    !-----------------------------------------------------------------------------------
+    INTEGER, INTENT(IN) :: nqs
+    !! The total # of k in irr-BZ
+    INTEGER, INTENT(IN) :: nbnd
+    !! The # of bands
+    REAL(DP), INTENT(IN) :: et(nbnd,nqs)
+    !! Kohn Sham energy [Ry]
+    REAL(DP) :: w(nbnd)
+    !! Integration weight of each k
+    REAL(DP), INTENT(IN) :: ef
+    !! The Fermi energy
+    !
+    ! ... local variables
+    !
+    INTEGER :: ik, nt, ibnd, i, ii, itetra(4), my_id_, num_procs_
+    REAL(DP) :: e(4), C, a(4,4)
+
+    EXTERNAL hpsort
+    !
+    w = 0._dp
+    !
+    IF(is_mpi_flag) THEN
+      my_id_ = my_id
+      num_procs_ = num_procs
+    ELSE
+      my_id_ = 0
+      num_procs_ = 1
+    ENDIF
+    DO nt = 1+my_id_, ntetra, num_procs_
+      !
+      DO ibnd = 1, nbnd
+        !
+        e(1:4) = 0.0_dp
+        DO ii = 1, nntetra
+          !
+          ik = tetra(ii, nt)
+          IF(opt_flag) THEN
+            e(1:4) = e(1:4) + wlsm(1:4,ii) * et(ibnd,ik)
+          ELSE
+            e(ii) = et(ibnd,ik)
+          ENDIF
+          !
+        ENDDO
+        !
+        IF(MAXVAL(e) < ef .or. MINVAL(e) > ef) CYCLE
+        itetra(1) = 0
+        CALL hpsort( 4, e, itetra )
+        ! CALL quicksort_idx(e, itetra, 1, 4)
+        DO ii = 1, 4
+          DO i = 1, 4
+            IF ( ABS(e(i)-e(ii)) < 1.d-12 ) THEN
+              a(ii,i) = 0.0_dp
+            ELSE
+              a(ii,i) = ( ef - e(i) ) / (e(ii) - e(i) )
+            END IF
+          ENDDO
+        ENDDO
+        !
+        IF( e(1) < ef .AND. ef < e(2) ) THEN
+          !
+          C = 3 * a(2,1) * a(3,1) * a(4,1) / (ef - e(1))
+          !
+        ELSEIF( e(2) <= ef .AND. ef < e(3)) THEN
+          !
+          C = 3 * ( a(2,3) * a(3,1) + a(3,2) * a(2,4) ) / (e(4) - e(1))
+          !
+        ELSEIF ( e(3) <= ef .AND. ef < e(4)) THEN
+          !
+          C = 3 * a(1,4) * a(2,4) * a(3,4) / (e(4) - ef)
+          !
+        ENDIF
+        !
+        w(ibnd) = w(ibnd) + C
+        !
+      ENDDO ! ibnd
+      !
+    ENDDO ! nt
+    w = w / ntetra
+    !
+    ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
+  END FUNCTION tetra_delta
 
   !--------------------------------------------------------------------------------------
   FUNCTION tetra_weights_delta( nqs, nbnd, et, ef) RESULT(wg)
@@ -243,14 +329,11 @@ CONTAINS
     !! Integration weight of each k
     REAL(DP), INTENT(IN) :: ef
     !! The Fermi energy
-    ! LOGICAL, INTENT(IN) :: print
-    ! !! prints the 1->2 surface scattering
-
+    !
     ! ... local variables
     !
     INTEGER :: ik, nt, ibnd, i, ii, itetra(4), my_id_, num_procs_
     REAL(DP) :: e(4), wg0(4), C, a(4,4)
-    ! LOGICAL :: print_surface(nqs)
 
     EXTERNAL hpsort
     !
@@ -264,8 +347,8 @@ CONTAINS
       num_procs_ = 1
     ENDIF
     DO nt = 1+my_id_, ntetra, num_procs_
+      !
       DO ibnd = 1, nbnd
-        !
         !
         e(1:4) = 0.0_dp
         DO ii = 1, nntetra
@@ -279,67 +362,64 @@ CONTAINS
           !
         ENDDO
         !
+        ! IF(ALL(ef<e) .or. ALL(ef>e)) cycle
+        !
+        IF(MAXVAL(e)<ef .or. MINVAL(e)>ef) CYCLE
         itetra(1) = 0
         CALL hpsort( 4, e, itetra )
-        !
-        IF( ef < e(4) .AND. ef > e(1) ) THEN
-          ! IF(ibnd == 2 .and. print) THEN
-          !    DO ii = 1,4
-          !       print_surface(tetra(ii,nt)) = .true.
-          !    ENDDO
-          ! ENDIF
-          DO ii = 1, 4
-            DO i = 1, 4
-              IF ( ABS(e(i)-e(ii)) < 1.d-12 ) THEN
-                a(ii,i) = 0.0_dp
-              ELSE
-                a(ii,i) = ( ef - e(i) ) / (e(ii) - e(i) )
-              END IF
-            ENDDO
-          ENDDO
-          !
-          IF( e(1) < ef .AND. ef < e(2) ) THEN
-            !
-            C = a(2,1) * a(3,1) * a(4,1) / (ef - e(1))
-            wg0(1) = a(1,2) + a(1,3) + a(1,4)
-            wg0(2:4) = a(2:4,1)
-
-            wg0 = wg0 * C
-            !
-          ELSEIF( e(2) <= ef .AND. ef < e(3)) THEN
-            !
-            C = a(2,3) * a(3,1) + a(3,2) * a(2,4)
-            !
-            wg0(1) = a(1,4) * C + a(1,3) * a(3,1) * a(2,3)
-            wg0(2) = a(2,3) * C + a(2,4)**2 * a(3,2)
-            wg0(3) = a(3,2) * C + a(3,1)**2 * a(2,3)
-            wg0(4) = a(4,1) * C + a(4,2) * a(2,4) * a(3,2)
-
-            wg0 = wg0 / (e(4) - e(1))
-            !
-          ELSEIF ( e(3) <= ef .AND. ef < e(4)) THEN
-            !
-            C = a(1,4) * a(2,4) * a(3,4) / (e(4) - ef)
-            !
-            wg0(1:3) = a(1:3,4)
-            wg0(4) = a(4,1) + a(4,2) + a(4,3)
-            !
-            wg0 = wg0 * C
-            !
-          ENDIF
-          !
-          ! wg0(1:4) = wg0(1:4) / REAL(ntetra, dp)
-          !
-          DO ii = 1, nntetra
-            !
-            ik = tetra(ii, nt)
-            IF(opt_flag) THEN
-              wg(ibnd,ik) = wg(ibnd,ik) + DOT_PRODUCT(wlsm(itetra(1:4),ii), wg0(1:4))
+        ! CALL quicksort_idx(e, itetra, 1, 4)
+        ! itetra = (/1,2,3,4/)
+        DO ii = 1, 4
+          DO i = 1, 4
+            IF ( ABS(e(i)-e(ii)) < 1.d-12 ) THEN
+              a(ii,i) = 0.0_dp
             ELSE
-              wg(ibnd,ik) = wg(ibnd,ik) + wg0(ii)
-            ENDIF
+              a(ii,i) = ( ef - e(i) ) / (e(ii) - e(i) )
+            END IF
           ENDDO
+        ENDDO
+        !
+        IF( e(1) < ef .AND. ef < e(2) ) THEN
+          !
+          C = a(2,1) * a(3,1) * a(4,1) / (ef - e(1))
+          wg0(1) = a(1,2) + a(1,3) + a(1,4)
+          wg0(2:4) = a(2:4,1)
+
+          wg0 = wg0 * C
+          !
+        ELSEIF( e(2) <= ef .AND. ef < e(3)) THEN
+          !
+          C = a(2,3) * a(3,1) + a(3,2) * a(2,4)
+          !
+          wg0(1) = a(1,4) * C + a(1,3) * a(3,1) * a(2,3)
+          wg0(2) = a(2,3) * C + a(2,4)**2 * a(3,2)
+          wg0(3) = a(3,2) * C + a(3,1)**2 * a(2,3)
+          wg0(4) = a(4,1) * C + a(4,2) * a(2,4) * a(3,2)
+
+          wg0 = wg0 / (e(4) - e(1))
+          !
+        ELSEIF ( e(3) <= ef .AND. ef < e(4)) THEN
+          !
+          C = a(1,4) * a(2,4) * a(3,4) / (e(4) - ef)
+          !
+          wg0(1:3) = a(1:3,4)
+          wg0(4) = a(4,1) + a(4,2) + a(4,3)
+          !
+          wg0 = wg0 * C
+          !
         ENDIF
+        !
+        ! wg0(1:4) = wg0(1:4) / REAL(ntetra, dp)
+        !
+        DO ii = 1, nntetra
+          !
+          ik = tetra(ii, nt)
+          IF(opt_flag) THEN
+            wg(ibnd,ik) = wg(ibnd,ik) + DOT_PRODUCT(wlsm(itetra(1:4),ii), wg0(1:4))
+          ELSE
+            wg(ibnd,ik) = wg(ibnd,ik) + wg0(ii)
+          ENDIF
+        ENDDO
         !
       ENDDO ! ibnd
       !
@@ -348,131 +428,8 @@ CONTAINS
     !
     !
     ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
-    ! open(unit=10, file='surf.txt', status='replace', action='write')
-    ! do i = 1, nqs
-    !    write(10, *) print_surface(i)
-    ! end do
-    ! close(10)
+
   END FUNCTION tetra_weights_delta
-
-  FUNCTION tetra_weights_delta_q( nqs, nbnd, et, ef, wgin) RESULT(wg)
-    !-----------------------------------------------------------------------------------
-    !! Calculate weights for an integral of the kind int(Ak delta(ef-ek))
-    !! The resulting wg can be used as sum(Ak * wk)
-    !-----------------------------------------------------------------------------------
-    INTEGER, INTENT(IN) :: nqs
-    !! The total # of k in irr-BZ
-    INTEGER, INTENT(IN) :: nbnd
-    !! The # of bands
-    REAL(DP), INTENT(IN) :: et(nbnd,nqs)
-    !! Kohn Sham energy [Ry]
-    REAL(DP) :: wg(nbnd)
-    !! Integration weight of each k
-    REAL(DP), INTENT(IN) :: ef
-    !! The Fermi energy
-    REAL(DP), INTENT(IN) :: wgin(nqs)
-    !! weights output from wsweight in PW/src
-
-    ! ... local variables
-    !
-    INTEGER :: ik, nt, ibnd, i, ii, itetra(4), n_edges
-    REAL(DP) :: e(4), wg0(4), C, a(4,4)
-    ! LOGICAL :: print_surface(nqs)
-
-    EXTERNAL hpsort
-    !
-    wg = 0._dp
-    !
-    DO nt = 1, ntetra
-      !
-      n_edges = 0
-      DO ii = 1, 4
-        ik = tetra(ii, nt)
-        IF(wgin(ik) /= 0)  n_edges = n_edges + 1
-      ENDDO
-      IF(n_edges == 0) CYCLE
-      !
-      DO ibnd = 1, nbnd
-        !
-        e(1:4) = 0.0_dp
-
-        DO ii = 1, nntetra
-          !
-          ik = tetra(ii, nt)
-          IF(opt_flag) THEN
-            e(1:4) = e(1:4) + wlsm(1:4,ii) * et(ibnd,ik)
-          ELSE
-            e(ii) = et(ibnd,ik)
-          ENDIF
-          !
-        ENDDO
-        !
-        itetra(1) = 0
-        CALL hpsort( 4, e, itetra )
-        !
-        IF( ef < e(4) .AND. ef > e(1) ) THEN
-          DO ii = 1, 4
-            DO i = 1, 4
-              IF ( ABS(e(i)-e(ii)) < 1.d-12 ) THEN
-                a(ii,i) = 0.0_dp
-              ELSE
-                a(ii,i) = ( ef - e(i) ) / (e(ii) - e(i) )
-              END IF
-            ENDDO
-          ENDDO
-          !
-          IF( e(1) < ef .AND. ef < e(2) ) THEN
-            !
-            C = a(2,1) * a(3,1) * a(4,1) / (ef - e(1))
-            wg0(1) = a(1,2) + a(1,3) + a(1,4)
-            wg0(2:4) = a(2:4,1)
-
-            wg0 = wg0 * C
-            !
-          ELSEIF( e(2) <= ef .AND. ef < e(3)) THEN
-            !
-            C = a(2,3) * a(3,1) + a(3,2) * a(2,4)
-            !
-            wg0(1) = a(1,4) * C + a(1,3) * a(3,1) * a(2,3)
-            wg0(2) = a(2,3) * C + a(2,4)**2 * a(3,2)
-            wg0(3) = a(3,2) * C + a(3,1)**2 * a(2,3)
-            wg0(4) = a(4,1) * C + a(4,2) * a(2,4) * a(3,2)
-
-            wg0 = wg0 / (e(4) - e(1))
-            !
-          ELSEIF ( e(3) <= ef .AND. ef < e(4)) THEN
-            !
-            C = a(1,4) * a(2,4) * a(3,4) / (e(4) - ef)
-            !
-            wg0(1:3) = a(1:3,4)
-            wg0(4) = a(4,1) + a(4,2) + a(4,3)
-            !
-            wg0 = wg0 * C
-            !
-          ENDIF
-          !
-          ! wg0(1:4) = wg0(1:4) / REAL(ntetra, dp)
-          !
-
-          DO ii = 1, nntetra
-            !
-            ik = tetra(ii, nt)
-            IF (wgin(ik) /= 0) THEN
-              IF(opt_flag) THEN
-                wg(ibnd) = wg(ibnd) + wgin(ik)*DOT_PRODUCT(wlsm(itetra(1:4),ii), wg0(1:4))*n_edges
-              ELSE
-                wg(ibnd) = wg(ibnd) + wgin(ik)*wg0(ii)*n_edges
-              ENDIF
-            ENDIF
-          ENDDO
-        ENDIF
-        !
-      ENDDO ! ibnd
-      !
-    ENDDO ! nt
-    wg = wg / REAL(ntetra * 4, dp)
-    !
-  END FUNCTION tetra_weights_delta_q
   !
 
   !
