@@ -26,6 +26,7 @@ CONTAINS
     USE code_input,       ONLY : code_input_type
     USE fc3_interpolate,  ONLY : forceconst3
     USE fc2_interpolate,  ONLY : forceconst2_grid
+    USE constants,        ONLY : RY_TO_CMM1
 
     REAL(DP),INTENT(in) :: xq0(3)
     TYPE(code_input_type), INTENT(IN) :: input
@@ -45,7 +46,7 @@ CONTAINS
     ELSE IF(input%delta_approx == 'tetra') THEN
       linewidth_q = linewidth_q_tetra(xq0, input%nconf, input%T, S, grid, fc2, fc3, freq1, U1, lw_UN)
     ELSE IF(input%delta_approx == 'gauss') THEN
-      linewidth_q = linewidth_q_gauss(xq0, input%nconf, input%T, input%sigma, S, grid, fc2, fc3, freq1, U1, lw_UN)
+      linewidth_q = linewidth_q_gauss(xq0, input%nconf, input%T, input%sigma/RY_TO_CMM1, S, grid, fc2, fc3, freq1, U1, lw_UN)
     ELSE
       CALL errore("TK_SMA", "delta_approx can be 'gauss', 'tetra' or 'dense'", 1)
     ENDIF
@@ -479,7 +480,7 @@ CONTAINS
     !
     COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:)
     REAL(DP),ALLOCATABLE    :: V3sq(:,:,:)
-    INTEGER :: iq, jq, it, nu0(3), j_un
+    INTEGER :: iq, jq, nu, it, nu0(3), j_un
     INTEGER,PARAMETER :: normal=1, umklapp=2
     !
     REAL(DP) :: freq(S%nat3,3), bose(S%nat3,3), xq(3,3), xq_aux(3), aux(S%nat3)
@@ -493,7 +494,7 @@ CONTAINS
     IF(present(lw_UN)) lw_UN = 0._dp
     !
     ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q1
-    timer_CALL t_freq%start()
+      timer_CALL t_freq%start()
     xq(:,1) = xq0
     nu0(1) = set_nu0(xq(:,1), S%at)
     IF(present(freq1) .and. present(U1)) THEN
@@ -502,19 +503,19 @@ CONTAINS
     ELSE
       CALL freq_phq_safe(xq(:,1), S, fc2, freq(:,1), U(:,:,1))
     ENDIF
-    timer_CALL t_freq%stop()
+        timer_CALL t_freq%stop()
     !
     !WRITE(*,*) "Summing over a grid of", grid%nq, " points"
     DO iq = 1, grid%nq
       !
-      timer_CALL t_freq%start()
+        timer_CALL t_freq%start()
       ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q2 and q3
       xq(:,2) = grid%xq(:,iq)
       xq(:,3) = -(xq(:,2)+xq(:,1))
       IF(present(lw_UN)) THEN
         xq_aux = refold_bz(xq(:,1), S%bg) &
-          +refold_bz(xq(:,2), S%bg) &
-          +refold_bz(xq(:,3), S%bg)
+                +refold_bz(xq(:,2), S%bg) &
+                +refold_bz(xq(:,3), S%bg)
         IF(ALL(ABS(xq_aux)<1.d-6)) THEN
           j_un = normal
         ELSE
@@ -522,34 +523,34 @@ CONTAINS
         ENDIF
       ENDIF
 
-      !$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
+!$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
       DO jq = 2,3
         nu0(jq) = set_nu0(xq(:,jq), S%at)
         CALL freq_phq_safe(xq(:,jq), S, fc2, freq(:,jq), U(:,:,jq))
       ENDDO
-      !$OMP END PARALLEL DO
-      timer_CALL t_freq%stop()
+!$OMP END PARALLEL DO
+        timer_CALL t_freq%stop()
       !
-      timer_CALL t_fc3int%start()
+        timer_CALL t_fc3int%start()
       CALL fc3%interpolate(xq(:,2), xq(:,3), S%nat3, D3)
-      timer_CALL t_fc3int%stop()
-      timer_CALL t_fc3rot%start()
+        timer_CALL t_fc3int%stop()
+        timer_CALL t_fc3rot%start()
       CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,2), U(:,:,3))
-      timer_CALL t_fc3rot%stop()
-      timer_CALL t_fc3m2%start()
+        timer_CALL t_fc3rot%stop()
+        timer_CALL t_fc3m2%start()
       V3sq = REAL( CONJG(D3)*D3 , kind=DP)
-      timer_CALL t_fc3m2%stop()
+        timer_CALL t_fc3m2%stop()
       !
       DO it = 1,nconf
-        timer_CALL t_bose%start()
+          timer_CALL t_bose%start()
         ! Compute bose-einstein occupation at q2 and q3
-        !$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
+!$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
         DO jq = 1,3
           CALL bose_phq(T(it),S%nat3, freq(:,jq), bose(:,jq))
         ENDDO
-        !$OMP END PARALLEL DO
-        timer_CALL t_bose%stop()
-        timer_CALL t_sum%start()
+!$OMP END PARALLEL DO
+          timer_CALL t_bose%stop()
+          timer_CALL t_sum%start()
         aux = -0.5_dp * grid%w(iq)*sum_linewidth_modes(S, sigma(it), freq, bose, V3sq, nu0)
         lw(:,it) = lw(:,it) + aux
         IF(present(lw_UN)) lw_UN(:,j_un,it) = lw_UN(:,j_un,it) + aux
@@ -558,16 +559,16 @@ CONTAINS
       !
     ENDDO
     !
-    timer_CALL t_mpicom%start()
+      timer_CALL t_mpicom%start()
     IF(grid%scattered) CALL mpi_bsum(S%nat3,nconf,lw)
     IF(grid%scattered .and. present(lw_UN)) CALL mpi_bsum(S%nat3,2,nconf,lw_UN)
 
-    timer_CALL t_mpicom%stop()
+      timer_CALL t_mpicom%stop()
     linewidth_q_gauss = lw
     !
     DEALLOCATE(U, V3sq, D3)
     !
-  END FUNCTION linewidth_q_gauss
+  END FUNCTION linewidth_q_gauss  
 
   ! <<^V^\\=========================================//-//-//========//O\\//
   ! This function returns the complex self energy from the bubble(?) diagram:
