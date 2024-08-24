@@ -42,6 +42,7 @@ MODULE code_input
     CHARACTER(5)   :: delta_approx
     !! can be "tetra" or "gauss"
     INTEGER        :: quality
+    INTEGER        :: qorder
     !
     INTEGER            :: skip_q
     INTEGER            :: nconf
@@ -144,6 +145,7 @@ CONTAINS
     CHARACTER(256) :: outdir = './'              ! where to write output files
     CHARACTER(8)   :: asr2 = "no"                ! apply sum rule to phonon force constants
     CHARACTER(5)   :: delta_approx = 'gauss'     ! 'gauss': dirac_delta = gaussian, 'tetra' dirac_delta = scattering surface with optimized tetrahedra
+    INTEGER        :: qorder = 1
     INTEGER        :: quality = 1
     INTEGER            :: nconf = -1                 ! number of smearing/temperature couples
     INTEGER            :: nq = -1                    ! number of q-point to read, only for lw
@@ -239,7 +241,7 @@ CONTAINS
     NAMELIST  / lwinput / &
       calculation, outdir, prefix, &
       file_mat2, file_mat3, asr2, &
-      nconf, skip_q, nq, nk, grid_type, xk0, delta_approx, quality, &
+      nconf, skip_q, nq, nk, grid_type, xk0, delta_approx, quality, qorder, &
       optimize_grid, optimize_grid_thr, &
       ne, de, e0, sigma_e, &
       nu_initial, e_initial, q_initial, q_resolved, q_summed, sigmaq,&
@@ -251,7 +253,7 @@ CONTAINS
 
     NAMELIST  / tkinput / &
       calculation, outdir, prefix, &
-      file_mat2, file_mat3, asr2, use_symm, delta_approx, quality,  &
+      file_mat2, file_mat3, asr2, use_symm, delta_approx, quality, qorder, &
       thr_tk, niter_max, &
       nconf, nk, nk_in, grid_type, grid_type_in, xk0, xk0_in, &
       optimize_grid, optimize_grid_thr, &
@@ -384,6 +386,7 @@ CONTAINS
     input%asr2                         =  asr2
     input%delta_approx                 =  delta_approx
     input%quality                      =  quality
+    input%qorder                       =  qorder
     input%skip_q                       =  skip_q
     input%nconf                        =  nconf
     input%nk                           =  nk
@@ -943,6 +946,7 @@ CONTAINS
       CALL mpi_broadcast(grid_type_in)
       CALL mpi_broadcast(delta_approx)
       CALL mpi_broadcast(quality)
+      CALL mpi_broadcast(qorder)
       CALL mpi_broadcast(use_symm)
       CALL mpi_broadcast(threshold_f_degeneracy_cmm1)
       CALL mpi_broadcast(intrinsic_scattering)

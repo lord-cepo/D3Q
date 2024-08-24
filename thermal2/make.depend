@@ -3,7 +3,6 @@ PROGRAM_db.o : mpi_thermal.o
 PROGRAM_decompose_d2.o : mpi_thermal.o
 PROGRAM_gruneisen.o : mpi_thermal.o
 PROGRAM_import_shengbte.o : mpi_thermal.o
-PROGRAM_impurity.o : mpi_thermal.o
 PROGRAM_interpolate2.o : mpi_thermal.o
 PROGRAM_lw.o : mpi_thermal.o
 PROGRAM_make_wedge.o : mpi_thermal.o
@@ -17,7 +16,6 @@ PROGRAM_rmzeu.o : mpi_thermal.o
 PROGRAM_sparse.o : mpi_thermal.o
 PROGRAM_sqom.o : mpi_thermal.o
 PROGRAM_tdph.o : mpi_thermal.o
-PROGRAM_test_tetra.o : mpi_thermal.o
 PROGRAM_test_thtetra.o : mpi_thermal.o
 PROGRAM_tk.o : mpi_thermal.o
 asr2.o : mpi_thermal.o
@@ -25,6 +23,7 @@ casimir.o : mpi_thermal.o
 code_input.o : mpi_thermal.o
 decompose_d2.o : mpi_thermal.o
 decompose_zstar.o : mpi_thermal.o
+delta_nodes.o : mpi_thermal.o
 dynbubble.o : mpi_thermal.o
 eos.o : mpi_thermal.o
 f3_bwfft.o : mpi_thermal.o
@@ -50,6 +49,7 @@ ph_dos.o : mpi_thermal.o
 ph_system.o : mpi_thermal.o
 ph_velocity.o : mpi_thermal.o
 posix_signal.o : mpi_thermal.o
+prova.o : mpi_thermal.o
 q_grids.o : mpi_thermal.o
 quter.o : mpi_thermal.o
 read_md.o : mpi_thermal.o
@@ -90,13 +90,7 @@ PROGRAM_import_shengbte.o : ./f3_bwfft.o
 PROGRAM_import_shengbte.o : ./fc3_interp.o
 PROGRAM_import_shengbte.o : ./input_fc.o
 PROGRAM_import_shengbte.o : ./ph_system.o
-PROGRAM_impurity.o : ./PROGRAM_impurity.o
-PROGRAM_impurity.o : ./fc2_interp.o
-PROGRAM_impurity.o : ./functions.o
-PROGRAM_impurity.o : ./input_fc.o
-PROGRAM_impurity.o : ./ph_system.o
-PROGRAM_impurity.o : ./quter.o
-PROGRAM_interpolate2.o : ./PROGRAM_impurity.o
+PROGRAM_interpolate2.o : ./PROGRAM_interpolate2.o
 PROGRAM_interpolate2.o : ./asr2.o
 PROGRAM_interpolate2.o : ./fc2_interp.o
 PROGRAM_interpolate2.o : ./functions.o
@@ -177,7 +171,7 @@ PROGRAM_recenter.o : ./f3_bwfft.o
 PROGRAM_recenter.o : ./fc3_interp.o
 PROGRAM_recenter.o : ./input_fc.o
 PROGRAM_recenter.o : ./ph_system.o
-PROGRAM_rmzeu.o : ./PROGRAM_impurity.o
+PROGRAM_rmzeu.o : ./PROGRAM_interpolate2.o
 PROGRAM_rmzeu.o : ./asr2.o
 PROGRAM_rmzeu.o : ./fc2_interp.o
 PROGRAM_rmzeu.o : ./functions.o
@@ -215,8 +209,6 @@ PROGRAM_tdph.o : ./quter.o
 PROGRAM_tdph.o : ./read_md.o
 PROGRAM_tdph.o : ./rigid_d3.o
 PROGRAM_tdph.o : ./timers.o
-PROGRAM_test_tetra.o : ./thtetra.o
-PROGRAM_test_tetra.o : @new_ktetra@
 PROGRAM_test_thtetra.o : ./thtetra.o
 PROGRAM_tk.o : ./PROGRAM_tk.o
 PROGRAM_tk.o : ./casimir.o
@@ -294,6 +286,8 @@ isotopes.o : ./mpi_thermal.o
 isotopes.o : ./nanoclock.o
 isotopes.o : ./nist_isotopes_db.o
 isotopes.o : ./q_grids.o
+linewidth.o : ./code_input.o
+linewidth.o : ./delta_nodes.o
 linewidth.o : ./fc2_interp.o
 linewidth.o : ./fc3_interp.o
 linewidth.o : ./functions.o
@@ -382,7 +376,6 @@ variational_tk_symq.o : ./timers.o
 PROGRAM_db.o : mpi_thermal.h
 PROGRAM_gruneisen.o : mpi_thermal.h
 PROGRAM_import_shengbte.o : mpi_thermal.h
-PROGRAM_impurity.o : mpi_thermal.h
 PROGRAM_interpolate2.o : mpi_thermal.h
 PROGRAM_lw.o : mpi_thermal.h
 PROGRAM_mtx.o : mpi_thermal.h

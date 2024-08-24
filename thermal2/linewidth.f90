@@ -13,20 +13,72 @@
 MODULE linewidth
 
 #include "mpi_thermal.h"
-  USE kinds,       ONLY : DP
-  USE mpi_thermal, ONLY : my_id, num_procs, mpi_bsum, allgather_mat, scatteri_tns, mpi_sum_mat
-  USE constants,   ONLY : RY_TO_CMM1
+  USE kinds,            ONLY : DP
+  USE mpi_thermal,      ONLY : my_id, num_procs, mpi_bsum, allgather_mat, scatteri_tns, mpi_sum_mat
+  USE constants,        ONLY : RY_TO_CMM1
+  USE q_grids,          ONLY : q_grid, setup_grid
+  USE constants,        ONLY : pi
+  USE input_fc,         ONLY : ph_system_info
+  USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat
+  USE fc2_interpolate,  ONLY : forceconst2_grid, freq_phq_safe, bose_phq, set_nu0
+  USE functions,        ONLY : refold_bz
+  USE thtetra,          ONLY : tetra_init, tetra_delta
   USE timers
 
+  external :: cryst_to_cart
 CONTAINS
 
+  function ijk(n, q_cryst)
+    integer, INTENT(IN) :: n(3)
+    real(dp) :: q_cryst(3)
+    integer :: ijk(3)
+
+    q_cryst = q_cryst + 1000 - INT(q_cryst+1000)
+    ijk = NINT(q_cryst * n)
+  end function
+
+  FUNCTION indexq3(n, q1, q2)
+    integer, intent(in) :: n(3)
+    REAL(DP), INTENT(IN) :: q1(3), q2(3)
+    ! local variables
+    INTEGER :: ijk1(3), ijk2(3), ijk3(3), indexq3
+
+    ijk1 = ijk(n,q1)
+    ijk2 = ijk(n,q2)
+    ijk3 = ijk(n, - (ijk1 + ijk2) / REAL(n, DP))
+    indexq3 = ijk3(1) * n(2) * n(3) + ijk3(2) * n(3) + ijk3(3) + 1
+  END FUNCTION
+
+  PURE FUNCTION hermite_cube(values, gradients, x)
+    REAL(DP), INTENT(IN) :: values(8), gradients(3,8), x(3)
+    REAL(DP) :: h(0:1,3), h1(0:1,3)
+    INTEGER :: i,j,k,m
+    REAL(DP) :: hermite_cube
+
+    hermite_cube = 0._dp
+
+    DO i=1,3
+      h(0,i) = 1 - 3 * x(i) * x(i) + 2 * x(i) * x(i) * x(i)
+      h(1,i) = x(i) * x(i) * (3 - 2 * x(i))
+      h1(0,i) = x(i) * (1 - x(i)) * (1 - x(i))
+      h1(1,i) = x(i) * x(i) * (x(i) - 1)
+    END DO
+
+    do i = 0, 1
+      do j = 0, 1
+        do k = 0, 1
+          m = i * 4 + j * 2 + k + 1
+          hermite_cube = hermite_cube + h(i, 1) * h(j, 2) * h(k, 3) * values(m) + &
+            gradients(1,m) * h1(i, 1) * h(j, 2) * h(k, 3) + &
+            gradients(2,m) * h(i, 1) * h1(j, 2) * h(k, 3) + &
+            gradients(3,m) * h(i, 1) * h(j, 2) * h1(k, 3)
+        end do
+      end do
+    end do
+  END FUNCTION
+
   FUNCTION linewidth_q(xq0, input, S, grid, fc2, fc3, freq1, U1, lw_UN)
-    USE q_grids,          ONLY : q_grid
-    USE input_fc,         ONLY : ph_system_info
     USE code_input,       ONLY : code_input_type
-    USE fc3_interpolate,  ONLY : forceconst3
-    USE fc2_interpolate,  ONLY : forceconst2_grid
-    USE constants,        ONLY : RY_TO_CMM1
 
     REAL(DP),INTENT(in) :: xq0(3)
     TYPE(code_input_type), INTENT(IN) :: input
@@ -47,10 +99,209 @@ CONTAINS
       linewidth_q = linewidth_q_tetra(xq0, input%nconf, input%T, S, grid, fc2, fc3, freq1, U1, lw_UN)
     ELSE IF(input%delta_approx == 'gauss') THEN
       linewidth_q = linewidth_q_gauss(xq0, input%nconf, input%T, input%sigma/RY_TO_CMM1, S, grid, fc2, fc3, freq1, U1, lw_UN)
+    ELSE IF(input%delta_approx == 'herm') THEN
+      linewidth_q = linewidth_q_herm(xq0, input%nconf, input%T, S, grid, fc2, fc3, input%quality, input%qorder, freq1, U1, lw_UN)
     ELSE
-      CALL errore("TK_SMA", "delta_approx can be 'gauss', 'tetra' or 'dense'", 1)
+      CALL errore("linewidth_q", "delta_approx can be 'gauss', 'tetra' or 'dense'", 1)
     ENDIF
   END FUNCTION linewidth_q
+
+  FUNCTION linewidth_q_herm(xq0, nconf, T, S, grid, fc2, fc3, quality, qorder, freq1, U1, lw_UN)
+    USE q_grids,          ONLY : q_grid, setup_grid
+    USE constants,        ONLY : pi
+    USE input_fc,         ONLY : ph_system_info
+    USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat
+    USE fc2_interpolate,  ONLY : forceconst2_grid, freq_phq_safe, bose_phq, set_nu0, freq_phq_safe_grad
+    USE functions,        ONLY : refold_bz
+    USE thtetra,          ONLY : tetra_init, tetra_delta
+    USE delta_nodes_bind, ONLY : delta_nodes_f
+    USE functions,        ONLY : f_bose
+    IMPLICIT NONE
+    !
+    REAL(DP),INTENT(in) :: xq0(3)
+    INTEGER,INTENT(in)  :: nconf
+    REAL(DP),INTENT(in) :: T(nconf)     ! Kelvin
+    !
+    TYPE(forceconst2_grid),INTENT(in) :: fc2
+    CLASS(forceconst3),INTENT(in)     :: fc3
+    TYPE(ph_system_info),INTENT(in)   :: S
+    TYPE(q_grid),INTENT(in)      :: grid
+    !
+    INTEGER, INTENT(IN) :: quality, qorder
+    REAL(DP)  :: ni(3)
+    REAL(DP),OPTIONAL,INTENT(out)   :: lw_UN(S%nat3,2,nconf) ! Normal/Umklapp contribution
+    REAL(DP),OPTIONAL,INTENT(in)    :: freq1(S%nat3)
+    COMPLEX(DP),OPTIONAL,INTENT(in) :: U1(S%nat3,S%nat3)
+    ! FUNCTION RESULT:
+    REAL(DP) :: linewidth_q_herm(S%nat3,nconf)
+    REAL(DP) :: lw(S%nat3,nconf) !aux
+    REAL(DP) :: f2, f3
+
+    !
+    COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:)
+    COMPLEX(DP) :: D3_grad(S%nat3,S%nat3,S%nat3,3), V3_grad(S%nat3,S%nat3,S%nat3,3)
+    REAL(DP),ALLOCATABLE    :: V3sq(:,:,:)
+    INTEGER :: iq, jq, it, nu0(3), j_un, ibnd, jbnd, kbnd, i,j,k,m, w
+    INTEGER,PARAMETER :: normal=1, umklapp=2
+    INTEGER, PARAMETER :: X=1, C=2
+    ! REAL(DP) :: threshold, xq_cryst(3)
+    !> Stuff used to compute Wigner-Seitz weights:
+    INTEGER, PARAMETER:: nrwsx=5000
+    ! REAL(DP) :: cube_db_X(S%nat3**2,8), cube_db_C(S%nat3**2,8)
+    ! REAL(DP) :: cubeg_db_X(3,S%nat3**2,8), cubeg_db_C(3,S%nat3**2,8)
+    INTEGER :: number_of_nodes
+    REAL(DP), ALLOCATABLE :: weights(:), coords(:,:)
+    ! REAL(DP), ALLOCATABLE :: gather_doubled_X(:,:), gather_doubled_C(:,:)
+    !
+    REAL(DP) :: freq(S%nat3,3), cube_freq2(S%nat3,8), cube_freq3(S%nat3,8), cube_grad2(S%nat3,3,8)
+    REAL(DP) :: cube_grad3(S%nat3,3,8), bose(S%nat3,3), xq(3,3), xq_aux(3), aux(S%nat3)
+    REAL(DP) :: grad_(S%nat3,3), grad(S%nat3,3,8)
+    REAL(DP) :: delta_arg(8), delta_grad(3,8)
+    REAL(DP), PARAMETER :: PRECISION_GRAD = 1d-6
+    !
+    !> WS cell initialization: atws describe the grid%xq seen as lattice points
+    ! CALL setup_grid(grid%type, S%bg, grid%n(1)*quality, grid%n(2)*quality, grid%n(3)*quality, &
+    ! dense_grid, xq0=grid%xq0, scatter=grid%scattered, quiet=.true.)
+    ALLOCATE(U(S%nat3, S%nat3,3))
+    ALLOCATE(V3sq(S%nat3, S%nat3, S%nat3))
+    ALLOCATE(D3(S%nat3, S%nat3, S%nat3))
+    !
+    lw = 0._dp
+    IF(present(lw_UN)) lw_UN = 0._dp
+    !
+    ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q1
+    timer_CALL t_freq%start()
+    xq(:,1) = xq0
+    nu0(1) = set_nu0(xq(:,1), S%at)
+    CALL freq_phq_safe_grad(xq(:,1), S, fc2, PRECISION_GRAD, freq(:,1), grad_)
+    FORALL(i=1:8) grad(:,:,i) = grad_
+    IF(present(freq1) .and. present(U1)) THEN
+      freq(:,1) = freq1
+      U(:,:,1)    = U1
+    ELSE
+      CALL freq_phq_safe(xq(:,1), S, fc2, freq(:,1), U(:,:,1))
+    ENDIF
+    timer_CALL t_freq%stop()
+
+    ni = 1/grid%n
+    call cryst_to_cart(1, ni, S%bg, 1)
+
+    ! DO iq = 1, grid%nq
+    !   call freq_phq_safe(grid%xq(:,iq) - ni, S, fc2, freqs(:,2,iq), Us(:,:,2,iq))
+    !   call freq_phq_safe(-grid%xq(:,iq)-xq(:,1) - ni, S, fc2, freqs(:,3,iq), Us(:,:,3,iq))
+    ! END DO
+
+    DO iq = 1, grid%nq
+      !
+      timer_CALL t_freq%start()
+      ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q2 and q3
+      xq(:,2) = grid%xq(:,iq)
+      xq(:,3) = -(xq(:,2)+xq(:,1))
+      IF(present(lw_UN)) THEN
+        xq_aux = refold_bz(xq(:,1), S%bg) &
+          +refold_bz(xq(:,2), S%bg) &
+          +refold_bz(xq(:,3), S%bg)
+        IF(ALL(ABS(xq_aux)<1.d-6)) THEN
+          j_un = normal
+        ELSE
+          j_un = umklapp
+        ENDIF
+      ENDIF
+
+!$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
+      DO jq = 2,3
+        nu0(jq) = set_nu0(xq(:,jq), S%at)
+        ! U(:,:,jq) = Us(:,:,jq,iq)
+        ! freq(:,jq) = freqs(:,jq,iq)
+        CALL freq_phq_safe(xq(:,jq), S, fc2, freq(:,jq), U(:,:,jq))
+      ENDDO
+!$OMP END PARALLEL DO
+      timer_CALL t_freq%stop()
+      !
+      timer_CALL t_fc3int%start()
+      CALL fc3%interpolate_grad(xq(:,2), xq(:,3), S%nat3, D3, D3_grad)
+      timer_CALL t_fc3int%stop()
+      timer_CALL t_fc3rot%start()
+      CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,2), U(:,:,3))
+      DO i=1,3
+        CALL ip_cart2pat(D3_grad(:,:,:,i), S%nat3, U(:,:,1), U(:,:,2), U(:,:,3))
+      END DO
+      timer_CALL t_fc3rot%stop()
+      timer_CALL t_fc3m2%start()
+      V3sq = REAL( CONJG(D3)*D3 , kind=DP)
+      DO i=1,3
+        V3_grad(:,:,:,i) = CONJG(D3) * D3_grad(:,:,:,i) + D3 * CONJG(D3_grad(:,:,:,i))
+      END DO
+      timer_CALL t_fc3m2%stop()
+      !
+      DO it = 1,nconf
+        timer_CALL t_bose%start()
+        ! Compute bose-einstein occupation at q2 and q3
+        CALL bose_phq(T(it),S%nat3, freq(:,1), bose(:,1))
+        timer_CALL t_bose%stop()
+        timer_CALL t_sum%start()
+        m = 0
+        DO i=0,1
+          DO j=0,1
+            DO k=0,1
+              m = m + 1
+              CALL freq_phq_safe_grad(xq(:,jq) - ni/2 + (/i,j,k/)*ni, S, fc2, PRECISION_GRAD, &
+                cube_freq2(:,m), cube_grad2(:,:,m))
+              CALL freq_phq_safe_grad(-xq(:,jq)-xq(:,1) + ni/2 - (/i,j,k/)*ni, S, fc2, PRECISION_GRAD, &
+                cube_freq3(:,m), cube_grad3(:,:,m))
+            END DO
+          END DO
+        END DO
+        DO ibnd = 1, S%nat3
+          DO jbnd = 1, S%nat3
+            DO kbnd = 1, S%nat3
+              delta_arg = cube_freq3(kbnd,:) + cube_freq2(jbnd,:) - freq(ibnd,1)
+              delta_grad = cube_grad3(kbnd,:,:) + cube_grad2(jbnd,:,:) - grad(ibnd,:,:)
+              CALL delta_nodes_f(delta_arg, delta_grad, quality, qorder, &
+                number_of_nodes, weights, coords)
+              DO w = 1, number_of_nodes
+                f2 = hermite_cube(cube_freq2(jbnd,:), cube_grad2(jbnd,:,:), coords(:,w))
+                f3 = hermite_cube(cube_freq3(kbnd,:), cube_grad3(kbnd,:,:), coords(:,w))
+                IF(freq(ibnd,1) <= 0._dp .or. f2 <= 0._dp .or. f3 <= 0._dp) CYCLE
+                lw(ibnd,it) = lw(ibnd,it) + (1._dp + f_bose(f2, T(it)) + f_bose(f3, T(it))) * &
+                  weights(w) * V3sq(ibnd,jbnd,kbnd) + &
+                  DOT_PRODUCT((coords(:,w) - 0.5_dp) * ni, V3_grad(ibnd,jbnd,kbnd,:))
+              END DO
+              delta_arg = cube_freq3(kbnd,:) - cube_freq2(jbnd,:) - freq(ibnd,1)
+              delta_grad = cube_grad3(kbnd,:,:) - cube_grad2(jbnd,:,:) - grad(ibnd,:,:)
+              CALL delta_nodes_f(delta_arg, delta_grad, quality, qorder, &
+                number_of_nodes, weights, coords)
+              DO w = 1, number_of_nodes
+                f2 = hermite_cube(cube_freq2(jbnd,:), cube_grad2(:,jbnd,:), coords(:,w))
+                f3 = hermite_cube(cube_freq3(kbnd,:), cube_grad3(:,kbnd,:), coords(:,w))
+                IF(freq(ibnd,1) <= 0._dp .or. f2 <= 0._dp .or. f3 <= 0._dp) CYCLE
+                lw(ibnd,it) = lw(ibnd,it) + 2 * (f_bose(f2, T(it)) - f_bose(f3, T(it))) * &
+                  weights(w) * V3sq(ibnd,jbnd,kbnd) + &
+                  DOT_PRODUCT((coords(:,w) - 0.5_dp) * ni, V3_grad(ibnd,jbnd,kbnd,:))
+              END DO
+            ENDDO
+          ENDDO
+        ENDDO
+        IF(present(lw_UN)) lw_UN(:,j_un,it) = lw_UN(:,j_un,it) + aux
+        timer_CALL t_sum%stop()
+      ENDDO
+      !
+    ENDDO
+    !
+    timer_CALL t_mpicom%start()
+    IF(grid%scattered) CALL mpi_bsum(S%nat3,nconf,lw)
+    IF(grid%scattered .and. present(lw_UN)) CALL mpi_bsum(S%nat3,2,nconf,lw_UN)
+
+    timer_CALL t_mpicom%stop()
+    linewidth_q_herm = lw*pi/2._dp
+    !
+    DEALLOCATE(U, V3sq, D3)
+
+
+    ! call cryst_to_cart(3, xq, S%bg, 1)
+
+    !
+  END FUNCTION linewidth_q_herm
 
   FUNCTION linewidth_q_dense(xq0, nconf, T, S, grid, fc2, fc3, quality, freq1, U1, lw_UN)
     USE q_grids,          ONLY : q_grid, setup_grid
@@ -208,7 +459,7 @@ CONTAINS
 
 !$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
       DO jq = 2,3
-        nu0(jq) = set_nu0(xq(:,jq), S%at)
+        ! nu0(jq) = set_nu0(xq(:,jq), S%at)
         CALL freq_phq_safe(xq(:,jq), S, fc2, freq(:,jq), U(:,:,jq))
       ENDDO
 !$OMP END PARALLEL DO
@@ -455,7 +706,7 @@ CONTAINS
   FUNCTION linewidth_q_gauss(xq0, nconf, T, sigma, S, grid, fc2, fc3, freq1, U1, lw_UN)
     USE q_grids,          ONLY : q_grid
     USE input_fc,         ONLY : ph_system_info
-    USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat
+    USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat, sum_R3
     USE fc2_interpolate,  ONLY : forceconst2_grid, freq_phq_safe, bose_phq, set_nu0
     USE functions,        ONLY : refold_bz
     IMPLICIT NONE
@@ -478,23 +729,26 @@ CONTAINS
     REAL(DP) :: linewidth_q_gauss(S%nat3,nconf)
     REAL(DP) :: lw(S%nat3,nconf) !aux
     !
-    COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:)
+    COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:), DR3(:,:,:,:)
+    LOGICAL, ALLOCATABLE :: R3(:)
     REAL(DP),ALLOCATABLE    :: V3sq(:,:,:)
-    INTEGER :: iq, jq, nu, it, nu0(3), j_un
+    INTEGER :: iq, jq, it, nu0(3), j_un, max_nR
     INTEGER,PARAMETER :: normal=1, umklapp=2
     !
     REAL(DP) :: freq(S%nat3,3), bose(S%nat3,3), xq(3,3), xq_aux(3), aux(S%nat3)
     !
-
+    max_nR = (2*fc3%nq(1) + 1)*(2*fc3%nq(2) + 1)*(2*fc3%nq(3) + 1)
     ALLOCATE(U(S%nat3, S%nat3,3))
     ALLOCATE(V3sq(S%nat3, S%nat3, S%nat3))
     ALLOCATE(D3(S%nat3, S%nat3, S%nat3))
+    ALLOCATE(DR3(S%nat3, S%nat3, S%nat3, max_nR))
+    ALLOCATE(R3(max_nR))
     !
     lw = 0._dp
     IF(present(lw_UN)) lw_UN = 0._dp
     !
     ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q1
-      timer_CALL t_freq%start()
+    timer_CALL t_freq%start()
     xq(:,1) = xq0
     nu0(1) = set_nu0(xq(:,1), S%at)
     IF(present(freq1) .and. present(U1)) THEN
@@ -503,19 +757,20 @@ CONTAINS
     ELSE
       CALL freq_phq_safe(xq(:,1), S, fc2, freq(:,1), U(:,:,1))
     ENDIF
-        timer_CALL t_freq%stop()
+    timer_CALL t_freq%stop()
     !
     !WRITE(*,*) "Summing over a grid of", grid%nq, " points"
+    CALL fc3%sum_R2(xq(:,1),S%nat3, R3, DR3)
     DO iq = 1, grid%nq
       !
-        timer_CALL t_freq%start()
+      timer_CALL t_freq%start()
       ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q2 and q3
       xq(:,2) = grid%xq(:,iq)
       xq(:,3) = -(xq(:,2)+xq(:,1))
       IF(present(lw_UN)) THEN
         xq_aux = refold_bz(xq(:,1), S%bg) &
-                +refold_bz(xq(:,2), S%bg) &
-                +refold_bz(xq(:,3), S%bg)
+          +refold_bz(xq(:,2), S%bg) &
+          +refold_bz(xq(:,3), S%bg)
         IF(ALL(ABS(xq_aux)<1.d-6)) THEN
           j_un = normal
         ELSE
@@ -529,29 +784,31 @@ CONTAINS
         CALL freq_phq_safe(xq(:,jq), S, fc2, freq(:,jq), U(:,:,jq))
       ENDDO
 !$OMP END PARALLEL DO
-        timer_CALL t_freq%stop()
+      timer_CALL t_freq%stop()
       !
-        timer_CALL t_fc3int%start()
-      CALL fc3%interpolate(xq(:,2), xq(:,3), S%nat3, D3)
-        timer_CALL t_fc3int%stop()
-        timer_CALL t_fc3rot%start()
-      CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,2), U(:,:,3))
-        timer_CALL t_fc3rot%stop()
-        timer_CALL t_fc3m2%start()
+      timer_CALL t_fc3int%start()
+      CALL sum_R3(fc3%nq, S, xq(:,3), R3, DR3, D3)
+      timer_CALL t_fc3int%stop()
+      timer_CALL t_fc3rot%start()
+      CALL ip_cart2pat(D3, S%nat3, U(:,:,2), U(:,:,1), U(:,:,3))
+      timer_CALL t_fc3rot%stop()
+      timer_CALL t_fc3m2%start()
       V3sq = REAL( CONJG(D3)*D3 , kind=DP)
-        timer_CALL t_fc3m2%stop()
+      print*, "--------------"
+      print*, D3(1,2,3)
+      timer_CALL t_fc3m2%stop()
       !
       DO it = 1,nconf
-          timer_CALL t_bose%start()
+        timer_CALL t_bose%start()
         ! Compute bose-einstein occupation at q2 and q3
 !$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
         DO jq = 1,3
           CALL bose_phq(T(it),S%nat3, freq(:,jq), bose(:,jq))
         ENDDO
 !$OMP END PARALLEL DO
-          timer_CALL t_bose%stop()
-          timer_CALL t_sum%start()
-        aux = -0.5_dp * grid%w(iq)*sum_linewidth_modes(S, sigma(it), freq, bose, V3sq, nu0)
+        timer_CALL t_bose%stop()
+        timer_CALL t_sum%start()
+        aux = -0.5_dp * grid%w(iq)*sum_rotate_lw(S, sigma(it), freq, bose, D3, U, nu0)
         lw(:,it) = lw(:,it) + aux
         IF(present(lw_UN)) lw_UN(:,j_un,it) = lw_UN(:,j_un,it) + aux
         timer_CALL t_sum%stop()
@@ -559,16 +816,16 @@ CONTAINS
       !
     ENDDO
     !
-      timer_CALL t_mpicom%start()
+    timer_CALL t_mpicom%start()
     IF(grid%scattered) CALL mpi_bsum(S%nat3,nconf,lw)
     IF(grid%scattered .and. present(lw_UN)) CALL mpi_bsum(S%nat3,2,nconf,lw_UN)
 
-      timer_CALL t_mpicom%stop()
+    timer_CALL t_mpicom%stop()
     linewidth_q_gauss = lw
     !
-    DEALLOCATE(U, V3sq, D3)
+    DEALLOCATE(U, V3sq, D3, DR3, R3)
     !
-  END FUNCTION linewidth_q_gauss  
+  END FUNCTION linewidth_q_gauss
 
   ! <<^V^\\=========================================//-//-//========//O\\//
   ! This function returns the complex self energy from the bubble(?) diagram:
@@ -1535,7 +1792,7 @@ CONTAINS
           dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
           ctm_X = bose_X * f_gauss(dom_X, sigma)
           !
-          lw(i) = lw(i) - pi * (ctm_C + ctm_X) * V3sq(i,j,k)*freqtotm1
+          lw(i) = lw(i) - pi * (ctm_C + ctm_X) * V3sq(j,i,k)*freqtotm1
           !
           !leftover_e = pi*freqtotm1 * (ctm_C*dom_C + ctm_X*dom_X) * V3sq(i,j,k)
           !ENDIF
@@ -1549,6 +1806,93 @@ CONTAINS
     sum_linewidth_modes = lw
     !
   END FUNCTION sum_linewidth_modes
+
+  FUNCTION sum_rotate_lw(S, sigma, freq, bose, D3, U, nu0)
+    USE functions, ONLY : f_gauss => f_gauss
+    USE constants, ONLY : pi, RY_TO_CMM1
+    USE input_fc,           ONLY : ph_system_info
+    USE merge_degenerate,   ONLY : merge_degen
+    IMPLICIT NONE
+    TYPE(ph_system_info),INTENT(in)   :: S
+    REAL(DP),INTENT(in) :: sigma
+    REAL(DP),INTENT(in) :: freq(S%nat3,3)
+    REAL(DP),INTENT(in) :: bose(S%nat3,3)
+    COMPLEX(DP),INTENT(in) :: D3(S%nat3,S%nat3,S%nat3), U(S%nat3,S%nat3,3)
+    INTEGER,INTENT(in)  :: nu0(3)
+    !
+    REAL(DP) :: sum_rotate_lw(S%nat3)
+    COMPLEX(DP) :: D3_s
+    REAL(DP) :: D3_s2
+    INTEGER :: a,b,c
+    !
+    ! _C -> scattering, _X -> cohalescence
+    REAL(DP) :: bose_C, bose_X ! final/initial state populations
+    REAL(DP) :: dom_C, dom_X   ! \delta\omega
+    REAL(DP) :: ctm   !
+    REAL(DP) :: freqtotm1, freqtotm1_23
+    REAL(DP) :: freqm1(S%nat3,3)
+    !REAL(DP),SAVE :: leftover_e
+    !
+    INTEGER :: i,j,k
+    REAL(DP) :: lw(S%nat3)!, sigma_
+    lw(:) = 0._dp
+    print*, d3(1,2,3)
+    !
+    freqm1 = 0._dp
+    DO i = 1,S%nat3
+      IF(i>=nu0(1)) freqm1(i,1) = 0.5_dp/freq(i,1)
+      IF(i>=nu0(2)) freqm1(i,2) = 0.5_dp/freq(i,2)
+      IF(i>=nu0(3)) freqm1(i,3) = 0.5_dp/freq(i,3)
+    ENDDO
+!$OMP PARALLEL DO DEFAULT(SHARED) &
+!$OMP             PRIVATE(i,j,k,bose_C,bose_X,dom_C,dom_X,ctm_C,ctm_X,&
+!$OMP                     freqtotm1_23,freqtotm1) &
+!$OMP             REDUCTION(+: lw) COLLAPSE(2)
+    DO k = 1,S%nat3
+      DO j = 1,S%nat3
+        !
+        bose_C = 2* (bose(j,2) - bose(k,3))
+        bose_X = bose(j,2) + bose(k,3) + 1
+        freqtotm1_23= freqm1(j,2) * freqm1(k,3)
+        !
+        DO i = 1,S%nat3
+          !
+          !sigma_= MIN(sigma, 0.5_dp*MAX(MAX(freq(i,1), freq(j,2)), freq(k,3)))
+          !
+          freqtotm1 = freqm1(i,1) * freqtotm1_23
+          !IF(freqtot/=0._dp)THEN
+          !
+          dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
+          dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
+          ctm = bose_C * f_gauss(dom_C, sigma) + bose_X * f_gauss(dom_X, sigma)
+          ! IF(ctm < 1e-10) CYCLE
+          !
+          timer_CALL t_fc3rot%start()
+          D3_s = 0._dp
+          DO c = 1, S%nat3
+            DO b = 1, S%nat3
+              DO a = 1, S%nat3
+                D3_s = D3_s + D3(a,b,c) * CONJG(U(b,j,1) * U(i,a,2) * U(c,k,3))
+              END DO
+            END DO
+          END DO
+          timer_CALL t_fc3rot%stop()
+          D3_s2 = REAL( CONJG(D3_s)* D3_s, kind=DP)
+          ! if(i==1 .and. j==1 .and. k==1) print*, D3_s2
+          lw(i) = lw(i) - pi * ctm * D3_s2 * freqtotm1
+          !
+          !leftover_e = pi*freqtotm1 * (ctm_C*dom_C + ctm_X*dom_X) * V3sq(i,j,k)
+          !ENDIF
+          !
+        ENDDO
+      ENDDO
+    ENDDO
+!$OMP END PARALLEL DO
+    !
+    CALL merge_degen(S%nat3, lw, freq(:,1))
+    sum_rotate_lw = lw
+    !
+  END FUNCTION sum_rotate_lw
 
   ! \/o\________\\\_________________________________________/^>
   ! Add the elastic peak of Raman

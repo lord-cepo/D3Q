@@ -5,7 +5,7 @@ include ../../make.inc
 STRIP = true #strip
 
 # location of needed modules
-MODFLAGS= $(MOD_FLAG)../../Modules $(MOD_FLAG)../../LAXlib $(MOD_FLAG)../../UtilXlib \
+MODFLAGS = $(MOD_FLAG)../../Modules $(MOD_FLAG)../../LAXlib $(MOD_FLAG)../../UtilXlib \
           $(MOD_FLAG)../../FFTXlib/src $(MOD_FLAG)../../PW/src $(MOD_FLAG)../../LR_Modules $(MOD_FLAG)../../PHonon/PH \
 	  $(MOD_FLAG)../src \
 	  $(MOD_FLAG).
@@ -65,21 +65,25 @@ MYNAME       = $(shell basename $(CURDIR))
 FATHERNAME   = $(shell cd ..; basename `pwd -P`)
 THELINKPLACE = $(FATHERNAME)/$(MYNAME)
 
-EXEC = db tk lw qha asr3 sqom sparse q2r r2q qq2rr import_shengbte recenter interpolate2 rmzeu tdph mtx
+EXEC = $(shell ls *.f90 |grep PROGRAM_ | sed -e 's/PROGRAM_//' -e 's/\.f90//')
 #make_wedge decompose_d2
 #gruneisen
 #interpolate2
 
 all : tldeps d3q-libs thermal2-libs $(EXEC)
 
-.PHONY : tldeps d3q-libs thermal2-libs
+.PHONY : tldeps d3q-libs thermal2-libs algoim-libs
 
 # Note to self: $^ expands to all dependencies, $< expands to the first dependency
-$(EXEC) : % : PROGRAM_%.o tldeps d3q-libs thermal2-libs $(MINPACK)
-	$(LD) $(LDFLAGS) -o d3_$@.x $< libthermal2.a \
-	    $(EXTOBJS) $(QELIBS)
+$(EXEC) : % : PROGRAM_%.o tldeps d3q-libs algoim-libs thermal2-libs $(MINPACK)
+	$(LD) $(LDFLAGS) -o d3_$@.x $< libthermal2.a $(EXTOBJS) $(QELIBS)
 	$(STRIP)  d3_$@.x
 	- ( cd ../../bin && ln -fs ../D3Q/thermal2/d3_$@.x d3_$@.x )
+
+algoim-libs :
+	cd algoim && make
+	$(AR) $(ARFLAGS) libthermal2.a algoim/algoim.o
+	$(RANLIB) libthermal2.a
 
 d3q-libs :
 	( cd ../src/ && make libd3q.a)

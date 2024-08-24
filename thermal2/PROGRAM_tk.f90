@@ -252,25 +252,25 @@ CONTAINS
         lw_casimir = 0._dp
       ENDIF
       !
-      ! IF(input%store_lw)THEN
-      !    timer_CALL t_lwinout%start()
-      !    DO it = 1, input%nconf
-      !       IF(input%intrinsic_scattering.and.ionode) THEN
-      !          WRITE(1000+it,'(99e20.10)') lw_phph(:,it)*RY_TO_CMM1
-      !          WRITE(1000+input%nconf+it,'(99e20.10)') lw_un(:,1,it)*RY_TO_CMM1
-      !          WRITE(1000+2*input%nconf+it,'(99e20.10)') lw_un(:,2,it)*RY_TO_CMM1
-      !       ENDIF
-      !       IF(input%isotopic_disorder.and.ionode)    WRITE(2000+it,'(99e20.10)') lw_isotopic(:,it)*RY_TO_CMM1
-      !    ENDDO
-      !    IF(input%casimir_scattering) THEN
-      !       ioWRITE(3000,'(99e20.10)') lw_casimir(:)*RY_TO_CMM1
-      !    ENDIF
-      !    ioWRITE(5000,'(3(99e20.10,3x))') vel(:,:)
-      !    ioWRITE(5001,'(3(99e20.10,3x))') vel_diag(:,:)
-      !    ioWRITE(6000,'(99e20.10)') freq(:)*RY_TO_CMM1
-      !    ioWRITE(7000,'(4e20.10)') out_grid%xq(:,iq), out_grid%w(iq)
-      !    timer_CALL t_lwinout%stop()
-      ! ENDIF
+      IF(input%store_lw)THEN
+         timer_CALL t_lwinout%start()
+         DO it = 1, input%nconf
+            IF(input%intrinsic_scattering.and.ionode) THEN
+               WRITE(1000+it,'(99e20.10)') lw_phph(:,it)*RY_TO_CMM1
+               WRITE(1000+input%nconf+it,'(99e20.10)') lw_un(:,1,it)*RY_TO_CMM1
+               WRITE(1000+2*input%nconf+it,'(99e20.10)') lw_un(:,2,it)*RY_TO_CMM1
+            ENDIF
+            IF(input%isotopic_disorder.and.ionode)    WRITE(2000+it,'(99e20.10)') lw_isotopic(:,it)*RY_TO_CMM1
+         ENDDO
+         IF(input%casimir_scattering) THEN
+            ioWRITE(3000,'(99e20.10)') lw_casimir(:)*RY_TO_CMM1
+         ENDIF
+         ioWRITE(5000,'(3(99e20.10,3x))') vel(:,:)
+         ioWRITE(5001,'(3(99e20.10,3x))') vel_diag(:,:)
+         ioWRITE(6000,'(99e20.10)') freq(:)*RY_TO_CMM1
+         ioWRITE(7000,'(4e20.10)') out_grid%xq(:,iq), out_grid%w(iq)
+         timer_CALL t_lwinout%stop()
+      ENDIF
       !
       timer_CALL t_tksum%start()
       ! Casimir linewidth is temperature/smearing-independent, sum it to all configurations
@@ -278,45 +278,45 @@ CONTAINS
       ! thanks to Francesco Macheda for reporting this
       DO it = 1,input%nconf
         lw(:,it) = 2*(lw_phph(:,it) + lw_isotopic(:,it) + lw_casimir)
-        ! IF(input%print_all.and.ionode) THEN
-        !    ! print velocity operator
-        !    do im=1,S%nat3
-        !       do im2=1,S%nat3
-        !          condition_print=.false.
-        !          if (input%workaround_print_v) then
-        !             if (iq==1) then
-        !                if (im>3 .and. im2>3) then
-        !                   condition_print=.true.
-        !                end if
-        !             else
-        !                condition_print=.true.
-        !             end if
-        !          else
-        !             condition_print=((lw(im,it)>0.0d0).and.(lw(im2,it)>0.0d0))
-        !          end if
-        !          if ( condition_print .and. (im<=im2)) then
-        !             if (it==1) then
-        !                WRITE(7022 ,'(I6,I4,I4,2ES11.4, 3ES14.7)')       &
-        !                   iq,im,im2,                                  &
-        !                   freq(im)*RY_TO_CMM1,                   &
-        !                   freq(im2)*RY_TO_CMM1,                  &
-        !                   ((real(vel_operator(1,im,im2)))**2+     &
-        !                   (aimag(vel_operator(1,im,im2))**2 ) )   &
-        !                   *((tpi*ryvel_si)**2 ), &
-        !                   ((real(vel_operator(2,im,im2)))**2+     &
-        !                   (aimag(vel_operator(2,im,im2))**2 ) )   &
-        !                   *((tpi*ryvel_si)**2 ), &
-        !                   ((real(vel_operator(3,im,im2)))**2+     &
-        !                   (aimag(vel_operator(3,im,im2))**2 ) )   &
-        !                   *((tpi*ryvel_si)**2 )
-        !             endif
-        !             ! print phonon phonon_properties_raw
-        !             write(7023+it,'(I6,I4,I4,A1,ES17.10,A1,ES17.10,A1,ES17.10,A1,ES17.10)') &
-        !                iq, im,im2,tab,freq(im),tab,freq(im2),tab,lw(im,it),tab,lw(im2,it)
-        !          end if
-        !       end do
-        !    end do
-        ! END IF
+        IF(input%print_all.and.ionode) THEN
+           ! print velocity operator
+           do im=1,S%nat3
+              do im2=1,S%nat3
+                 condition_print=.false.
+                 if (input%workaround_print_v) then
+                    if (iq==1) then
+                       if (im>3 .and. im2>3) then
+                          condition_print=.true.
+                       end if
+                    else
+                       condition_print=.true.
+                    end if
+                 else
+                    condition_print=((lw(im,it)>0.0d0).and.(lw(im2,it)>0.0d0))
+                 end if
+                 if ( condition_print .and. (im<=im2)) then
+                    if (it==1) then
+                       WRITE(7022 ,'(I6,I4,I4,2ES11.4, 3ES14.7)')       &
+                          iq,im,im2,                                  &
+                          freq(im)*RY_TO_CMM1,                   &
+                          freq(im2)*RY_TO_CMM1,                  &
+                          ((real(vel_operator(1,im,im2)))**2+     &
+                          (aimag(vel_operator(1,im,im2))**2 ) )   &
+                          *((tpi*ryvel_si)**2 ), &
+                          ((real(vel_operator(2,im,im2)))**2+     &
+                          (aimag(vel_operator(2,im,im2))**2 ) )   &
+                          *((tpi*ryvel_si)**2 ), &
+                          ((real(vel_operator(3,im,im2)))**2+     &
+                          (aimag(vel_operator(3,im,im2))**2 ) )   &
+                          *((tpi*ryvel_si)**2 )
+                    endif
+                    ! print phonon phonon_properties_raw
+                    write(7023+it,'(I6,I4,I4,A1,ES17.10,A1,ES17.10,A1,ES17.10,A1,ES17.10)') &
+                       iq, im,im2,tab,freq(im),tab,freq(im2),tab,lw(im,it),tab,lw(im2,it)
+                 end if
+              end do
+           end do
+        END IF
       ENDDO
       !
       CONF_LOOP : &

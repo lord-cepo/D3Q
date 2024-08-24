@@ -9,6 +9,7 @@ MODULE ph_system
   USE kinds,      ONLY : DP
   USE parameters, ONLY : ntypx
 #include "mpi_thermal.h"  
+  EXTERNAL :: errore, latgen, volume, recips
   ! \/o\________\\\_________________________________________/^>
   TYPE ph_system_info
     ! atoms
@@ -111,7 +112,7 @@ MODULE ph_system
     INTEGER :: ios, dummy
     !
     INTEGER :: nt, na
-    CHARACTER(len=256) cdummy
+    ! CHARACTER(len=256) cdummy
     !
     READ(unit,*,iostat=ios) S%ntyp, S%nat, S%ibrav, S%celldm(1:6)
     IF(ios/=0) CALL errore(sub,"reading S%ntyp, S%nat, S%ibrav, S%celldm(1:6)", 1)
@@ -240,10 +241,9 @@ MODULE ph_system
     !
   END SUBROUTINE write_system
   ! \/o\________\\\_________________________________________/^>
-  SUBROUTINE destroy_system(unit, S)
+  SUBROUTINE destroy_system(S)
     IMPLICIT NONE
     TYPE(ph_system_info),INTENT(inout)   :: S ! = System
-    INTEGER,INTENT(in) :: unit
     !
     S%ntyp = 0
     S%nat  = 0
