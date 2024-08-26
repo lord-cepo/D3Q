@@ -789,14 +789,12 @@ CONTAINS
       timer_CALL t_fc3int%start()
       CALL sum_R3(fc3%nq, S, xq(:,3), R3, DR3, D3)
       timer_CALL t_fc3int%stop()
-      timer_CALL t_fc3rot%start()
-      CALL ip_cart2pat(D3, S%nat3, U(:,:,2), U(:,:,1), U(:,:,3))
-      timer_CALL t_fc3rot%stop()
-      timer_CALL t_fc3m2%start()
-      V3sq = REAL( CONJG(D3)*D3 , kind=DP)
-      print*, "--------------"
-      print*, D3(1,2,3)
-      timer_CALL t_fc3m2%stop()
+      ! timer_CALL t_fc3rot%start()
+      ! CALL ip_cart2pat(D3, S%nat3, U(:,:,2), U(:,:,1), U(:,:,3))
+      ! timer_CALL t_fc3rot%stop()
+      ! timer_CALL t_fc3m2%start()
+      ! V3sq = REAL( CONJG(D3)*D3 , kind=DP)
+      ! timer_CALL t_fc3m2%stop()
       !
       DO it = 1,nconf
         timer_CALL t_bose%start()
@@ -1831,12 +1829,12 @@ CONTAINS
     REAL(DP) :: ctm   !
     REAL(DP) :: freqtotm1, freqtotm1_23
     REAL(DP) :: freqm1(S%nat3,3)
+    COMPLEX(DP) ::  aux
     !REAL(DP),SAVE :: leftover_e
     !
     INTEGER :: i,j,k
     REAL(DP) :: lw(S%nat3)!, sigma_
     lw(:) = 0._dp
-    print*, d3(1,2,3)
     !
     freqm1 = 0._dp
     DO i = 1,S%nat3
@@ -1864,22 +1862,26 @@ CONTAINS
           !
           dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
           dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
-          ctm = bose_C * f_gauss(dom_C, sigma) + bose_X * f_gauss(dom_X, sigma)
-          ! IF(ctm < 1e-10) CYCLE
+          ctm = (bose_C * f_gauss(dom_C, sigma) + bose_X * f_gauss(dom_X, sigma))*freqtotm1
+          ! print*, ctm
+          IF(ABS(ctm) < 1) CYCLE
+          ! ci sono tanti negativi che contribuiscono sulla terza cifra, mica da poco
           !
           timer_CALL t_fc3rot%start()
           D3_s = 0._dp
           DO c = 1, S%nat3
             DO b = 1, S%nat3
+              aux = U(b,i,1)* U(c,k,3)
               DO a = 1, S%nat3
-                D3_s = D3_s + D3(a,b,c) * CONJG(U(b,j,1) * U(i,a,2) * U(c,k,3))
+                D3_s = D3_s + D3(a,b,c) * CONJG( aux * U(a,j,2) )
               END DO
             END DO
           END DO
+          !
           timer_CALL t_fc3rot%stop()
           D3_s2 = REAL( CONJG(D3_s)* D3_s, kind=DP)
-          ! if(i==1 .and. j==1 .and. k==1) print*, D3_s2
-          lw(i) = lw(i) - pi * ctm * D3_s2 * freqtotm1
+          lw(i) = lw(i) - pi * ctm * D3_s2
+
           !
           !leftover_e = pi*freqtotm1 * (ctm_C*dom_C + ctm_X*dom_X) * V3sq(i,j,k)
           !ENDIF
