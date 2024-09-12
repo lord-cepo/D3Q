@@ -39,7 +39,7 @@ MODULE code_input
     CHARACTER(256) :: file_mat2_plus
     CHARACTER(256) :: file_mat2_minus
     CHARACTER(8)   :: asr2
-    CHARACTER(5)   :: delta_approx
+    CHARACTER(10)   :: delta_approx
     !! can be "tetra" or "gauss"
     INTEGER        :: quality
     INTEGER        :: qorder
@@ -144,7 +144,7 @@ CONTAINS
     !
     CHARACTER(256) :: outdir = './'              ! where to write output files
     CHARACTER(8)   :: asr2 = "no"                ! apply sum rule to phonon force constants
-    CHARACTER(5)   :: delta_approx = 'gauss'     ! 'gauss': dirac_delta = gaussian, 'tetra' dirac_delta = scattering surface with optimized tetrahedra
+    CHARACTER(10)   :: delta_approx = 'gauss'     ! 'gauss': dirac_delta = gaussian, 'tetra' dirac_delta = scattering surface with optimized tetrahedra
     INTEGER        :: qorder = 1
     INTEGER        :: quality = 1
     INTEGER            :: nconf = -1                 ! number of smearing/temperature couples

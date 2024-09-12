@@ -72,10 +72,10 @@ EXEC = $(shell ls *.f90 |grep PROGRAM_ | sed -e 's/PROGRAM_//' -e 's/\.f90//')
 
 all : tldeps d3q-libs thermal2-libs $(EXEC)
 
-.PHONY : tldeps d3q-libs thermal2-libs algoim-libs
+.PHONY : tldeps d3q-libs thermal2-libs
 
 # Note to self: $^ expands to all dependencies, $< expands to the first dependency
-$(EXEC) : % : PROGRAM_%.o tldeps d3q-libs algoim-libs thermal2-libs $(MINPACK)
+$(EXEC) : % : PROGRAM_%.o tldeps d3q-libs thermal2-libs $(MINPACK)
 	$(LD) $(LDFLAGS) -o d3_$@.x $< libthermal2.a $(EXTOBJS) $(QELIBS)
 	$(STRIP)  d3_$@.x
 	- ( cd ../../bin && ln -fs ../D3Q/thermal2/d3_$@.x d3_$@.x )

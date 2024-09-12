@@ -114,6 +114,78 @@ MODULE mc_grids
     !
   END SUBROUTINE setup_mcjdos_grid
 
+  FUNCTION sum_linewidth_modes(S, sigma, freq, bose, V3sq, nu0)
+    USE functions, ONLY : f_gauss => f_gauss
+    USE constants, ONLY : pi, RY_TO_CMM1
+    USE input_fc,           ONLY : ph_system_info
+    USE merge_degenerate,   ONLY : merge_degen
+    IMPLICIT NONE
+    TYPE(ph_system_info),INTENT(in)   :: S
+    REAL(DP),INTENT(in) :: sigma
+    REAL(DP),INTENT(in) :: freq(S%nat3,3)
+    REAL(DP),INTENT(in) :: bose(S%nat3,3)
+    REAL(DP),INTENT(in) :: V3sq(S%nat3,S%nat3,S%nat3)
+    INTEGER,INTENT(in)  :: nu0(3)
+    !
+    REAL(DP) :: sum_linewidth_modes(S%nat3)
+    !
+    ! _C -> scattering, _X -> cohalescence
+    REAL(DP) :: bose_C, bose_X ! final/initial state populations
+    REAL(DP) :: dom_C, dom_X   ! \delta\omega
+    REAL(DP) :: ctm_C, ctm_X   !
+    REAL(DP) :: freqtotm1, freqtotm1_23
+    REAL(DP) :: freqm1(S%nat3,3)
+    !REAL(DP),SAVE :: leftover_e
+    !
+    INTEGER :: i,j,k
+    REAL(DP) :: lw(S%nat3)!, sigma_
+    lw(:) = 0._dp
+    !
+    freqm1 = 0._dp
+    DO i = 1,S%nat3
+       IF(i>=nu0(1)) freqm1(i,1) = 0.5_dp/freq(i,1)
+       IF(i>=nu0(2)) freqm1(i,2) = 0.5_dp/freq(i,2)
+       IF(i>=nu0(3)) freqm1(i,3) = 0.5_dp/freq(i,3)
+    ENDDO
+!$OMP PARALLEL DO DEFAULT(SHARED) &
+!$OMP             PRIVATE(i,j,k,bose_C,bose_X,dom_C,dom_X,ctm_C,ctm_X,&
+!$OMP                     freqtotm1_23,freqtotm1) &
+!$OMP             REDUCTION(+: lw) COLLAPSE(2)
+    DO k = 1,S%nat3
+       DO j = 1,S%nat3
+          !
+          bose_C = 2* (bose(j,2) - bose(k,3))
+          bose_X = bose(j,2) + bose(k,3) + 1
+          freqtotm1_23= freqm1(j,2) * freqm1(k,3)
+          !
+          DO i = 1,S%nat3
+             !
+             !sigma_= MIN(sigma, 0.5_dp*MAX(MAX(freq(i,1), freq(j,2)), freq(k,3)))
+             !
+             freqtotm1 = freqm1(i,1) * freqtotm1_23
+             !IF(freqtot/=0._dp)THEN
+             !
+             dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
+             ctm_C = bose_C * f_gauss(dom_C, sigma)
+             !
+             dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
+             ctm_X = bose_X * f_gauss(dom_X, sigma)
+             !
+             lw(i) = lw(i) - pi * (ctm_C + ctm_X) * V3sq(i,j,k)*freqtotm1
+             !
+             !leftover_e = pi*freqtotm1 * (ctm_C*dom_C + ctm_X*dom_X) * V3sq(i,j,k)
+             !ENDIF
+             !
+          ENDDO
+       ENDDO
+    ENDDO
+!$OMP END PARALLEL DO
+    !
+    CALL merge_degen(S%nat3, lw, freq(:,1))
+    sum_linewidth_modes = lw
+    !
+ END FUNCTION sum_linewidth_modes
+
   ! As optimize grid, but tries to do everything in parallel to avoid memory bottleneck
   ! (currently sort is done in serial)
   SUBROUTINE setup_poptimized_grid(input, S, fc, grid, xq0, prec, scatter, fc3)
@@ -125,7 +197,6 @@ MODULE mc_grids
     USE fc2_interpolate,  ONLY : freq_phq_safe, set_nu0, bose_phq
     USE fc3_interpolate,  ONLY : forceconst3
     USE functions,        ONLY : quicksort_idx
-    USE linewidth,        ONLY : sum_linewidth_modes
     USE mpi_thermal
     USE timers
     IMPLICIT NONE

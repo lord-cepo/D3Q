@@ -13,6 +13,13 @@
 !
 MODULE linewidth_program
   USE timers
+  USE fc2_interpolate,     ONLY : fftinterp_mat2, mat2_diag, freq_phq_path
+  USE constants,           ONLY : RY_TO_CMM1
+  USE q_grids,             ONLY : q_grid, setup_grid, fc_info
+  USE more_constants,      ONLY : write_conf
+  USE input_fc,            ONLY : forceconst2_grid, ph_system_info
+  USE fc3_interpolate,     ONLY : forceconst3
+  USE code_input,          ONLY : code_input_type
   !
   USE kinds,       ONLY : DP
   !USE mpi_thermal,      ONLY : ionode
@@ -20,26 +27,20 @@ MODULE linewidth_program
   !
 CONTAINS
   SUBROUTINE LW_QBZ_LINE(input, qpath, S, fc2, fc3)
-    USE fc2_interpolate,    ONLY : fftinterp_mat2, mat2_diag, freq_phq_path
-    USE linewidth,          ONLY : linewidth_q, selfnrg_q, spectre_q
-    USE constants,          ONLY : RY_TO_CMM1
-    USE q_grids,            ONLY : q_grid, setup_grid
     USE mc_grids,           ONLY : setup_poptimized_grid
-    USE more_constants,     ONLY : write_conf
-    USE fc3_interpolate,    ONLY : forceconst3
     USE isotopes_linewidth, ONLY : isotopic_linewidth_q
     USE casimir_linewidth,  ONLY : casimir_linewidth_q
-    USE input_fc,           ONLY : forceconst2_grid, ph_system_info
-    USE code_input,         ONLY : code_input_type
     USE overlap,            ONLY : order_type
+    USE linewidth,          ONLY : linewidth_q, sum_q2
     IMPLICIT NONE
     !
     TYPE(code_input_type),INTENT(in)  :: input
     TYPE(forceconst2_grid),INTENT(in) :: fc2
-    CLASS(forceconst3),INTENT(in)     :: fc3
+    CLASS(forceconst3),INTENT(in), POINTER :: fc3
     TYPE(ph_system_info),INTENT(in)   :: S
     TYPE(q_grid),INTENT(in)      :: qpath
     !
+    TYPE(fc_info) :: fc
     TYPE(order_type) :: order
     COMPLEX(DP) :: D(S%nat3, S%nat3)
     REAL(DP) :: w2(S%nat3), xq_ref(3)
@@ -136,12 +137,14 @@ CONTAINS
         lw_casimir = 0._dp
       ENDIF
       !
+
+      CALL fc%construct(fc2, fc3, S, grid)
+
       MODE_SELECTION : &
         IF (TRIM(input%mode) == "full") THEN
 
         timer_CALL t_lwphph%start()
-        ls = selfnrg_q(qpath%xq(:,iq), input%nconf, input%T, sigma_ry, &
-          S, grid, fc2, fc3, w2, D)
+        ls = sum_q2(qpath%xq(:,iq), input, fc, "selfnrg   ")
         timer_CALL t_lwphph%stop()
         !
         DO it = 1,input%nconf
@@ -169,7 +172,7 @@ CONTAINS
       ELSE IF (TRIM(input%mode) == "real" .or. TRIM(input%mode) == "imag") THEN
         !
         timer_CALL t_lwphph%start()
-        lw = linewidth_q(qpath%xq(:,iq), input, S, grid, fc2, fc3, w2, D)
+        lw = linewidth_q(qpath%xq(:,iq), input, fc)
         timer_CALL t_lwphph%stop()
         !
         DO it = 1,input%nconf
@@ -236,21 +239,14 @@ CONTAINS
   END SUBROUTINE
   !
   SUBROUTINE SPECTR_QBZ_LINE(input, qpath, S, fc2, fc3)
-    USE fc2_interpolate,     ONLY : fftinterp_mat2, mat2_diag, freq_phq_path
     USE linewidth,      ONLY : spectre_q, simple_spectre_q, add_exp_t_factor, &
       tepsilon_q, selfnrg_omega_q, ir_reflectivity_q, spectre2_q
-    USE constants,      ONLY : RY_TO_CMM1
-    USE q_grids,        ONLY : q_grid, setup_grid
-    USE more_constants, ONLY : write_conf
-    USE input_fc,       ONLY : forceconst2_grid, ph_system_info
-    USE fc3_interpolate,ONLY : forceconst3
-    USE code_input,     ONLY : code_input_type
     !USE nanoclock,      ONLY : print_percent_wall
     IMPLICIT NONE
     !
     TYPE(code_input_type),INTENT(in)     :: input
     TYPE(forceconst2_grid),INTENT(in) :: fc2
-    CLASS(forceconst3),INTENT(inout)  :: fc3
+    CLASS(forceconst3),INTENT(in), pointer  :: fc3
     TYPE(ph_system_info),INTENT(in)   :: S
     TYPE(q_grid),INTENT(in)      :: qpath
     !
@@ -258,6 +254,7 @@ CONTAINS
     TYPE(q_grid) :: grid
     COMPLEX(DP):: ls(S%nat3,input%nconf)
     REAL(DP)   :: sigma_ry(input%nconf)
+    TYPE(fc_info) :: fc
     !
     REAL(DP),ALLOCATABLE :: ener(:), spectralf(:,:,:)
     COMPLEX(DP),ALLOCATABLE :: caux(:,:,:)
@@ -270,6 +267,8 @@ CONTAINS
     !
     ioWRITE(*,*) "--> Setting up inner grid"
     CALL setup_grid(input%grid_type, S%bg, input%nk(1), input%nk(2), input%nk(3), grid, scatter=.true., xq0=input%xk0)
+
+    CALL fc%construct(fc2, fc3, S, grid)
     !CALL grid%scatter()
     !
     ALLOCATE(ener(input%ne))
@@ -330,8 +329,7 @@ CONTAINS
             S, grid, fc2, fc3, input%ne, ener, w2, D, shift=.false.)
         ELSE IF (TRIM(input%mode) == "simple" .or. TRIM(input%mode) == "isimple") THEN
           UNIT_CONVERSION = 1/RY_TO_CMM1
-          spectralf = simple_spectre_q(qpath%xq(:,iq), input%nconf, input%T, sigma_ry, &
-            S, grid, fc2, fc3, input%ne, ener, w2, D, &
+          spectralf = simple_spectre_q(qpath%xq(:,iq), input, fc, input%ne, ener, w2, D, &
             shift=(TRIM(input%mode) == "simple") )
         ELSE IF (TRIM(input%mode) == "refl") THEN
           UNIT_CONVERSION = 1._dp

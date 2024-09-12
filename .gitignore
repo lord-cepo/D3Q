@@ -4,5 +4,7 @@
 *.x
 *i90
 /minpack
-
+CRASH
+make.depend.tmp
+*a.out
 /Examples

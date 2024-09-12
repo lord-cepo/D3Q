@@ -10,6 +10,9 @@ MODULE q_grids
 
   USE kinds,     ONLY : DP
   USE mpi_thermal,      ONLY : ionode
+  USE input_fc,         ONLY : ph_system_info
+  USE fc3_interpolate,  ONLY : forceconst3
+  USE fc2_interpolate,  ONLY : forceconst2_grid
 #include "mpi_thermal.h"
 
   TYPE q_grid
@@ -44,7 +47,18 @@ MODULE q_grids
 !     CONTAINS
 !       procedure :: B  => B_right_hand_side
   END TYPE q_basis
-  !
+
+  TYPE fc_info
+    TYPE(forceconst2_grid)          :: fc2
+    CLASS(forceconst3), POINTER     :: fc3
+    TYPE(ph_system_info)            :: S
+    TYPE(q_grid)                    :: grid
+    INTEGER                         :: nat3
+    CHARACTER(10)                   :: calc
+  CONTAINS
+    procedure :: construct => construct_fc
+  END TYPE
+
 !   TYPE q_grid_ph
 !     INTEGER :: quality
 !     !! the coarse grid will be replicated quality times
@@ -64,6 +78,21 @@ MODULE q_grids
 CONTAINS
 !   ! \/o\________\\\_________________________________________/^>
 
+  SUBROUTINE construct_fc(fc, fc2, fc3, S, grid)
+    CLASS(fc_info), INTENT(INOUT)               :: fc
+    !
+    TYPE(forceconst2_grid), INTENT(IN)          :: fc2
+    CLASS(forceconst3), POINTER, INTENT(IN)     :: fc3
+    TYPE(ph_system_info), INTENT(IN)            :: S
+    TYPE(q_grid), INTENT(IN)                    :: grid
+    !
+    fc%fc2 = fc2
+    fc%fc3 => fc3
+    fc%grid = grid
+    fc%S = S
+    fc%nat3 = S%nat3
+  END SUBROUTINE
+  !
   SUBROUTINE q_grid_destroy(grid)
     IMPLICIT NONE
     CLASS(q_grid),INTENT(inout) :: grid

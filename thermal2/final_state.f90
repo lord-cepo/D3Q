@@ -19,7 +19,6 @@ MODULE final_state
                          nui, ei, ne, ener, sigma_e, qresolved, qsummed, sigmaq, &
                          outdir, prefix, mode)
     USE fc2_interpolate,      ONLY : bose_phq, freq_phq_safe, freq_phq_positive, set_nu0
-    USE linewidth,            ONLY : sum_selfnrg_modes
     USE q_grids,              ONLY : q_grid
     USE functions,            ONLY : refold_bz, refold_bz_mod, f_gauss, quicksort
     USE constants,            ONLY : RY_TO_CMM1
