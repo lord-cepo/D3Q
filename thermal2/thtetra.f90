@@ -424,7 +424,8 @@ CONTAINS
       ENDDO ! ibnd
       !
     ENDDO ! nt
-    wg = wg / REAL(ntetra, dp)
+    ! wg = wg / REAL(ntetra, dp)
+    wg = wg / 6
     !
     !
     ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES

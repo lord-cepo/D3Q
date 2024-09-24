@@ -41,8 +41,8 @@ CONTAINS
 
     SELECT CASE (input%delta_approx)
      CASE ("tetra")
-      CALL weights_tetra(fc, weights_C, weights_X)
-      linewidth_q = sum_q2(xq0, input, fc, input%delta_approx, weights_C, weights_X, lw_un)
+      CALL weights_tetra(xq0, fc, weights_C, weights_X)
+      linewidth_q = REAL(sum_q2(xq0, input, fc, input%delta_approx, weights_C, weights_X, lw_un), DP)
      CASE("gauss")
       linewidth_q = sum_q2(xq0, input, fc, input%delta_approx, lw_un)
      CASE DEFAULT
@@ -51,9 +51,8 @@ CONTAINS
 
   END FUNCTION linewidth_q
 
-
 ! <<^V^\\=========================================//-//-//========//O\\//
-  SUBROUTINE weights_tetra(fc, weights_C, weights_X)
+  SUBROUTINE weights_tetra(xq0, fc, weights_C, weights_X)
     USE q_grids,          ONLY : q_grid
     USE constants,        ONLY : pi
     USE input_fc,         ONLY : ph_system_info
@@ -63,6 +62,7 @@ CONTAINS
     USE thtetra,          ONLY : tetra_init, tetra_weights_delta
     IMPLICIT NONE
     !
+    REAL(DP),INTENT(in) :: xq0(3)
     TYPE(fc_info), INTENT(IN) :: fc
     !
     COMPLEX(DP) :: dummy(fc%nat3,fc%nat3)
@@ -79,6 +79,8 @@ CONTAINS
 
     ALLOCATE(weights_X(fc%nat3, fc%nat3**2, fc%grid%nqtot), weights_C(fc%nat3, fc%nat3**2, fc%grid%nqtot))
     !
+    xq(:,1) = xq0
+    CALL freq_phq_safe(xq(:,1), fc%S, fc%fc2, freq(:,1), dummy)
     ! this cycle initializes freqs, as a grid of frequencies
     ! this cycle initializes freqs_doubled, which is freq(ibnd,2) +/- freq(jbnd,3)
     timer_CALL t_freqd%start()
@@ -122,8 +124,37 @@ CONTAINS
 
   END SUBROUTINE
 
+  PURE function rotate_single_d3(nat3, i, j, k, U, D3, invert) result(D3_s2)
+    INTEGER, INTENT(IN) :: nat3, i, j, k
+    COMPLEX(DP), INTENT(IN) :: U(nat3,nat3,3), D3(nat3, nat3, nat3)
+    LOGICAL, INTENT(IN) :: invert
+    !
+    INTEGER :: a, b, c
+    COMPLEX(DP) :: D3_s, D3_s2, aux
+    D3_s = 0._dp
+    DO c = 1, nat3
+      DO b = 1, nat3
+        if (invert) then
+          aux = U(b,i,1)* U(c,k,3)
+        else
+          aux = U(b,j,2)* U(c,k,3)
+        endif
+        DO a = 1, nat3
+          if (invert) then
+            D3_s = D3_s + D3(a,b,c) * CONJG( aux * U(a,j,2) )
+          else
+            D3_s = D3_s + D3(a,b,c) * CONJG( aux * U(a,i,1) )
+          endif
+        END DO
+      END DO
+    END DO
+    D3_s2 = REAL( CONJG(D3_s)* D3_s, kind=DP)
+  end function
+
   FUNCTION sum_q2(xq1, input, fc, calc, weights_C, weights_X, lw_UN)
+    USE functions, ONLY : f_gauss
     USE fc3_interpolate, ONLY : sum_R3
+    USE merge_degenerate,   ONLY : merge_degen
     REAL(DP), INTENT(IN) :: xq1(3)
     TYPE(code_input_type), INTENT(IN) :: input
     TYPE(fc_info), INTENT(IN) :: fc
@@ -138,9 +169,10 @@ CONTAINS
     INTEGER :: max_nR
     !! (2Nx+1)(2Ny+1)(2Nz+1), where N is the number of supercells, *2 because nfar = 2
     INTEGER,PARAMETER :: normal=1, umklapp=2
-    INTEGER :: iq, jq, j_un, it, nu0(3)
+    INTEGER :: iq, jq, j_un, it, nu0(3), i,j,k
     REAL(DP) :: xq(3,3), freq(fc%nat3,3), bose(fc%nat3,3)
-    COMPLEX(DP) :: aux(fc%nat3), sum_q2(fc%nat3,input%nconf)
+    REAL(DP) :: freqm1(fc%nat3,3), freqtotm1_23, freqtotm1, bose_C, bose_X, dom_C, dom_X, sigma
+    COMPLEX(DP) :: aux(fc%nat3), sum_q2(fc%nat3,input%nconf), ctm
 
     ALLOCATE(U(fc%nat3,fc%nat3,3), D3(fc%nat3,fc%nat3,fc%nat3))
 
@@ -184,6 +216,7 @@ CONTAINS
       timer_CALL t_freq%stop()
       !
       timer_CALL t_fc3int%start()
+      ! CALL fc%fc3%interpolate(xq(:,2), xq(:,3), fc%nat3, D3)
       CALL sum_R3(fc%fc3%nq, fc%S, xq(:,3), R3, DR3, D3)
       timer_CALL t_fc3int%stop()
       DO it = 1,input%nconf
@@ -196,9 +229,60 @@ CONTAINS
 !$OMP END PARALLEL DO
         timer_CALL t_bose%stop()
         timer_CALL t_sum%start()
-        aux = -0.5_dp * fc%grid%w(iq) * sum_rotate_lw(fc%S, freq, bose, D3, U, nu0, calc, &
-        & input%sigma(it)/RY_TO_CMM1, input%T(it), weights_C(:,:,iq), weights_X(:,:,iq))
-        sum_q2(:,it) = sum_q2(:,it) + aux
+
+        freqm1 = 0._dp
+        aux = 0._dp
+        DO i = 1,fc%nat3
+          IF(i>=nu0(1)) freqm1(i,1) = 0.5_dp/freq(i,1)
+          IF(i>=nu0(2)) freqm1(i,2) = 0.5_dp/freq(i,2)
+          IF(i>=nu0(3)) freqm1(i,3) = 0.5_dp/freq(i,3)
+        ENDDO
+!$OMP PARALLEL DO DEFAULT(SHARED) &
+!$OMP             PRIVATE(i,j,k,bose_C,bose_X,dom_C,dom_X,ctm_C,ctm_X,&
+!$OMP                     freqtotm1_23,freqtotm1) &
+!$OMP             REDUCTION(+: aux) COLLAPSE(2)
+        DO k = 1,fc%nat3
+          DO j = 1,fc%nat3
+            !
+            bose_C = 2* (bose(j,2) - bose(k,3))
+            bose_X = bose(j,2) + bose(k,3) + 1
+            freqtotm1_23= freqm1(j,2) * freqm1(k,3)
+            !
+            DO i = 1,fc%nat3
+              !
+              !sigma_= MIN(sigma, 0.5_dp*MAX(MAX(freq(i,1), freq(j,2)), freq(k,3)))
+              !
+              freqtotm1 = freqm1(i,1) * freqtotm1_23
+              !IF(freqtot/=0._dp)THEN
+              !
+              SELECT CASE (calc)
+               CASE ("gauss")
+                sigma = input%sigma(it)/RY_TO_CMM1
+                dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
+                dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
+                ctm = bose_C * f_gauss(dom_C, sigma) + bose_X * f_gauss(dom_X, sigma)
+               CASE ("tetra")
+                ctm = bose_C * weights_C(i,fc%nat3*(j-1) + k, iq) + bose_X * weights_X(i,fc%nat3*(j-1) + k, iq)
+               CASE ("selfnrg")
+                ctm = ctm_selfnrg(sigma, input%T(it), freq, bose_C, bose_X)
+               CASE DEFAULT
+                CALL errore("sum_rotate_lw", "you should give sigma/tetra_weights", 1)
+              END SELECT
+              ! IF(REAL(ctm, DP) < 1) CYCLE
+              ! ci sono tanti negativi che contribuiscono sulla terza cifra, mica da poco
+              !
+              !> rotation of single D3 only where we know that we have scattering
+              timer_CALL t_fc3rot%start()
+              aux(i) = aux(i) + ctm * rotate_single_d3(fc%nat3, i,j,k, U, D3, invert=.true.) * freqtotm1
+              timer_CALL t_fc3rot%stop()
+            ENDDO
+          ENDDO
+        ENDDO
+!$OMP END PARALLEL DO
+        !
+        CALL merge_degen(fc%nat3, aux, freq(:,1))
+
+        sum_q2(:,it) = sum_q2(:,it) + aux * fc%grid%w(iq)
         IF(present(lw_UN)) lw_UN(:,j_un,it) = lw_UN(:,j_un,it) + aux
         timer_CALL t_sum%stop()
       ENDDO
@@ -209,6 +293,8 @@ CONTAINS
     IF(fc%grid%scattered) CALL mpi_bsum(fc%nat3,input%nconf,sum_q2)
     IF(fc%grid%scattered .and. present(lw_UN)) CALL mpi_bsum(fc%nat3,2,input%nconf,lw_UN)
     timer_CALL t_mpicom%stop()
+
+    sum_q2 = sum_q2 * pi/2
   END FUNCTION
 
   ! \/o\________\\\_________________________________________/^>
@@ -858,18 +944,18 @@ CONTAINS
           !IF(freqtot/=0._dp)THEN
           !
           SELECT CASE (calc)
-          CASE ("gauss")
-           dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
-           dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
-           ctm = (bose_C * f_gauss(dom_C, sigma) + bose_X * f_gauss(dom_X, sigma))
-          CASE ("tetra")
-           ctm = bose_C * weights_C(i,S%nat3*(j-1) + k) + bose_X * weights_X(i,S%nat3*(j-1) + k)
-          CASE ("selfnrg")
-           ctm = ctm_selfnrg(sigma, T, freq, bose_C, bose_X)
-          CASE DEFAULT
-           CALL errore("sum_rotate_lw", "you should give sigma/tetra_weights", 1)
-         END SELECT
-          ! IF(ABS(ctm) < 1) CYCLE
+           CASE ("gauss")
+            dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
+            dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
+            ctm = (bose_C * f_gauss(dom_C, sigma) + bose_X * f_gauss(dom_X, sigma))
+           CASE ("tetra")
+            ctm = bose_C * weights_C(i,S%nat3*(j-1) + k) + bose_X * weights_X(i,S%nat3*(j-1) + k)
+           CASE ("selfnrg")
+            ctm = ctm_selfnrg(sigma, T, freq, bose_C, bose_X)
+           CASE DEFAULT
+            CALL errore("sum_rotate_lw", "you should give sigma/tetra_weights", 1)
+          END SELECT
+          ! IF(REAL(ctm, DP) < 1) CYCLE
           ! ci sono tanti negativi che contribuiscono sulla terza cifra, mica da poco
           !
           timer_CALL t_fc3rot%start()
@@ -885,7 +971,7 @@ CONTAINS
           END DO
           timer_CALL t_fc3rot%stop()
           D3_s2 = REAL( CONJG(D3_s)* D3_s, kind=DP)
-          sum_rotate_lw(i) = sum_rotate_lw(i) - pi * ctm * D3_s2 * freqtotm1
+          sum_rotate_lw(i) = sum_rotate_lw(i) + ctm * D3_s2 * freqtotm1
         ENDDO
       ENDDO
     ENDDO
