@@ -40,13 +40,13 @@ CONTAINS
     REAL(DP) :: linewidth_q(fc%S%nat3,input%nconf)
 
     SELECT CASE (input%delta_approx)
-    CASE ("delta")
+     CASE ("tetra")
       CALL weights_tetra(fc, weights_C, weights_X)
       linewidth_q = sum_q2(xq0, input, fc, input%delta_approx, weights_C, weights_X, lw_un)
-    CASE("gauss")
+     CASE("gauss")
       linewidth_q = sum_q2(xq0, input, fc, input%delta_approx, lw_un)
-    CASE DEFAULT
-      CALL errore("linewidth_qw", "only delta/gauss as delta_approx are permitted", 1)
+     CASE DEFAULT
+      CALL errore("linewidth_q", "only delta/gauss as delta_approx are permitted", 1)
     END SELECT
 
   END FUNCTION linewidth_q
@@ -152,7 +152,7 @@ CONTAINS
     timer_CALL t_freq%start()
     xq(:,1) = xq1
     nu0(1) = set_nu0(xq(:,1), fc%S%at)
-    
+
     CALL freq_phq_safe(xq(:,1), fc%S, fc%fc2, freq(:,1), U(:,:,1))
     timer_CALL t_freq%stop()
 
@@ -197,7 +197,7 @@ CONTAINS
         timer_CALL t_bose%stop()
         timer_CALL t_sum%start()
         aux = -0.5_dp * fc%grid%w(iq) * sum_rotate_lw(fc%S, freq, bose, D3, U, nu0, calc, &
-        & input%sigma(it), input%T(it), weights_C(:,:,iq), weights_X(:,:,iq))
+        & input%sigma(it)/RY_TO_CMM1, input%T(it), weights_C(:,:,iq), weights_X(:,:,iq))
         sum_q2(:,it) = sum_q2(:,it) + aux
         IF(present(lw_UN)) lw_UN(:,j_un,it) = lw_UN(:,j_un,it) + aux
         timer_CALL t_sum%stop()
@@ -802,7 +802,7 @@ CONTAINS
     ctm_selfnrg = ctm_C + ctm_X
   END FUNCTION
   !
-  FUNCTION sum_rotate_lw(S, freq, bose, D3, U, nu0, calc, T, sigma, weights_X, weights_C)
+  FUNCTION sum_rotate_lw(S, freq, bose, D3, U, nu0, calc, sigma, T, weights_C, weights_X)
     USE functions, ONLY : f_gauss => f_gauss
     USE constants, ONLY : pi, RY_TO_CMM1
     USE input_fc,           ONLY : ph_system_info
@@ -814,7 +814,7 @@ CONTAINS
     INTEGER,INTENT(in)  :: nu0(3)
     CHARACTER(10), INTENT(IN) :: calc
     REAL(DP),INTENT(in), OPTIONAL :: sigma, T
-    REAL(DP), INTENT(IN), OPTIONAL :: weights_X(S%nat3,S%nat3**2), weights_C(S%nat3,S%nat3**2)
+    REAL(DP), INTENT(IN), OPTIONAL :: weights_C(S%nat3,S%nat3**2), weights_X(S%nat3,S%nat3**2)
     !
     COMPLEX(DP) :: sum_rotate_lw(S%nat3)
     COMPLEX(DP) :: D3_s
@@ -858,18 +858,18 @@ CONTAINS
           !IF(freqtot/=0._dp)THEN
           !
           SELECT CASE (calc)
-           CASE ("gauss")
-            dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
-            dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
-            ctm = (bose_C * f_gauss(dom_C, sigma/RY_TO_CMM1) + bose_X * f_gauss(dom_X, sigma/RY_TO_CMM1))
-           CASE ("tetra")
-            ctm = bose_C * weights_C(i,S%nat3*(j-1) + k) + bose_X * weights_X(i,S%nat3*(j-1) + k)
-           CASE ("selfnrg")
-            ctm = ctm_selfnrg(sigma, T, freq, bose_C, bose_X)
-           CASE DEFAULT
-            CALL errore("sum_rotate_lw", "you should give sigma/tetra_weights", 1)
-          END SELECT
-          IF(ABS(ctm) < 1) CYCLE
+          CASE ("gauss")
+           dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
+           dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
+           ctm = (bose_C * f_gauss(dom_C, sigma) + bose_X * f_gauss(dom_X, sigma))
+          CASE ("tetra")
+           ctm = bose_C * weights_C(i,S%nat3*(j-1) + k) + bose_X * weights_X(i,S%nat3*(j-1) + k)
+          CASE ("selfnrg")
+           ctm = ctm_selfnrg(sigma, T, freq, bose_C, bose_X)
+          CASE DEFAULT
+           CALL errore("sum_rotate_lw", "you should give sigma/tetra_weights", 1)
+         END SELECT
+          ! IF(ABS(ctm) < 1) CYCLE
           ! ci sono tanti negativi che contribuiscono sulla terza cifra, mica da poco
           !
           timer_CALL t_fc3rot%start()
