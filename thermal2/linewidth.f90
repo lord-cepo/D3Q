@@ -65,7 +65,6 @@ CONTAINS
     REAL(DP),INTENT(in) :: xq0(3)
     TYPE(fc_info), INTENT(IN) :: fc
     !
-    COMPLEX(DP) :: dummy(fc%nat3,fc%nat3)
     REAL(DP), ALLOCATABLE, INTENT(OUT):: weights_C(:,:,:), weights_X(:,:,:)
     ! FUNCTION RESULT:
     !
@@ -80,15 +79,15 @@ CONTAINS
     ALLOCATE(weights_X(fc%nat3, fc%nat3**2, fc%grid%nqtot), weights_C(fc%nat3, fc%nat3**2, fc%grid%nqtot))
     !
     xq(:,1) = xq0
-    CALL freq_phq_safe(xq(:,1), fc%S, fc%fc2, freq(:,1), dummy)
+    CALL freq_phq_safe(xq(:,1), fc%S, fc%fc2, freq(:,1))
     ! this cycle initializes freqs, as a grid of frequencies
     ! this cycle initializes freqs_doubled, which is freq(ibnd,2) +/- freq(jbnd,3)
     timer_CALL t_freqd%start()
     DO iq = 1, fc%grid%nq
-      CALL freq_phq_safe(fc%grid%xq(:,iq), fc%S, fc%fc2, freq(:,2), dummy)
+      CALL freq_phq_safe(fc%grid%xq(:,iq), fc%S, fc%fc2, freq(:,2))
       ! the third vector (why it's minus?)
       xq(:,3) = -(fc%grid%xq(:,iq)+xq(:,1))
-      CALL freq_phq_safe(xq(:,3), fc%S, fc%fc2, freq(:,3), dummy)
+      CALL freq_phq_safe(xq(:,3), fc%S, fc%fc2, freq(:,3))
       DO ibnd = 1, fc%S%nat3
         DO jbnd = 1, fc%S%nat3
           index_double = fc%S%nat3*(ibnd-1) + jbnd
@@ -151,7 +150,7 @@ CONTAINS
     D3_s2 = REAL( CONJG(D3_s)* D3_s, kind=DP)
   end function
 
-  FUNCTION sum_q2(xq1, input, fc, calc, weights_C, weights_X, lw_UN)
+  FUNCTION sum_q2(xq1, input, fc, calc, weights_C, weights_X, lw_UN, energy)
     USE functions, ONLY : f_gauss
     USE fc3_interpolate, ONLY : sum_R3
     USE merge_degenerate,   ONLY : merge_degen
@@ -161,6 +160,7 @@ CONTAINS
     CHARACTER(10), INTENT(IN) :: calc
     REAL(DP), DIMENSION(fc%nat3, fc%nat3**2, fc%grid%nqtot), INTENT(IN), OPTIONAL :: weights_C, weights_X
     REAL(DP),OPTIONAL,INTENT(out)   :: lw_UN(fc%nat3,2,input%nconf)
+    REAL(DP), OPTIONAL, INTENT(IN) :: energy
 
     !! Normal/Umklapp contribution
     !
@@ -170,7 +170,7 @@ CONTAINS
     !! (2Nx+1)(2Ny+1)(2Nz+1), where N is the number of supercells, *2 because nfar = 2
     INTEGER,PARAMETER :: normal=1, umklapp=2
     INTEGER :: iq, jq, j_un, it, nu0(3), i,j,k
-    REAL(DP) :: xq(3,3), freq(fc%nat3,3), bose(fc%nat3,3)
+    REAL(DP) :: xq(3,3), freq(fc%nat3,3), bose(fc%nat3,3), f(3)
     REAL(DP) :: freqm1(fc%nat3,3), freqtotm1_23, freqtotm1, bose_C, bose_X, dom_C, dom_X, sigma
     COMPLEX(DP) :: aux(fc%nat3), sum_q2(fc%nat3,input%nconf), ctm
 
@@ -233,9 +233,9 @@ CONTAINS
         freqm1 = 0._dp
         aux = 0._dp
         DO i = 1,fc%nat3
-          IF(i>=nu0(1)) freqm1(i,1) = 0.5_dp/freq(i,1)
-          IF(i>=nu0(2)) freqm1(i,2) = 0.5_dp/freq(i,2)
-          IF(i>=nu0(3)) freqm1(i,3) = 0.5_dp/freq(i,3)
+          do j = 1,3
+            IF(i>=nu0(j)) freqm1(i,j) = 0.5_dp/freq(i,j)
+          ENDDO
         ENDDO
 !$OMP PARALLEL DO DEFAULT(SHARED) &
 !$OMP             PRIVATE(i,j,k,bose_C,bose_X,dom_C,dom_X,ctm_C,ctm_X,&
@@ -255,16 +255,24 @@ CONTAINS
               freqtotm1 = freqm1(i,1) * freqtotm1_23
               !IF(freqtot/=0._dp)THEN
               !
+              sigma = input%sigma(it)
               SELECT CASE (calc)
                CASE ("gauss")
-                sigma = input%sigma(it)/RY_TO_CMM1
                 dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
                 dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
                 ctm = bose_C * f_gauss(dom_C, sigma) + bose_X * f_gauss(dom_X, sigma)
                CASE ("tetra")
                 ctm = bose_C * weights_C(i,fc%nat3*(j-1) + k, iq) + bose_X * weights_X(i,fc%nat3*(j-1) + k, iq)
                CASE ("selfnrg")
-                ctm = ctm_selfnrg(sigma, input%T(it), freq, bose_C, bose_X)
+                f(1) = freq(i,1)
+                f(2) = freq(j,2)
+                f(3) = freq(k,3)
+                ctm = ctm_selfnrg(sigma, input%T(it), f, bose_C, bose_X)
+               CASE ("selfnrg_sp")
+                f(1) = freq(i,1)
+                f(2) = freq(j,2)
+                f(3) = freq(k,3)
+                ctm = ctm_selfnrg_spectre(sigma, f, energy, bose_C, bose_X)
                CASE DEFAULT
                 CALL errore("sum_rotate_lw", "you should give sigma/tetra_weights", 1)
               END SELECT
@@ -374,119 +382,10 @@ CONTAINS
   END FUNCTION simple_spectre_q
 
 
-  ! <<^V^\\=========================================//-//-//========//O\\//
-  ! Self energy for all the phonon bands at q in a range of frequencies
-  FUNCTION selfnrg_omega_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1) &
-    RESULT(selfnrg_wq)
-    USE q_grids,          ONLY : q_grid
-    USE input_fc,         ONLY : ph_system_info
-    USE fc2_interpolate,  ONLY : forceconst2_grid, freq_phq_safe, bose_phq, set_nu0
-    USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat
-    !
-    IMPLICIT NONE
-    !
-    REAL(DP),INTENT(in) :: xq0(3)
-    INTEGER,INTENT(in)  :: nconf
-    REAL(DP),INTENT(in) :: T(nconf)     ! Kelvin
-    !
-    INTEGER,INTENT(in)  :: ne
-    REAL(DP),INTENT(in) :: ener(ne)
-    !
-    TYPE(forceconst2_grid),INTENT(in) :: fc2
-    CLASS(forceconst3),INTENT(in)     :: fc3
-    TYPE(ph_system_info),INTENT(in)   :: S
-    TYPE(q_grid),INTENT(in)           :: grid
-    REAL(DP),INTENT(in)               :: sigma(nconf) ! ry
-    !
-    REAL(DP),OPTIONAL,INTENT(in) :: freq1(S%nat3)
-    COMPLEX(DP),OPTIONAL,INTENT(in) :: U1(S%nat3,S%nat3)
-    !
-    ! To interpolate D2 and D3:
-    INTEGER :: iq, jq, it
-    COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:)
-    REAL(DP),ALLOCATABLE    :: V3sq(:,:,:)
-    REAL(DP) :: freq(S%nat3,3), bose(S%nat3,3), xq(3,3)
-    !
-    ! To compute the spectral function from the self energy:
-    INTEGER  :: nu0(3)
-    COMPLEX(DP),ALLOCATABLE :: selfnrg(:,:,:)
-    ! FUNCTION RESULT:
-    COMPLEX(DP) :: selfnrg_wq(ne,S%nat3,nconf)
-    !
-    ALLOCATE(U(S%nat3, S%nat3,3))
-    ALLOCATE(V3sq(S%nat3, S%nat3, S%nat3))
-    ALLOCATE(D3(S%nat3, S%nat3, S%nat3))
-    ALLOCATE(selfnrg(ne,S%nat3,nconf))
-    !
-    selfnrg = (0._dp, 0._dp)
-    !
-    ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q1
-    timer_CALL t_freq%start()
-    xq(:,1) = xq0
-    nu0(1) = set_nu0(xq(:,1), S%at)
-    IF(present(freq1) .and. present(U1)) THEN
-      freq(:,1) = freq1
-      U(:,:,1)    = U1
-    ELSE
-      CALL freq_phq_safe(xq(:,1), S, fc2, freq(:,1), U(:,:,1))
-    ENDIF
-    timer_CALL t_freq%stop()
-    !
-    DO iq = 1, grid%nq
-      !CALL print_percent_wall(33.333_dp, 300._dp, iq, grid%nq, (iq==1))
-      !
-      timer_CALL t_freq%start()
-      xq(:,2) = grid%xq(:,iq)
-      xq(:,3) = -(xq(:,2)+xq(:,1))
-!$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
-      DO jq = 2,3
-        nu0(jq) = set_nu0(xq(:,jq), S%at)
-        CALL freq_phq_safe(xq(:,jq), S, fc2, freq(:,jq), U(:,:,jq))
-      ENDDO
-!$OMP END PARALLEL DO
-      timer_CALL t_freq%stop()
-      !
-      !
-      ! ------ start of CALL scatter_3q(S,fc2,fc3, xq(:,1),xq(:,2),xq(:,3), V3sq)
-      timer_CALL t_fc3int%start()
-      CALL fc3%interpolate(xq(:,2), xq(:,3), S%nat3, D3)
-      timer_CALL t_fc3int%stop()
-      timer_CALL t_fc3rot%start()
-      CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,2), U(:,:,3))
-      timer_CALL t_fc3rot%stop()
-      timer_CALL t_fc3m2%start()
-      V3sq = REAL( CONJG(D3)*D3 , kind=DP)
-      timer_CALL t_fc3m2%stop()
-      !
-      DO it = 1,nconf
-        ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q2 and q3
-        timer_CALL t_bose%start()
-!$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
-        DO jq = 1,3
-          CALL bose_phq(T(it),s%nat3, freq(:,jq), bose(:,jq))
-        ENDDO
-!$OMP END PARALLEL DO
-        timer_CALL t_bose%stop()
-        timer_CALL t_sum%start()
-        selfnrg(:,:,it) = selfnrg(:,:,it) + grid%w(iq)*sum_selfnrg_spectre( S, sigma(it), freq, bose, V3sq, ne, ener, nu0 )
-        timer_CALL t_sum%stop()
-        !
-      ENDDO
-      !
-    ENDDO
-    !
-    timer_CALL t_mpicom%start()
-    IF(grid%scattered) CALL mpi_bsum(ne,S%nat3,nconf,selfnrg)
-    timer_CALL t_mpicom%stop()
-    selfnrg_wq = -0.5_dp * selfnrg
-    !
-    DEALLOCATE(U, V3sq, D3, selfnrg)
-    !
-  END FUNCTION selfnrg_omega_q
   !
   ! <<^V^\\=========================================//-//-//========//O\\//
   ! Spectral weight function, computed as in eq. 1 of arXiv:1312.7467v1
-  FUNCTION spectre_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1, shift) &
+  FUNCTION spectre_q(xq0, input, fc, ener, shift) &
     RESULT(spectralf)
     USE q_grids,          ONLY : q_grid
     USE input_fc,         ONLY : ph_system_info
@@ -496,36 +395,32 @@ CONTAINS
     IMPLICIT NONE
     !
     REAL(DP),INTENT(in) :: xq0(3)
-    INTEGER,INTENT(in)  :: nconf
-    REAL(DP),INTENT(in) :: T(nconf)     ! Kelvin
+    TYPE(code_input_type), INTENT(IN) :: input
+    TYPE(fc_info), INTENT(IN) :: fc
     !
-    INTEGER,INTENT(in)  :: ne
-    REAL(DP),INTENT(in) :: ener(ne)
+    REAL(DP),INTENT(in) :: ener(input%ne)
     !
-    TYPE(forceconst2_grid),INTENT(in) :: fc2
-    CLASS(forceconst3),INTENT(in)     :: fc3
-    TYPE(ph_system_info),INTENT(in)   :: S
-    TYPE(q_grid),INTENT(in)      :: grid
-    REAL(DP),INTENT(in) :: sigma(nconf) ! ry
     LOGICAL,INTENT(in)  :: shift ! set to false to drop the real part of the self-energy
-    !
-    REAL(DP),INTENT(in) :: freq1(S%nat3)
-    COMPLEX(DP),INTENT(in) :: U1(S%nat3,S%nat3)
     !
     ! To compute the spectral function from the self energy:
     INTEGER  :: i, ie, it
-    REAL(DP) :: gamma, delta, omega, denom
-    COMPLEX(DP) :: selfnrg(ne,S%nat3,nconf)
+    REAL(DP) :: gamma, delta, omega, denom, freq1(fc%nat3)
+    COMPLEX(DP) :: selfnrg(input%ne,fc%nat3,input%nconf)
     ! FUNCTION RESULT:
-    REAL(DP)    :: spectralf(ne,S%nat3,nconf)
+    REAL(DP)    :: spectralf(input%ne,fc%nat3,input%nconf)
+    CHARACTER(10), PARAMETER :: SELFNRG_SPECTRE_STRING = "selfnrg_sp"
+
     !
     ! Once we have the self-energy, the rest is trivial
-    selfnrg = selfnrg_omega_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1)
+    do ie = 1, input%ne
+      selfnrg(ie,:,:) = sum_q2(xq0, input, fc, calc=SELFNRG_SPECTRE_STRING, energy=ener(ie))
+    enddo
     !
     timer_CALL t_mkspf%start()
-    DO it = 1,nconf
-      DO i = 1,S%nat3
-        DO ie = 1, ne
+    DO it = 1,input%nconf
+      CALL freq_phq_safe(xq0, fc%S, fc%fc2, freq1)
+      DO i = 1,fc%nat3
+        DO ie = 1, input%ne
           gamma =  -DIMAG(selfnrg(ie,i,it))
           IF(shift) THEN
             delta =   DBLE(selfnrg(ie,i,it))
@@ -550,7 +445,7 @@ CONTAINS
   ! <<^V^\\=========================================//-//-//========//O\\//
   ! Spectral weight function, computed as in eq. 1 of arXiv:1312.7467v1
   ! test, compute this as imaginary part of epsilon(omega)
-  FUNCTION spectre2_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1) &
+  FUNCTION spectre2_q(xq0, input, fc, ener) &
     RESULT(spectralf)
     USE q_grids,          ONLY : q_grid
     USE input_fc,         ONLY : ph_system_info
@@ -559,36 +454,24 @@ CONTAINS
     !
     IMPLICIT NONE
     !
+    TYPE(code_input_type), INTENT(IN) :: input
+    TYPE(fc_info), INTENT(IN) :: fc
     REAL(DP),INTENT(in) :: xq0(3)
-    INTEGER,INTENT(in)  :: nconf
-    REAL(DP),INTENT(in) :: T(nconf)     ! Kelvin
-    !
-    INTEGER,INTENT(in)  :: ne
-    REAL(DP),INTENT(in) :: ener(ne)
-    !
-    TYPE(forceconst2_grid),INTENT(in) :: fc2
-    CLASS(forceconst3),INTENT(in)     :: fc3
-    TYPE(ph_system_info),INTENT(in)   :: S
-    TYPE(q_grid),INTENT(in)      :: grid
-    REAL(DP),INTENT(in) :: sigma(nconf) ! ry
-    !LOGICAL,INTENT(in)  :: shift ! set to false to drop the real part of the self-energy
-    !
-    REAL(DP),INTENT(in) :: freq1(S%nat3)
-    COMPLEX(DP),INTENT(in) :: U1(S%nat3,S%nat3)
+    REAL(DP),INTENT(in) :: ener(input%ne)
     !
     ! To compute the spectral function from the self energy:
     INTEGER  :: i, ie, it
-    COMPLEX(DP) :: tepsilon(ne,S%nat3,nconf)
+    COMPLEX(DP) :: tepsilon(input%ne,fc%nat3,input%nconf)
     ! FUNCTION RESULT:
-    REAL(DP)    :: spectralf(ne,S%nat3,nconf)
+    REAL(DP)    :: spectralf(input%ne,fc%nat3,input%nconf)
     !
     ! Once we have the self-energy, the rest is trivial
-    tepsilon = tepsilon_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1)
+    tepsilon = tepsilon_q(xq0, input, fc, ener)
     !
     timer_CALL t_mkspf%start()
-    DO it = 1,nconf
-      DO i = 1,S%nat3
-        DO ie = 1,ne
+    DO it = 1,input%nconf
+      DO i = 1,fc%nat3
+        DO ie = 1,input%ne
           !IF(freq1(i)/=0._dp)THEN
           spectralf(ie,i,it) = DIMAG(tepsilon(ie,i,it))
           !ELSE
@@ -605,7 +488,7 @@ CONTAINS
   !  Complex \tilde{epsilon} in a range of frequencies
   ! Experimental subroutine, assumes the material cubic and takes
   ! epsilon(1,1) as epsilon_infty
-  FUNCTION tepsilon_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1) &
+  FUNCTION tepsilon_q(xq0, input, fc, ener) &
     RESULT(tepsilon)
     USE q_grids,          ONLY : q_grid
     USE input_fc,         ONLY : ph_system_info
@@ -616,48 +499,44 @@ CONTAINS
     IMPLICIT NONE
     !
     REAL(DP),INTENT(in) :: xq0(3)
-    INTEGER,INTENT(in)  :: nconf
-    REAL(DP),INTENT(in) :: T(nconf)     ! Kelvin
+    TYPE(code_input_type), INTENT(IN) :: input
+    TYPE(fc_info), INTENT(IN) :: fc
     !
-    INTEGER,INTENT(in)  :: ne
-    REAL(DP),INTENT(in) :: ener(ne)
-    !
-    TYPE(forceconst2_grid),INTENT(in) :: fc2
-    CLASS(forceconst3),INTENT(in)     :: fc3
-    TYPE(ph_system_info),INTENT(in)   :: S
-    TYPE(q_grid),INTENT(in)      :: grid
-    REAL(DP),INTENT(in) :: sigma(nconf) ! ry
-    !
-    REAL(DP),INTENT(in) :: freq1(S%nat3)
-    COMPLEX(DP),INTENT(in) :: U1(S%nat3,S%nat3)
+    REAL(DP),INTENT(in) :: ener(input%ne)
     !
     ! To compute the spectral function from the self energy:
     INTEGER  :: i, ie, it
+    REAL(DP) :: freq1(fc%nat3)
     REAL(DP) :: pref, epsilon_infty, rmass, zeu_i2
     COMPLEX(DP) :: denom
-    COMPLEX(DP):: selfnrg(ne,S%nat3,nconf)
+    COMPLEX(DP):: selfnrg(input%ne,fc%nat3,input%nconf)
     ! FUNCTION RESULT:
-    COMPLEX(DP)    :: tepsilon(ne,S%nat3,nconf)
+    COMPLEX(DP)    :: tepsilon(input%ne,fc%nat3,input%nconf)
+    CHARACTER(10), PARAMETER :: SELFNRG_SPECTRE_STRING = "selfnrg_sp"
     !
-    IF(.not.S%lrigid) CALL errore("tepsilon","Cannot compute \tilde{epsilon} without epsilon0", 1)
+    IF(.not.fc%S%lrigid) CALL errore("tepsilon","Cannot compute \tilde{epsilon} without epsilon0", 1)
     ioWRITE(*,*) "BEWARE: tepsilon is only isotropic"
     !
     ! Once we have the self-energy, the rest is trivial
-    selfnrg = selfnrg_omega_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1)
+    !
+    ! Once we have the self-energy, the rest is trivial
+    do ie = 1, input%ne
+      selfnrg(ie,:,:) = sum_q2(xq0, input, fc, calc=SELFNRG_SPECTRE_STRING, energy=ener(ie))
+    enddo
     !
     ! S = 4piZ^2/(volume mass omega0^2)
 
-    rmass = S%amass(1)*S%amass(2)/(S%amass(1)+S%amass(2))
-    epsilon_infty = S%epsil(1,1)
-    zeu_i2        = S%zeu(1,1,1)**2
-    pref =  fpi * zeu_i2 /(S%omega * rmass)
+    rmass = fc%S%amass(1)*fc%S%amass(2)/(fc%S%amass(1)+fc%S%amass(2))
+    epsilon_infty = fc%S%epsil(1,1)
+    zeu_i2        = fc%S%zeu(1,1,1)**2
+    pref =  fpi * zeu_i2 /(fc%S%omega * rmass)
     !pref = 1/freq1(i)**2 ! 4 pi Z^2  / (Volume mu  omega0^2) # mu = reduced mass
-!     print*, "rmass", rmass, S%amass(1:2)
+!     print*, "rmass", rmass, fc%S%amass(1:2)
 !     print*, "epsilon", epsilon_infty
 !     print*, "zeu2", zeu_i2
 !     print*, "pref", pref
-!     print*, "vol", S%omega
-!     print*, "denom", rmass*S%omega
+!     print*, "vol", fc%S%omega
+!     print*, "denom", rmass*fc%S%omega
 !     print*, "fpi * zeu_i2", fpi * zeu_i2
 !  denom   1002568.9328649712
 !  epsilon   3.1410114605330000
@@ -669,10 +548,11 @@ CONTAINS
 !
     timer_CALL t_mkspf%start()
     tepsilon = DCMPLX(0._dp, 0._dp)
-    DO it = 1,nconf
-      DO i = 1,S%nat3
+    DO it = 1,input%nconf
+      CALL freq_phq_safe(xq0, fc%S, fc%fc2, freq1)
+      DO i = 1,fc%S%nat3
         IF(freq1(i)==0._dp) CYCLE
-        DO ie = 1,ne
+        DO ie = 1,input%ne
           denom = freq1(i)**2 - ener(ie)**2 - 2*freq1(i)*selfnrg(ie,i,it)
           IF(denom==DCMPLX(0._dp,0._dp)) CYCLE
           !tepsilon(ie,i,it) = 1 + pref*freq1(i)**2/denom
@@ -687,7 +567,7 @@ CONTAINS
   ! <<^V^\\=========================================//-//-//========//O\\//
   ! Infra red reflectivity |sqrt(epsilon)+1/sqrt(epsilon)-1|^2
   ! Experimental! Assumes isoropic material and a bunch of other stuff
-  FUNCTION ir_reflectivity_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1) &
+  FUNCTION ir_reflectivity_q(xq0, input, fc, ener) &
     RESULT(reflectivity)
     USE q_grids,          ONLY : q_grid
     USE input_fc,         ONLY : ph_system_info
@@ -697,34 +577,24 @@ CONTAINS
     IMPLICIT NONE
     !
     REAL(DP),INTENT(in) :: xq0(3)
-    INTEGER,INTENT(in)  :: nconf
-    REAL(DP),INTENT(in) :: T(nconf)     ! Kelvin
+    TYPE(code_input_type), INTENT(IN) :: input
+    TYPE(fc_info), INTENT(IN) :: fc
+    REAL(DP),INTENT(in) :: ener(input%ne)
     !
-    INTEGER,INTENT(in)  :: ne
-    REAL(DP),INTENT(in) :: ener(ne)
-    !
-    TYPE(forceconst2_grid),INTENT(in) :: fc2
-    CLASS(forceconst3),INTENT(in)     :: fc3
-    TYPE(ph_system_info),INTENT(in)   :: S
-    TYPE(q_grid),INTENT(in)      :: grid
-    REAL(DP),INTENT(in) :: sigma(nconf) ! ry
-    !
-    REAL(DP),INTENT(in) :: freq1(S%nat3)
-    COMPLEX(DP),INTENT(in) :: U1(S%nat3,S%nat3)
     !
     ! To compute the spectral function from the self energy:
     INTEGER  :: i, it
-    COMPLEX(DP) :: tepsilon(ne,S%nat3,nconf)
-    COMPLEX(DP) :: aux(ne),aux2(ne)
+    COMPLEX(DP) :: tepsilon(input%ne,fc%S%nat3,input%nconf)
+    COMPLEX(DP) :: aux(input%ne),aux2(input%ne)
     ! FUNCTION RESULT:
-    REAL(DP)    :: reflectivity(ne,S%nat3,nconf)
+    REAL(DP)    :: reflectivity(input%ne,fc%S%nat3,input%nconf)
     !
     ! We use tilde{epsilon}, which itself comes from the self-energy
-    tepsilon = tepsilon_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1)
+    tepsilon = tepsilon_q(xq0, input, fc, ener)
     !
     timer_CALL t_mkspf%start()
-    DO it = 1,nconf
-      DO i = 1,S%nat3
+    DO it = 1,input%nconf
+      DO i = 1,fc%S%nat3
         aux  = SQRT(tepsilon(:,i,it))
         aux2 = (aux-1)/(aux+1)
         reflectivity(:,i,it) = DBLE(aux2*CONJG(aux2))
@@ -734,112 +604,48 @@ CONTAINS
     !
   END FUNCTION ir_reflectivity_q
   !
-  ! Sum the self energy at the provided ener(ne) input energies
-  ! \/o\________\\\_________________________________________/^>
-  FUNCTION sum_selfnrg_spectre(S, sigma, freq, bose, V3sq, ne, ener, nu0)
+
+  FUNCTION ctm_selfnrg_spectre(sigma, freq, ener, bose_C, bose_X)
     USE input_fc,           ONLY : ph_system_info
     USE merge_degenerate,   ONLY : merge_degen
     USE functions,          ONLY : sigma_mgo
     IMPLICIT NONE
-    TYPE(ph_system_info),INTENT(in)   :: S
     REAL(DP),INTENT(in) :: sigma   ! smearing (regularization) (Ry)
-    REAL(DP),INTENT(in) :: freq(S%nat3,3)  ! phonon energies (Ry)
-    REAL(DP),INTENT(in) :: bose(S%nat3,3)  ! bose/einstein distribution of freq
-    REAL(DP),INTENT(in) :: V3sq(S%nat3,S%nat3,S%nat3) ! |D^3|**2 on the basis of phonons patterns
+    REAL(DP),INTENT(in) :: freq(3)  ! phonon energies (Ry)
     !
-    INTEGER,INTENT(in)  :: ne           ! number of energies...
-    REAL(DP),INTENT(in) :: ener(ne)     ! energies for which to compute the spectral function
-    INTEGER,INTENT(in)  :: nu0(3)       ! first non-zero phomnon frequency
+    REAL(DP),INTENT(in) :: ener     ! energies for which to compute the spectral function
+    REAL(DP), INTENT(IN) :: bose_C, bose_X
     !
     ! _P -> scattering, _M -> cohalescence
-    REAL(DP) :: bose_P, bose_M      ! final/initial state populations
-    REAL(DP) :: factor, sigma_, T=0._dp !freqtotm1
     REAL(DP) :: omega_P,  omega_M   ! \delta\omega
     REAL(DP) :: omega_P2, omega_M2  ! \delta\omega
     COMPLEX(DP) :: ctm_P,ctm_M, reg
-    COMPLEX(DP) :: ctm(ne)
-    REAL(DP)    :: freqm1(S%nat3,3)  ! phonon energies (Ry)
-    !
-    INTEGER :: i,j,k, ie
     !
     ! Note: using the function result in an OMP reduction causes crash with ifort 14
-    COMPLEX(DP) :: sum_selfnrg_spectre(ne,S%nat3)
-    COMPLEX(DP),ALLOCATABLE :: spf(:,:)
+    COMPLEX(DP) :: ctm_selfnrg_spectre
     !
 !     IF(sigma<=0._dp)THEN
 !       CALL errore("sum_selfnrg_spectre","spf not implemented in the static limit. "&
 !                   //"NEW: To do unshifted spf use 'spf imag'",1)
 !     ENDIF
     !
-    ALLOCATE(spf(ne,S%nat3))
-    spf = (0._dp, 0._dp)
     !
-    DO i = 1,S%nat3
-      IF(i>=nu0(1)) freqm1(i,1) = 0.5_dp/freq(i,1)
-      IF(i>=nu0(2)) freqm1(i,2) = 0.5_dp/freq(i,2)
-      IF(i>=nu0(3)) freqm1(i,3) = 0.5_dp/freq(i,3)
-    ENDDO
+    omega_P  = freq(2)+freq(3)
+    omega_P2 = omega_P**2
     !
-!$OMP PARALLEL DO DEFAULT(SHARED) &
-!$OMP             PRIVATE(ie,i,j,k,bose_P,bose_M,omega_P,omega_M,omega_P2,omega_M2, &
-!$OMP                     ctm_P,ctm_M,ctm,reg,factor) &
-!$OMP             REDUCTION(+: spf) COLLAPSE(2)
-    DO k = 1,S%nat3
-      DO j = 1,S%nat3
-        !
-        bose_P   = 1 + bose(j,2) + bose(k,3)
-        omega_P  = freq(j,2)+freq(k,3)
-        omega_P2 = omega_P**2
-        !
-        bose_M   = bose(k,3) - bose(j,2)
-        omega_M  = freq(j,2)-freq(k,3)
-        omega_M2 = omega_M**2
-        !
-        ! A little optimization: precompute the parts that depends only on the energy
-! ! !         DO ie = 1,ne
-! ! !           ! regularization:
-! ! !           reg = CMPLX(ener(ie), sigma, kind=DP)**2
-! ! !           ctm_P = 2 * bose_P *omega_P/(omega_P2-reg)
-! ! !           ctm_M = 2 * bose_M *omega_M/(omega_M2-reg)
-! ! !           ctm(ie) = ctm_P + ctm_M
-! ! !         ENDDO
-        !
-        DO i = 1,S%nat3
-          !
-          factor = V3sq(i,j,k) *freqm1(i,1)*freqm1(j,2)*freqm1(k,3)
-          !
-          IF(ABS(sigma-666._dp)< 1._dp)THEN
-            sigma_ = sigma_mgo(freq(i,1),T) &
-              +sigma_mgo(freq(j,2),T) &
-              +sigma_mgo(freq(k,3),T)
-            !print*, RY_TO_CMM1*freq(i,1), RY_TO_CMM1*freq(j,2), RY_TO_CMM1*freq(k,3), RY_TO_CMM1*sigma_
-          ELSE
-            sigma_ = sigma
-          ENDIF
+    omega_M  = freq(2)-freq(3)
+    omega_M2 = omega_M**2
+    !
+    !
+    reg = CMPLX(ener, sigma, kind=DP)**2
+    !
+    ctm_P = 2 * bose_C *omega_P/(omega_P2-reg)
+    ctm_M = 2 * bose_X *omega_M/(omega_M2-reg)
+    !
+    ctm_selfnrg_spectre = ctm_P + ctm_M
+    !
+  END FUNCTION
 
-          DO ie = 1, ne
-            ! regularization:
-            reg = CMPLX(ener(ie), sigma_, kind=DP)**2
-            !
-            ctm_P = 2 * bose_P *omega_P/(omega_P2-reg)
-            ctm_M = 2 * bose_M *omega_M/(omega_M2-reg)
-            ctm(ie) = ctm_P + ctm_M
-            !
-            spf(ie,i) = spf(ie,i) + ctm(ie) * factor !V3sq(i,j,k) * freqtotm1
-          ENDDO
-! ! !           spf(:,i) = spf(:,i) + ctm(:) * factor !V3sq(i,j,k) * freqtotm1
-
-          !
-        ENDDO
-      ENDDO
-    ENDDO
-!$OMP END PARALLEL DO
-    !
-    CALL merge_degen(ne, S%nat3, spf, freq(:,1))
-    sum_selfnrg_spectre = spf
-    DEALLOCATE(spf)
-    !
-  END FUNCTION sum_selfnrg_spectre
   !
   ! \/o\________\\\_________________________________________/^>
   ! Sum the self energy in a range of frequencies

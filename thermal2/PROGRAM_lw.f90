@@ -24,6 +24,7 @@ MODULE linewidth_program
   USE kinds,       ONLY : DP
   !USE mpi_thermal,      ONLY : ionode
 #include "mpi_thermal.h"
+  external :: errore
   !
 CONTAINS
   SUBROUTINE LW_QBZ_LINE(input, qpath, S, fc2, fc3)
@@ -240,7 +241,7 @@ CONTAINS
   !
   SUBROUTINE SPECTR_QBZ_LINE(input, qpath, S, fc2, fc3)
     USE linewidth,      ONLY : spectre_q, simple_spectre_q, add_exp_t_factor, &
-      tepsilon_q, selfnrg_omega_q, ir_reflectivity_q, spectre2_q
+      tepsilon_q, ir_reflectivity_q, spectre2_q, sum_q2
     !USE nanoclock,      ONLY : print_percent_wall
     IMPLICIT NONE
     !
@@ -253,7 +254,6 @@ CONTAINS
     INTEGER :: iq, it, ie, newfile
     TYPE(q_grid) :: grid
     COMPLEX(DP):: ls(S%nat3,input%nconf)
-    REAL(DP)   :: sigma_ry(input%nconf)
     TYPE(fc_info) :: fc
     !
     REAL(DP),ALLOCATABLE :: ener(:), spectralf(:,:,:)
@@ -263,7 +263,9 @@ CONTAINS
     REAL(DP) :: w2(S%nat3)
     CHARACTER(6), EXTERNAL :: int_to_char
     CHARACTER(6) :: pos
-    REAL(DP) :: UNIT_CONVERSION
+    REAL(DP) :: UNIT_CONVERSION, sigma_cm(input%nconf)
+
+    sigma_cm = input%sigma * RY_TO_CMM1
     !
     ioWRITE(*,*) "--> Setting up inner grid"
     CALL setup_grid(input%grid_type, S%bg, input%nk(1), input%nk(2), input%nk(3), grid, scatter=.true., xq0=input%xk0)
@@ -274,7 +276,6 @@ CONTAINS
     ALLOCATE(ener(input%ne))
     FORALL(ie = 1:input%ne) ener(ie) = (ie-1)*input%de+input%e0
     ener = ener/RY_TO_CMM1
-    sigma_ry = input%sigma/RY_TO_CMM1
     !
     IF(ionode)THEN
       IF(input%skip_q>0) THEN; pos="append"; ELSE; pos = "asis"; ENDIF
@@ -283,9 +284,9 @@ CONTAINS
         OPEN(unit=1000+it, position=pos, &
           file=TRIM(input%outdir)//"/"//TRIM(input%prefix)//&
           "_T"//TRIM(write_conf(it,input%nconf,input%T))//&
-          "_s"//TRIM(write_conf(it,input%nconf,input%sigma))//".out")
+          "_s"//TRIM(write_conf(it,input%nconf,sigma_cm))//".out")
         ioWRITE(1000+it, *) "# spectral function mode: ", input%mode
-        ioWRITE(1000+it, '(a,i6,a,f6.1,a,100f6.1)') "#", it, "T=",input%T(it), "sigma=", input%sigma(it)
+        ioWRITE(1000+it, '(a,i6,a,f6.1,a,100f6.1)') "#", it, "T=",input%T(it), "sigma=", sigma_cm(it)
         ioWRITE(1000+it, *) "#   q-path     energy (cm^-1)         total      band1      band2    ....     "
         ioFLUSH(1000+it)
       ENDDO
@@ -306,7 +307,7 @@ CONTAINS
           OPEN(unit=1000+it, position=pos, &
             file=TRIM(input%outdir)//"/"//TRIM(input%prefix)//&
             "_T"//TRIM(write_conf(it,input%nconf,input%T))//&
-            "_s"//TRIM(write_conf(it,input%nconf,input%sigma))//&
+            "_s"//TRIM(write_conf(it,input%nconf,sigma_cm))//&
             "_p"//TRIM(int_to_char(newfile))//".out")
         ENDIF
         ioWRITE(1000+it, *)
@@ -317,16 +318,13 @@ CONTAINS
         ALLOCATE(spectralf(input%ne,S%nat3,input%nconf))
         IF (TRIM(input%mode) == "full") THEN
           UNIT_CONVERSION = 1/RY_TO_CMM1
-          spectralf = spectre_q(qpath%xq(:,iq), input%nconf, input%T, sigma_ry, &
-            S, grid, fc2, fc3, input%ne, ener, w2, D, shift=.true.)
+          spectralf = spectre_q(qpath%xq(:,iq), input, fc, ener, shift=.true.)
         ELSE IF (TRIM(input%mode) == "full2") THEN
           UNIT_CONVERSION = 1/RY_TO_CMM1
-          spectralf = spectre2_q(qpath%xq(:,iq), input%nconf, input%T, sigma_ry, &
-            S, grid, fc2, fc3, input%ne, ener, w2, D)
+          spectralf = spectre2_q(qpath%xq(:,iq), input, fc, ener)
         ELSE IF (TRIM(input%mode) == "imag") THEN
           UNIT_CONVERSION = 1/RY_TO_CMM1
-          spectralf = spectre_q(qpath%xq(:,iq), input%nconf, input%T, sigma_ry, &
-            S, grid, fc2, fc3, input%ne, ener, w2, D, shift=.false.)
+          spectralf = spectre_q(qpath%xq(:,iq), input, fc, ener, shift=.false.)
         ELSE IF (TRIM(input%mode) == "simple" .or. TRIM(input%mode) == "isimple") THEN
           UNIT_CONVERSION = 1/RY_TO_CMM1
           spectralf = simple_spectre_q(qpath%xq(:,iq), input, fc, input%ne, ener, w2, D, &
@@ -335,8 +333,7 @@ CONTAINS
           UNIT_CONVERSION = 1._dp
           IF(ANY(qpath%xq(:,iq)/=0._dp).and.ionode) &
             WRITE(stdout,*) "WARNING! tilde epsilon out of Gamma makes no sense"
-          spectralf = ir_reflectivity_q(qpath%xq(:,iq), input%nconf, input%T, sigma_ry, &
-            S, grid, fc2, fc3, input%ne, ener, w2, D)
+          spectralf = ir_reflectivity_q(qpath%xq(:,iq), input, fc, ener)
         ELSE
           CALL errore("SPECTR_QBZ_LINE", 'unknown mode "'//TRIM(input%mode)//'"', 1)
         ENDIF
@@ -359,16 +356,16 @@ CONTAINS
           TRIM(input%calculation) == "refl"  ) THEN
           UNIT_CONVERSION = 1._dp
           IF(ANY(qpath%xq(:,iq)/=0._dp).and.ionode) WRITE(stdout,*) "WARNING! tilde epsilon out of Gamma makes no sense"
-          caux = tepsilon_q(qpath%xq(:,iq), input%nconf, input%T, sigma_ry, &
-            S, grid, fc2, fc3, input%ne, ener, w2, D)
+          caux = tepsilon_q(qpath%xq(:,iq), input, fc, ener)
           IF(TRIM(input%calculation) == "refl") THEN
             caux = (SQRT(caux)-1)/(SQRT(caux)+1)
             caux = caux*CONJG(caux)
           ENDIF
         ELSE IF (TRIM(input%calculation) == "selfnrg") THEN
           UNIT_CONVERSION = RY_TO_CMM1
-          caux = selfnrg_omega_q(qpath%xq(:,iq), input%nconf, input%T, sigma_ry, &
-            S, grid, fc2, fc3, input%ne, ener, w2, D)
+          do ie = 1, input%ne
+            caux(ie,:,:) = sum_q2(qpath%xq(:,iq), input, fc, calc="selfnrg_sp", energy=ener(ie))
+          enddo
         ENDIF
         !
         DO it = 1,input%nconf
@@ -450,7 +447,7 @@ CONTAINS
         OPEN(unit=1000+it, file=filename)
         ioWRITE(*,*) "opening ", TRIM(filename)
         ioWRITE(1000+it, '(2a)') "# final state decompositions, mode: ", input%mode
-        ioWRITE(1000+it, '(a,i6,a,f6.1,a,100f6.1)') "# conf:", it, "  T=",input%T(it), "   sigma=", input%sigma(it)
+        ioWRITE(1000+it, '(a,i6,a,f6.1,a,100f6.1)') "# conf:", it, "  T=",input%T(it), "   sigma=", input%sigma(it)*RY_TO_CMM1
         ioWRITE(1000+it, '(a,3f12.4)') "# xq:", input%q_initial
         ioWRITE(1000+it, '(a)') "# energy (cm^-1)    total   tot_X tot_C  " &
           //" tot(band1 band2 ...)  C( band1  band2 ... )  X(band1 band2 ... ) "
@@ -529,6 +526,8 @@ PROGRAM linewidth_p
   CALL READ_INPUT("LW", lwinput, qpath, S, fc2, fc3)
   ! if (ionode) CALL tetra_init( lwinput%nk, S%bg, .true.)
   !
+  lwinput%sigma = lwinput%sigma / RY_TO_CMM1
+
   IF(    TRIM(lwinput%calculation) == "lw"   &
     .or. TRIM(lwinput%calculation) == "grid" &
     ) THEN

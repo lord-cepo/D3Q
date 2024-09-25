@@ -416,21 +416,27 @@ CONTAINS
     TYPE(ph_system_info),INTENT(in)   :: S
     TYPE(forceconst2_grid),INTENT(in) :: fc2
     REAL(DP),INTENT(out)              :: freq(S%nat3)
-    COMPLEX(DP),INTENT(out)           :: U(S%nat3,S%nat3)
+    COMPLEX(DP),INTENT(out), optional :: U(S%nat3,S%nat3)
+    COMPLEX(DP)                       :: dummy(S%nat3,S%nat3)
     REAL(DP),PARAMETER :: epsq = 1.e-8_dp
     REAL(DP) :: cq(3), chk(3)
     LOGICAL :: gamma
     !
     ! RAF
     !U = CONJG(U)
-    CALL fftinterp_mat2(xq, S, fc2, U)
-    CALL mat2_diag(S%nat3, U, freq)
+    if(present(U)) THEN
+      CALL fftinterp_mat2(xq, S, fc2, U)
+      CALL mat2_diag(S%nat3, U, freq)
+    else
+      CALL fftinterp_mat2(xq, S, fc2, dummy)
+      CALL mat2_diag(S%nat3, dummy, freq)
+    endif
     cq = xq
     CALL cryst_to_cart(1,cq,S%at,-1)
     gamma = ALL( ABS(cq-NINT(cq))<epsq)
     IF( gamma )THEN
       freq(1:3) = 0._dp
-      U(:,1:3) = (0._dp, 0._dp)
+      if(present(U)) U(:,1:3) = (0._dp, 0._dp)
     ENDIF
 
     chk(:) = cq(:)*fc2%nq(:)
