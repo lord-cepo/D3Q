@@ -46,16 +46,21 @@ MODULE fc3_interpolate
     procedure(div_mass_fc3_error),deferred :: div_mass
   END TYPE forceconst3
   !
+  TYPE :: d3_mixed
+    LOGICAL, ALLOCATABLE :: R3(:)
+    COMPLEX(DP), ALLOCATABLE :: DR3(:,:,:,:)
+    INTEGER :: minr(3), maxr(3)
+  END TYPE
   ! Interfaces to the deferred subroutines:
   ABSTRACT INTERFACE
-    SUBROUTINE fft_interp_sum_R2(fc, xq, nat3, R3, DR3)
+    SUBROUTINE fft_interp_sum_R2(fc, xq, nat3, Dqr)
       USE kinds,     ONLY : DP
       IMPORT forceconst3
+      IMPORT d3_mixed
       CLASS(forceconst3), INTENT(IN) :: fc
       REAL(DP), INTENT(IN) :: xq(3)
       INTEGER, INTENT(IN) :: nat3
-      LOGICAL, INTENT(OUT) :: R3((2*fc%nq(1) + 1)*(2*fc%nq(2) + 1)*(2*fc%nq(3) + 1))
-      COMPLEX(DP), INTENT(OUT) :: DR3(nat3, nat3, nat3, (2*fc%nq(1) + 1)*(2*fc%nq(2) + 1)*(2*fc%nq(3) + 1))
+      TYPE(d3_mixed), INTENT(OUT)  :: Dqr
     END SUBROUTINE
   END INTERFACE
   !
@@ -222,25 +227,23 @@ CONTAINS
   !    fc => read_fc3("file_mat3", S)
   ! This will read both sparse and grid files, there is room for improvement but not much.
   !
-  SUBROUTINE todo_sum_R2(fc, xq, nat3, R3, DR3)
+  SUBROUTINE todo_sum_R2(fc, xq, nat3, Dqr)
     ! USE kinds,     ONLY : DP
     ! IMPORT forceconst3
-    CLASS(grid), INTENT(IN) :: fc
-    REAL(DP), INTENT(IN) :: xq(3)
-    INTEGER, INTENT(IN) :: nat3
-    COMPLEX(DP), INTENT(OUT) :: DR3(nat3, nat3, nat3, (2*fc%nq(1) + 1)*(2*fc%nq(2) + 1)*(2*fc%nq(3) + 1))
-    LOGICAL, INTENT(OUT) :: R3((2*fc%nq(1) + 1)*(2*fc%nq(2) + 1)*(2*fc%nq(3) + 1))
+    CLASS(grid), INTENT(IN)               :: fc
+    REAL(DP), INTENT(IN)                  :: xq(3)
+    INTEGER, INTENT(IN)                   :: nat3
+    TYPE(d3_mixed), INTENT(OUT)           :: Dqr
     ! TODO
   END SUBROUTINE
 
-  SUBROUTINE todo_sum_R2_const(fc, xq, nat3, R3, DR3)
+  SUBROUTINE todo_sum_R2_const(fc, xq, nat3, Dqr)
     ! USE kinds,     ONLY : DP
     ! IMPORT forceconst3
-    CLASS(constant), INTENT(IN) :: fc
-    REAL(DP), INTENT(IN) :: xq(3)
-    INTEGER, INTENT(IN) :: nat3
-    COMPLEX(DP), INTENT(OUT) :: DR3(nat3, nat3, nat3, (2*fc%nq(1) + 1)*(2*fc%nq(2) + 1)*(2*fc%nq(3) + 1))
-    LOGICAL, INTENT(OUT) :: R3((2*fc%nq(1) + 1)*(2*fc%nq(2) + 1)*(2*fc%nq(3) + 1))
+    CLASS(constant), INTENT(IN)               :: fc
+    REAL(DP), INTENT(IN)                  :: xq(3)
+    INTEGER, INTENT(IN)                   :: nat3
+    TYPE(d3_mixed), INTENT(OUT)           :: Dqr
     ! TODO
   END SUBROUTINE
 
@@ -655,23 +658,29 @@ CONTAINS
 !$OMP END PARALLEL DO
   END SUBROUTINE fftinterp_mat3_sparse
   !
-  SUBROUTINE sum_R2_sparse(fc, xq, nat3, R3, DR3)
+
+  SUBROUTINE sum_R2_sparse(fc, xq, nat3, Dqr)
     USE constants, ONLY : tpi
     IMPLICIT NONE
     !
-    INTEGER,INTENT(in)   :: nat3
-    CLASS(sparse), INTENT(in) :: fc
-    REAL(DP),INTENT(in) :: xq(3)
-    LOGICAL, INTENT(OUT) :: R3((2*fc%nq(1) + 1)*(2*fc%nq(2) + 1)*(2*fc%nq(3) + 1))
-    COMPLEX(DP),INTENT(out) :: DR3(nat3, nat3, nat3, (2*fc%nq(1) + 1)*(2*fc%nq(2) + 1)*(2*fc%nq(3) + 1))
-    ! REAL(DP), INTENT(OUT) :: R3(3,nR3)
+    CLASS(sparse), INTENT(IN)             :: fc
+    REAL(DP), INTENT(IN)                  :: xq(3)
+    INTEGER, INTENT(IN)                   :: nat3
+    TYPE(d3_mixed), INTENT(OUT)           :: Dqr
     !
-    INTEGER :: i,j, index3(3), max3(3), iR3
+    INTEGER :: i,j, index3(3), iR3, nr, limits(3)
     REAL(DP) :: varg(fc%n_R), vcos(fc%n_R), vsin(fc%n_R)
     COMPLEX(DP) :: vphase(fc%n_R)
     !
-    DR3 = (0._dp, 0._dp)
-    R3 = .false.
+    DO i = 1, 3
+      Dqr%minr(i) = MINVAL(fc%yR2(i,:))
+      Dqr%maxr(i) = MAXVAL(fc%yR2(i,:))
+    ENDDO
+    limits = Dqr%maxr - Dqr%minr + 1
+    nr = PRODUCT(limits)
+    ALLOCATE(Dqr%R3(nr), Dqr%DR3(nat3, nat3, nat3, nr))
+    Dqr%DR3 = (0._dp, 0._dp)
+    Dqr%R3 = .false.
     !
     ! Pre-compute phase to use the vectorized MKL subroutines
     FORALL(i=1:fc%n_R) varg(i) =  tpi * SUM(xq(:)*fc%xR2(:,i))
@@ -690,12 +699,11 @@ CONTAINS
       !arg = tpi * SUM(xq2(:)*fc%xR2(:,i) + xq3(:)*fc%xR3(:,i))
       !phase = CMPLX(Cos(arg),-Sin(arg), kind=DP)
       DO j = 1, fc%n_terms(i)
-        index3 = fc%yR3(:,i) + fc%nq
-        max3 = 2*fc%nq + 1
-        iR3 = index3(1)*max3(2)*max3(3) + index3(2)*max3(3) + index3(3) + 1
-        R3(iR3) = .true.
-        DR3(fc%dat(i)%idx(1,j),fc%dat(i)%idx(2,j),fc%dat(i)%idx(3,j),iR3) &
-          = DR3(fc%dat(i)%idx(1,j),fc%dat(i)%idx(2,j),fc%dat(i)%idx(3,j),iR3) &
+        index3 = fc%yR3(:,i) - Dqr%minr
+        iR3 = index3(1)*limits(2)*limits(3) + index3(2)*limits(3) + index3(3) + 1
+        Dqr%R3(iR3) = .true.
+        Dqr%DR3(fc%dat(i)%idx(1,j),fc%dat(i)%idx(2,j),fc%dat(i)%idx(3,j),iR3) &
+          = Dqr%DR3(fc%dat(i)%idx(1,j),fc%dat(i)%idx(2,j),fc%dat(i)%idx(3,j),iR3) &
           + vphase(i) * fc%dat(i)%fc(j)
       ENDDO
     END DO
@@ -703,14 +711,12 @@ CONTAINS
     !$OMP END PARALLEL DO
   END SUBROUTINE
 
-  SUBROUTINE sum_R3(nq, S, xq, R3, DR3, D)
+  SUBROUTINE sum_R3(S, xq, Dqr, D)
     use constants, only : tpi
     use ph_system, only : ph_system_info
-    INTEGER, INTENT(IN) :: nq(3)
     TYPE(ph_system_info) :: S
     REAL(DP), INTENT(IN) :: xq(3)
-    LOGICAL, INTENT(IN) :: R3((2*nq(1) + 1)*(2*nq(2) + 1)*(2*nq(3) + 1))
-    COMPLEX(DP),INTENT(IN) :: DR3(S%nat3, S%nat3, S%nat3, (2*nq(1) + 1)*(2*nq(2) + 1)*(2*nq(3) + 1))
+    TYPE(d3_mixed), INTENT(IN)           :: Dqr
     COMPLEX(DP),INTENT(OUT) :: D(S%nat3, S%nat3, S%nat3)
     !
     INTEGER :: irx, iry, irz, ir
@@ -720,15 +726,15 @@ CONTAINS
     D = (0._dp, 0._dp)
 
     ir = 0
-    DO irx = -nq(1), nq(1)
-      DO iry = -nq(2), nq(2)
-        DO irz = -nq(3), nq(3)
+    DO irx = Dqr%minr(1), Dqr%maxr(1)
+      DO iry = Dqr%minr(2), Dqr%maxr(2)
+        DO irz = Dqr%minr(3), Dqr%maxr(3)
           ir = ir + 1
-          IF( .not. R3(ir)) CYCLE
+          IF( .not. Dqr%R3(ir)) CYCLE
           xR3 = REAL((/irx, iry, irz/), kind=DP)
           CALL cryst_to_cart(1, xR3, S%at, 1)
           arg = tpi * DOT_PRODUCT(xq, xR3)
-          D = D + DR3(:,:,:,ir) * CMPLX( COS(arg), -SIN(arg), kind=DP  )
+          D = D + Dqr%DR3(:,:,:,ir) * CMPLX( COS(arg), -SIN(arg), kind=DP  )
         END DO
       END DO
     END DO

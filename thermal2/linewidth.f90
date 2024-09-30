@@ -152,7 +152,7 @@ CONTAINS
 
   FUNCTION sum_q2(xq1, input, fc, calc, weights_C, weights_X, lw_UN, energy)
     USE functions, ONLY : f_gauss
-    USE fc3_interpolate, ONLY : sum_R3
+    USE fc3_interpolate, ONLY : sum_R3, d3_mixed
     USE merge_degenerate,   ONLY : merge_degen
     REAL(DP), INTENT(IN) :: xq1(3)
     TYPE(code_input_type), INTENT(IN) :: input
@@ -164,19 +164,18 @@ CONTAINS
 
     !! Normal/Umklapp contribution
     !
-    COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:), DR3(:,:,:,:)
-    LOGICAL, ALLOCATABLE :: R3(:)
-    INTEGER :: max_nR
+    COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:)
     !! (2Nx+1)(2Ny+1)(2Nz+1), where N is the number of supercells, *2 because nfar = 2
     INTEGER,PARAMETER :: normal=1, umklapp=2
     INTEGER :: iq, jq, j_un, it, nu0(3), i,j,k
     REAL(DP) :: xq(3,3), freq(fc%nat3,3), bose(fc%nat3,3), f(3)
     REAL(DP) :: freqm1(fc%nat3,3), freqtotm1_23, freqtotm1, bose_C, bose_X, dom_C, dom_X, sigma
     COMPLEX(DP) :: aux(fc%nat3), sum_q2(fc%nat3,input%nconf), ctm
+    TYPE(d3_mixed) :: Dqr
 
     ALLOCATE(U(fc%nat3,fc%nat3,3), D3(fc%nat3,fc%nat3,fc%nat3))
 
-    max_nR = (2*fc%fc3%nq(1) + 1)*(2*fc%fc3%nq(2) + 1)*(2*fc%fc3%nq(3) + 1)
+    ! max_nR = (2*fc%fc3%nq(1) + 1)*(2*fc%fc3%nq(2) + 1)*(2*fc%fc3%nq(3) + 1)
     sum_q2 = 0._dp
     IF(present(lw_UN)) lw_UN = 0._dp
     !
@@ -188,9 +187,9 @@ CONTAINS
     CALL freq_phq_safe(xq(:,1), fc%S, fc%fc2, freq(:,1), U(:,:,1))
     timer_CALL t_freq%stop()
 
-    ALLOCATE(DR3(fc%nat3, fc%nat3, fc%nat3, max_nR))
-    ALLOCATE(R3(max_nR))
-    CALL fc%fc3%sum_R2(xq1,fc%nat3, R3, DR3)
+    ! ALLOCATE(DR3(fc%nat3, fc%nat3, fc%nat3, max_nR))
+    ! ALLOCATE(R3(max_nR))
+    CALL fc%fc3%sum_R2(xq1,fc%nat3, Dqr)
     DO iq = 1, fc%grid%nq
       !
       timer_CALL t_freq%start()
@@ -217,7 +216,7 @@ CONTAINS
       !
       timer_CALL t_fc3int%start()
       ! CALL fc%fc3%interpolate(xq(:,2), xq(:,3), fc%nat3, D3)
-      CALL sum_R3(fc%fc3%nq, fc%S, xq(:,3), R3, DR3, D3)
+      CALL sum_R3(fc%S, xq(:,3), Dqr, D3)
       timer_CALL t_fc3int%stop()
       DO it = 1,input%nconf
         timer_CALL t_bose%start()

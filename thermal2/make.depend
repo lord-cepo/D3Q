@@ -7,6 +7,7 @@ PROGRAM_interpolate2.o : mpi_thermal.o
 PROGRAM_lw.o : mpi_thermal.o
 PROGRAM_make_wedge.o : mpi_thermal.o
 PROGRAM_mtx.o : mpi_thermal.o
+PROGRAM_permute_d3.o : mpi_thermal.o
 PROGRAM_q2r.o : mpi_thermal.o
 PROGRAM_qha.o : mpi_thermal.o
 PROGRAM_qq2rr.o : mpi_thermal.o
@@ -16,6 +17,7 @@ PROGRAM_rmzeu.o : mpi_thermal.o
 PROGRAM_sparse.o : mpi_thermal.o
 PROGRAM_sqom.o : mpi_thermal.o
 PROGRAM_tdph.o : mpi_thermal.o
+PROGRAM_test_tetra.o : mpi_thermal.o
 PROGRAM_test_thtetra.o : mpi_thermal.o
 PROGRAM_tk.o : mpi_thermal.o
 asr2.o : mpi_thermal.o
@@ -49,7 +51,6 @@ ph_dos.o : mpi_thermal.o
 ph_system.o : mpi_thermal.o
 ph_velocity.o : mpi_thermal.o
 posix_signal.o : mpi_thermal.o
-prova.o : mpi_thermal.o
 q_grids.o : mpi_thermal.o
 quter.o : mpi_thermal.o
 read_md.o : mpi_thermal.o
@@ -130,6 +131,15 @@ PROGRAM_mtx.o : ./nanoclock.o
 PROGRAM_mtx.o : ./posix_signal.o
 PROGRAM_mtx.o : ./q_grids.o
 PROGRAM_mtx.o : ./timers.o
+PROGRAM_permute_d3.o : ./PROGRAM_lw.o
+PROGRAM_permute_d3.o : ./code_input.o
+PROGRAM_permute_d3.o : ./fc3_interp.o
+PROGRAM_permute_d3.o : ./input_fc.o
+PROGRAM_permute_d3.o : ./mc_grids.o
+PROGRAM_permute_d3.o : ./more_constants.o
+PROGRAM_permute_d3.o : ./mpi_thermal.o
+PROGRAM_permute_d3.o : ./q_grids.o
+PROGRAM_permute_d3.o : ./thtetra.o
 PROGRAM_q2r.o : ./input_fc.o
 PROGRAM_q2r.o : ./quter.o
 PROGRAM_q2r.o : ./rigid_d3.o
@@ -209,6 +219,8 @@ PROGRAM_tdph.o : ./quter.o
 PROGRAM_tdph.o : ./read_md.o
 PROGRAM_tdph.o : ./rigid_d3.o
 PROGRAM_tdph.o : ./timers.o
+PROGRAM_test_tetra.o : ./thtetra.o
+PROGRAM_test_tetra.o : @new_ktetra@
 PROGRAM_test_thtetra.o : ./thtetra.o
 PROGRAM_tk.o : ./PROGRAM_tk.o
 PROGRAM_tk.o : ./casimir.o
@@ -261,11 +273,11 @@ fc2_interp.o : ./rigid_d3.o
 fc2_interp.o : ./timers.o
 fc3_interp.o : ./input_fc.o
 fc3_interp.o : ./mpi_thermal.o
+fc3_interp.o : ./ph_system.o
 final_state.o : ./fc2_interp.o
 final_state.o : ./fc3_interp.o
 final_state.o : ./functions.o
 final_state.o : ./input_fc.o
-final_state.o : ./linewidth.o
 final_state.o : ./merge_degenerate.o
 final_state.o : ./more_constants.o
 final_state.o : ./mpi_thermal.o
@@ -287,7 +299,6 @@ isotopes.o : ./nanoclock.o
 isotopes.o : ./nist_isotopes_db.o
 isotopes.o : ./q_grids.o
 linewidth.o : ./code_input.o
-linewidth.o : ./delta_nodes.o
 linewidth.o : ./fc2_interp.o
 linewidth.o : ./fc3_interp.o
 linewidth.o : ./functions.o
@@ -302,7 +313,7 @@ mc_grids.o : ./fc2_interp.o
 mc_grids.o : ./fc3_interp.o
 mc_grids.o : ./functions.o
 mc_grids.o : ./input_fc.o
-mc_grids.o : ./linewidth.o
+mc_grids.o : ./merge_degenerate.o
 mc_grids.o : ./mpi_thermal.o
 mc_grids.o : ./nanoclock.o
 mc_grids.o : ./ph_dos.o
@@ -332,6 +343,7 @@ ph_velocity.o : ./more_constants.o
 posix_signal.o : ./mpi_thermal.o
 posix_signal.o : ./timers.o
 q_grids.o : ./fc2_interp.o
+q_grids.o : ./fc3_interp.o
 q_grids.o : ./functions.o
 q_grids.o : ./input_fc.o
 q_grids.o : ./lebedev.o
