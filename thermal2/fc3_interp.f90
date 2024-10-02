@@ -83,7 +83,7 @@ MODULE fc3_interpolate
       INTEGER,INTENT(in)   :: nat3
       REAL(DP),INTENT(in) :: xq2(3), xq3(3)
       COMPLEX(DP),INTENT(out) :: D(nat3, nat3, nat3)
-      COMPLEX(DP),INTENT(out) :: Dgrad(3,nat3, nat3, nat3)
+      COMPLEX(DP),INTENT(out) :: Dgrad(nat3, nat3, nat3,3)
     END SUBROUTINE fftinterp_mat3_grad
   END INTERFACE
   !
@@ -103,7 +103,7 @@ MODULE fc3_interpolate
     SUBROUTINE read_fc3_error(fc, filename, S)
       USE input_fc,              ONLY : ph_system_info
       IMPORT forceconst3
-      CHARACTER(len=*),INTENT(in)        :: filename
+      CHARACTER(*),INTENT(in)        :: filename
       TYPE(ph_system_info),INTENT(inout) :: S ! = System
       CLASS(forceconst3),INTENT(inout)   :: fc
     END SUBROUTINE read_fc3_error
@@ -113,7 +113,7 @@ MODULE fc3_interpolate
     SUBROUTINE write_fc3_error(fc, filename, S)
       USE input_fc,              ONLY : ph_system_info
       IMPORT forceconst3
-      CHARACTER(len=*),INTENT(in)     :: filename
+      CHARACTER(*),INTENT(in)     :: filename
       TYPE(ph_system_info),INTENT(in) :: S ! = System
       CLASS(forceconst3),INTENT(in)   :: fc
     END SUBROUTINE write_fc3_error
@@ -250,13 +250,13 @@ CONTAINS
   FUNCTION read_fc3(filename, S) RESULT(fc)
     USE input_fc, ONLY : read_system, ph_system_info
     IMPLICIT NONE
-    CHARACTER(len=*),INTENT(in)          :: filename
+    CHARACTER(*),INTENT(in)          :: filename
     TYPE(ph_system_info),INTENT(out)   :: S ! = System
     CLASS(forceconst3),POINTER :: fc
     !
     INTEGER, EXTERNAL :: find_free_unit
     INTEGER :: unit, ios
-    CHARACTER(len=32) :: buf
+    CHARACTER(32) :: buf
     !
     ! Scan the type of file:
     unit = find_free_unit()
@@ -924,16 +924,16 @@ CONTAINS
   SUBROUTINE read_fc3_sparse(fc, filename, S)
     USE input_fc, ONLY : read_system, ph_system_info
     IMPLICIT NONE
-    CHARACTER(len=*),INTENT(in)          :: filename
+    CHARACTER(*),INTENT(in)          :: filename
     TYPE(ph_system_info),INTENT(inout)   :: S ! = System
     CLASS(sparse),INTENT(inout) :: fc
     !
-    CHARACTER(len=13),PARAMETER :: sub = "read_fc3_sparse"
+    CHARACTER(13),PARAMETER :: sub = "read_fc3_sparse"
     !
     INTEGER :: unit, ios
     INTEGER, EXTERNAL :: find_free_unit
-    CHARACTER(len=32) :: buf
-    CHARACTER(len=6) :: dummy
+    CHARACTER(32) :: buf
+    CHARACTER(6) :: dummy
     REAL(DP) :: factor
     !
     INTEGER :: i, j
@@ -989,18 +989,18 @@ CONTAINS
   SUBROUTINE write_fc3_sparse(fc, filename, S)
     USE input_fc, ONLY : write_system, ph_system_info
     IMPLICIT NONE
-    CHARACTER(len=*),INTENT(in)          :: filename
+    CHARACTER(*),INTENT(in)          :: filename
     TYPE(ph_system_info),INTENT(in)   :: S ! = System
     CLASS(sparse),INTENT(in) :: fc
     !
-    CHARACTER(len=14),PARAMETER :: sub = "write_fc3_sparse"
+    CHARACTER(14),PARAMETER :: sub = "write_fc3_sparse"
     !
     INTEGER :: unit, ios
     INTEGER, EXTERNAL :: find_free_unit
-    CHARACTER (LEN=6), EXTERNAL :: int_to_char
+    CHARACTER (6), EXTERNAL :: int_to_char
     !
     INTEGER :: i, j, n_digits(3)
-    CHARACTER(len=64) :: cformat
+    CHARACTER(64) :: cformat
     !
     unit = find_free_unit()
     OPEN(unit=unit,file=filename,action='write',status='unknown',iostat=ios)
@@ -1099,11 +1099,11 @@ CONTAINS
     USE input_fc, ONLY : read_system
     USE input_fc, ONLY : ph_system_info
     IMPLICIT NONE
-    CHARACTER(len=*),INTENT(in)          :: filename
+    CHARACTER(*),INTENT(in)          :: filename
     TYPE(ph_system_info),INTENT(inout)   :: S ! = System
     CLASS(grid),INTENT(inout) :: fc
     !
-    CHARACTER(len=13),PARAMETER :: sub = "read_fc3_grid"
+    CHARACTER(13),PARAMETER :: sub = "read_fc3_grid"
     !
     INTEGER :: unit, ios
     INTEGER, EXTERNAL :: find_free_unit
@@ -1180,18 +1180,18 @@ CONTAINS
   SUBROUTINE write_fc3_grid(fc, filename, S)
     USE input_fc, ONLY : write_system, ph_system_info
     IMPLICIT NONE
-    CHARACTER(len=*),INTENT(in)          :: filename
+    CHARACTER(*),INTENT(in)          :: filename
     TYPE(ph_system_info),INTENT(in)   :: S ! = System
     CLASS(grid),INTENT(in) :: fc
     !
-    CHARACTER(len=14),PARAMETER :: sub = "write_fc3_grid"
+    CHARACTER(14),PARAMETER :: sub = "write_fc3_grid"
     !
     INTEGER :: unit, ios
     INTEGER, EXTERNAL :: find_free_unit
     ! format:
-    CHARACTER (LEN=6), EXTERNAL :: int_to_char
+    CHARACTER (6), EXTERNAL :: int_to_char
     INTEGER :: n_digits(3)
-    CHARACTER(len=64) :: cformat, cformat2
+    CHARACTER(64) :: cformat, cformat2
     !
     INTEGER :: na1,  na2,  na3,  j1,  j2,  j3, jn1, jn2, jn3
     INTEGER :: i
@@ -1384,12 +1384,12 @@ CONTAINS
     USE input_fc, ONLY : read_system
     USE input_fc, ONLY : ph_system_info
     IMPLICIT NONE
-    CHARACTER(len=*),INTENT(in)          :: filename
+    CHARACTER(*),INTENT(in)          :: filename
     TYPE(ph_system_info),INTENT(inout)   :: S ! = System
     CLASS(constant),INTENT(inout) :: fc
     INTEGER :: unit, ios
-    CHARACTER(len=17),PARAMETER :: sub = "read_fc3_constant"
-    CHARACTER(len=32) :: buf
+    CHARACTER(17),PARAMETER :: sub = "read_fc3_constant"
+    CHARACTER(32) :: buf
     INTEGER,EXTERNAL :: find_free_unit
     !
     unit = find_free_unit()
@@ -1410,10 +1410,10 @@ CONTAINS
   SUBROUTINE write_fc3_constant(fc, filename, S)
     USE input_fc, ONLY : write_system, ph_system_info
     IMPLICIT NONE
-    CHARACTER(len=*),INTENT(in)          :: filename
+    CHARACTER(*),INTENT(in)          :: filename
     TYPE(ph_system_info),INTENT(in)   :: S ! = System
     CLASS(constant),INTENT(in) :: fc
-    CHARACTER(len=14),PARAMETER :: sub = "write_fc3_constant"
+    CHARACTER(14),PARAMETER :: sub = "write_fc3_constant"
     INTEGER :: unit, ios
     INTEGER, EXTERNAL :: find_free_unit
     !
