@@ -20,6 +20,8 @@ MODULE linewidth_program
   USE input_fc,            ONLY : forceconst2_grid, ph_system_info
   USE fc3_interpolate,     ONLY : forceconst3
   USE code_input,          ONLY : code_input_type
+  USE linewidth, ONLY : lw_calc => calc, lw_energy => energy, lw_init
+
   !
   USE kinds,       ONLY : DP
   !USE mpi_thermal,      ONLY : ionode
@@ -44,8 +46,8 @@ CONTAINS
     TYPE(fc_info) :: fc
     TYPE(order_type) :: order
     COMPLEX(DP) :: D(S%nat3, S%nat3)
-    REAL(DP) :: w2(S%nat3), xq_ref(3)
-    INTEGER :: iq, it, i
+    REAL(DP) :: w2(S%nat3)
+    INTEGER :: iq, it
     TYPE(q_grid) :: grid
     COMPLEX(DP):: ls(S%nat3,input%nconf), lsx(S%nat3)
     REAL(DP)   :: lw(S%nat3,input%nconf), lw_isot(S%nat3,input%nconf)
@@ -140,12 +142,14 @@ CONTAINS
       !
 
       CALL fc%construct(fc2, fc3, S, grid)
+      CALL lw_init(input, fc)
 
       MODE_SELECTION : &
         IF (TRIM(input%mode) == "full") THEN
 
         timer_CALL t_lwphph%start()
-        ls = sum_q2(qpath%xq(:,iq), input, fc, "selfnrg   ")
+        lw_calc = "selfnrg   "
+        ls = sum_q2(qpath%xq(:,iq))
         timer_CALL t_lwphph%stop()
         !
         DO it = 1,input%nconf
@@ -253,7 +257,6 @@ CONTAINS
     !
     INTEGER :: iq, it, ie, newfile
     TYPE(q_grid) :: grid
-    COMPLEX(DP):: ls(S%nat3,input%nconf)
     TYPE(fc_info) :: fc
     !
     REAL(DP),ALLOCATABLE :: ener(:), spectralf(:,:,:)
@@ -363,8 +366,10 @@ CONTAINS
           ENDIF
         ELSE IF (TRIM(input%calculation) == "selfnrg") THEN
           UNIT_CONVERSION = RY_TO_CMM1
+          lw_calc = "selfnrg_sp"
           do ie = 1, input%ne
-            caux(ie,:,:) = sum_q2(qpath%xq(:,iq), input, fc, calc="selfnrg_sp", energy=ener(ie))
+            lw_energy = ener(ie)
+            caux(ie,:,:) = sum_q2(qpath%xq(:,iq))
           enddo
         ENDIF
         !
@@ -416,9 +421,8 @@ CONTAINS
     TYPE(q_grid),INTENT(in)      :: qpath
     !
     REAL(DP) :: e_inital_ry
-    INTEGER :: iq, it, ie
+    INTEGER :: it, ie
     TYPE(q_grid) :: grid
-    COMPLEX(DP):: ls(S%nat3,input%nconf)
     REAL(DP) :: sigma_ry(input%nconf)
     !
     REAL(DP),PARAMETER :: inv2_RY_TO_CMM1 = 1/(RY_TO_CMM1)**2
@@ -447,7 +451,8 @@ CONTAINS
         OPEN(unit=1000+it, file=filename)
         ioWRITE(*,*) "opening ", TRIM(filename)
         ioWRITE(1000+it, '(2a)') "# final state decompositions, mode: ", input%mode
-        ioWRITE(1000+it, '(a,i6,a,f6.1,a,100f6.1)') "# conf:", it, "  T=",input%T(it), "   sigma=", input%sigma(it)*RY_TO_CMM1
+        ioWRITE(1000+it, '(a,i6,a,f6.1,a,100f6.1)') "# conf:", it, &
+          "  T=",input%T(it), "   sigma=", input%sigma(it)*RY_TO_CMM1
         ioWRITE(1000+it, '(a,3f12.4)') "# xq:", input%q_initial
         ioWRITE(1000+it, '(a)') "# energy (cm^-1)    total   tot_X tot_C  " &
           //" tot(band1 band2 ...)  C( band1  band2 ... )  X(band1 band2 ... ) "

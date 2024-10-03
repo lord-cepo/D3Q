@@ -31,7 +31,7 @@ PROGRAM interpolate2
 
   IMPLICIT NONE
   INTEGER :: far, ios
-  CHARACTER(len=256) :: filein, fileout, fileref, filemld, dummy
+  CHARACTER(256) :: filein, fileout, fileref, filemld, dummy
   TYPE(forceconst2_grid) :: fcin, fcout, fcref, fcmld
   TYPE(ph_system_info) :: S, Sref, Smld
   INTEGER :: i,j,k, nqi, nqj, nqk, nq, na,nb,a,b, nua,nub, numax, nfar

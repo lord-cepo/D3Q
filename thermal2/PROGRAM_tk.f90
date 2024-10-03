@@ -11,6 +11,8 @@ MODULE thermalk_program
   USE kinds,       ONLY : DP
   USE mpi_thermal, ONLY : ionode, mpi_bsum
   USE posix_signal,ONLY : check_graceful_termination
+  USE q_grids,            ONLY : q_grid, setup_grid, fc_info
+  USE linewidth,          ONLY : lw_init, lw_lw_un => lw_un
   USE timers
   !
 CONTAINS
@@ -114,6 +116,8 @@ CONTAINS
       in_grid, scatter=.false., xq0=input%xk0_in)
     !
     CALL fc%construct(fc2, fc3, S, in_grid)
+    CALL lw_init(input, fc)
+    !
     ! Open files to store the linewidth
     IF(ionode.and.input%store_lw)THEN
       DO it = 1,input%nconf
@@ -210,7 +214,8 @@ CONTAINS
       IF (input%intrinsic_scattering) THEN
         timer_CALL t_lwphph%start()
 
-        lw_phph = linewidth_q(out_grid%xq(:,iq), input, fc, lw_un=lw_un)
+        lw_phph = linewidth_q(out_grid%xq(:,iq), input, fc)
+        lw_un = REAL(lw_lw_un, DP)
 
         CALL check_negative_lw(lw_phph, S%nat3, input%nconf, "SMA:phph")
         timer_CALL t_lwphph%stop()
@@ -543,7 +548,7 @@ CONTAINS
     !
     TYPE(code_input_type),INTENT(in)     :: input
     TYPE(forceconst2_grid),INTENT(in) :: fc2
-    CLASS(forceconst3),INTENT(in)     :: fc3
+    CLASS(forceconst3),INTENT(in), pointer     :: fc3
     TYPE(ph_system_info),INTENT(in)   :: S
     TYPE(q_grid),INTENT(in)      :: out_grid
     !
@@ -551,6 +556,7 @@ CONTAINS
     !
     TYPE(q_grid)         :: in_grid ! inner grid is MPI-scattered it is used
     ! for integrating the ph-ph scattering terms and linewidth
+    TYPE(fc_info) :: fc
     !
     TYPE(q_basis) :: qbasis
     REAL(DP),ALLOCATABLE :: A_out(:,:,:), inv_sqrt_A_out(:,:,:)
@@ -581,8 +587,11 @@ CONTAINS
     CALL setup_grid("simple", S%bg, out_grid%n(1),out_grid%n(2),out_grid%n(3), &
       in_grid, xq0=out_grid%xq0, scatter=.true.)
     CALL prepare_q_basis(out_grid, qbasis, nconf, input%T, S, fc2)
-
     !
+    CALL fc%construct(fc2, fc3, S, in_grid)
+    CALL lw_init(input, fc)
+    !
+
     ALLOCATE(A_out(nconf, nat3, nq))
     ALLOCATE(inv_sqrt_A_out(nconf, nat3, nq))
     ALLOCATE(f(3, nconf, nat3, nq))
@@ -774,7 +783,7 @@ PROGRAM thermalk
   !   USE mp_world,         ONLY : mp_world_start, mp_world_end, world_comm
   USE thtetra,          ONLY : tetra_init, deallocate_tetra
   USE input_fc,         ONLY : forceconst2_grid, ph_system_info
-  USE q_grids,          ONLY : q_grid
+  USE q_grids,          ONLY : q_grid, fc_info
   USE fc3_interpolate,  ONLY : forceconst3
   USE code_input,       ONLY : READ_INPUT, code_input_type
   USE mpi_thermal,      ONLY : start_mpi, stop_mpi
@@ -789,6 +798,7 @@ PROGRAM thermalk
   TYPE(ph_system_info)       :: S
   TYPE(code_input_type)      :: tkinput
   TYPE(q_grid)               :: out_grid
+  TYPE(fc_info) :: fc
   !
   EXTERNAL errore
 !   CALL mp_world_start(world_comm)

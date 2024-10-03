@@ -11,7 +11,6 @@
 #define timer_CALL CALL
 
 MODULE linewidth
-
 #include "mpi_thermal.h"
   USE kinds,            ONLY : DP
   USE mpi_thermal,      ONLY : my_id, num_procs, mpi_bsum, allgather_mat, scatteri_tns, mpi_sum_mat
@@ -19,40 +18,115 @@ MODULE linewidth
   USE q_grids,          ONLY : q_grid, setup_grid, fc_info
   USE constants,        ONLY : pi
   USE input_fc,         ONLY : ph_system_info
-  USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat
+  USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat, d3_mixed
   USE fc2_interpolate,  ONLY : forceconst2_grid, freq_phq_safe, bose_phq, set_nu0
   USE functions,        ONLY : refold_bz
   USE thtetra,          ONLY : tetra_init, tetra_delta
   USE code_input,       ONLY : code_input_type
   USE timers
 
+  TYPE(code_input_type)           :: input
+  TYPE(forceconst2_grid)          :: fc2
+  CLASS(forceconst3), POINTER     :: fc3
+  TYPE(ph_system_info)            :: S
+  TYPE(q_grid)                    :: grid
+  INTEGER                         :: nat3
+  INTEGER                         :: nconf
+  CHARACTER(10)                   :: calc
+  REAL(DP)                        :: xq(3,3)
+  REAL(DP), ALLOCATABLE           :: V3(:,:,:)
+  REAL(DP), ALLOCATABLE           :: weights_C(:,:,:), weights_X(:,:,:), freq(:,:), bose(:,:)
+  COMPLEX(DP), ALLOCATABLE        :: U(:,:,:), D3(:,:,:), lw_UN(:,:,:)
+  REAL(DP)                        :: energy
+  TYPE(d3_mixed)                  :: Dqr
+
   external :: cryst_to_cart
   EXTERNAL :: errore
 CONTAINS
-
-  FUNCTION linewidth_q(xq0, input, fc, lw_UN)
-    REAL(DP),INTENT(in) :: xq0(3)
-    TYPE(code_input_type), INTENT(IN) :: input
+  !
+  SUBROUTINE lw_init(input_, fc, calc_)
+    TYPE(code_input_type), INTENT(IN) :: input_
     TYPE(fc_info), INTENT(IN) :: fc
-    REAL(DP),OPTIONAL,INTENT(out)   :: lw_UN(fc%S%nat3,2,input%nconf) ! Normal/Umklapp contribution
-    REAL(DP), ALLOCATABLE :: weights_C(:,:,:), weights_X(:,:,:)
+    CHARACTER(*), INTENT(IN), OPTIONAL :: calc_
+    fc2 = fc%fc2
+    fc3 => fc%fc3
+    S = fc%S
+    grid = fc%grid
+    nat3 = fc%S%nat3
+    nconf = input%nconf
+    if(PRESENT(calc_)) then
+      calc = calc_
+    else
+      calc = input%delta_approx
+    endif
+    input = input_
     !
-    REAL(DP) :: linewidth_q(fc%S%nat3,input%nconf)
+    ALLOCATE(weights_C(nat3, nat3**2, grid%nqtot), weights_X(nat3, nat3**2, grid%nqtot))
+    ALLOCATE(U(nat3,nat3,3), D3(nat3,nat3,nat3), V3(nat3,nat3,nat3), freq(nat3,3), bose(nat3,3))
+    if(input%store_lw) ALLOCATE(lw_UN(nat3,2,input%nconf))
+  END SUBROUTINE
+  !
+  FUNCTION linewidth_q(xq0, input_, fc)
+    REAL(DP),INTENT(in) :: xq0(3)
+    TYPE(code_input_type), INTENT(IN) :: input_
+    TYPE(fc_info), INTENT(IN) :: fc
+    !
+    REAL(DP) :: linewidth_q(fc%S%nat3,input_%nconf)
 
+    IF(.not.ALLOCATED(D3)) CALL lw_init(input_, fc)
+    xq(:,1) = xq0
     SELECT CASE (input%delta_approx)
      CASE ("tetra")
-      CALL weights_tetra(xq0, fc, weights_C, weights_X)
-      linewidth_q = REAL(sum_q2(xq0, input, fc, input%delta_approx, weights_C, weights_X, lw_un), DP)
+      CALL weights_tetra()
+      calc = "lwtetra"
+      linewidth_q = REAL(sum_q2(), DP)
      CASE("gauss")
-      linewidth_q = sum_q2(xq0, input, fc, input%delta_approx, lw_un)
+      calc = "lwgauss"
+      linewidth_q = REAL(sum_q2(), DP)
      CASE DEFAULT
       CALL errore("linewidth_q", "only delta/gauss as delta_approx are permitted", 1)
     END SELECT
 
   END FUNCTION linewidth_q
 
+  FUNCTION Pijk(coal)
+    LOGICAL, INTENT(IN) :: coal
+    !! true if we are computing the coalescence term
+    INTEGER :: iq, i,j,k
+    !> RETURN VALUE
+    REAL(DP) :: Pijk(nat3,nat3,nat3)
+    !
+    if(coal) THEN
+      xq(:,3) = xq(:,1) + xq(:,2)
+      CALL fc3%interpolate(xq(:,2), - xq(:,3), S%nat3, D3)
+      xq(:,3) = xq(:,1) - xq(:,2)
+      CALL fc3%interpolate(- xq(:,2), - xq(:,3), S%nat3, D3)
+    ENDIF
+
+    DO iq = 1,3
+      CALL freq_phq_safe(xq(:,iq), S, fc2, freq(:,iq), U(:,:,iq))
+      CALL bose_phq(300._dp, nat3, freq(:,iq), bose(:,iq))
+    ENDDO
+    CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,2), U(:,:,3))
+    V3 = REAL( CONJG(D3)*D3 , kind=DP)
+
+    DO i = 1, nat3
+      DO j = 1, nat3
+        DO k = 1, nat3
+          if(coal) then
+            Pijk(i,j,k) = weights_C(i,nat3*(j-1) + k, iq) * &
+              bose(i,1) * bose(j,2) * (1.0_dp + bose(k,3)) * V3(i,j,k)
+          else
+            Pijk(i,j,k) = weights_X(i,nat3*(j-1) + k, iq) * &
+              bose(i,1) * (1.0_dp + bose(j,2)) * (1.0_dp + bose(k,3)) * V3(i,j,k)
+          endif
+        ENDDO
+      ENDDO
+    ENDDO
+  END FUNCTION
+
 ! <<^V^\\=========================================//-//-//========//O\\//
-  SUBROUTINE weights_tetra(xq0, fc, weights_C, weights_X)
+  SUBROUTINE weights_tetra()
     USE q_grids,          ONLY : q_grid
     USE constants,        ONLY : pi
     USE input_fc,         ONLY : ph_system_info
@@ -62,70 +136,59 @@ CONTAINS
     USE thtetra,          ONLY : tetra_init, tetra_weights_delta
     IMPLICIT NONE
     !
-    REAL(DP),INTENT(in) :: xq0(3)
-    TYPE(fc_info), INTENT(IN) :: fc
-    !
-    REAL(DP), ALLOCATABLE, INTENT(OUT):: weights_C(:,:,:), weights_X(:,:,:)
-    ! FUNCTION RESULT:
-    !
     INTEGER :: iq, ibnd, jbnd, index_double
-    REAL(DP) :: freqs_doubled_X(fc%nat3**2, fc%grid%nq), freqs_doubled_C(fc%nat3**2, fc%grid%nq)
+    REAL(DP) :: freqs_doubled_X(nat3**2, grid%nq), freqs_doubled_C(nat3**2, grid%nq)
     REAL(DP), ALLOCATABLE :: gather_doubled_X(:,:), gather_doubled_C(:,:)
     !
-    REAL(DP) :: freq(fc%nat3,3), xq(3,3)
-    !
-    CALL tetra_init( fc%grid%n, fc%S%bg, .true., fc%grid%scattered)
+    CALL tetra_init( grid%n, S%bg, .true., grid%scattered)
 
-    ALLOCATE(weights_X(fc%nat3, fc%nat3**2, fc%grid%nqtot), weights_C(fc%nat3, fc%nat3**2, fc%grid%nqtot))
+    ! ALLOCATE(weights_X(nat3, nat3**2, grid%nqtot), weights_C(nat3, nat3**2, grid%nqtot))
     !
-    xq(:,1) = xq0
-    CALL freq_phq_safe(xq(:,1), fc%S, fc%fc2, freq(:,1))
+    CALL freq_phq_safe(xq(:,1), S, fc2, freq(:,1))
     ! this cycle initializes freqs, as a grid of frequencies
     ! this cycle initializes freqs_doubled, which is freq(ibnd,2) +/- freq(jbnd,3)
     timer_CALL t_freqd%start()
-    DO iq = 1, fc%grid%nq
-      CALL freq_phq_safe(fc%grid%xq(:,iq), fc%S, fc%fc2, freq(:,2))
+    DO iq = 1, grid%nq
+      CALL freq_phq_safe(grid%xq(:,iq), S, fc2, freq(:,2))
       ! the third vector (why it's minus?)
-      xq(:,3) = -(fc%grid%xq(:,iq)+xq(:,1))
-      CALL freq_phq_safe(xq(:,3), fc%S, fc%fc2, freq(:,3))
-      DO ibnd = 1, fc%S%nat3
-        DO jbnd = 1, fc%S%nat3
-          index_double = fc%S%nat3*(ibnd-1) + jbnd
+      xq(:,3) = -(grid%xq(:,iq)+xq(:,1))
+      CALL freq_phq_safe(xq(:,3), S, fc2, freq(:,3))
+      DO ibnd = 1, S%nat3
+        DO jbnd = 1, S%nat3
+          index_double = S%nat3*(ibnd-1) + jbnd
           freqs_doubled_X(index_double,iq) = freq(ibnd,2) + freq(jbnd,3)
           freqs_doubled_C(index_double,iq) = freq(jbnd,3) - freq(ibnd,2)
         ENDDO
       ENDDO
     ENDDO
-    IF(fc%grid%scattered) THEN
-      CALL allgather_mat(fc%S%nat3**2, fc%grid%nq, freqs_doubled_X, gather_doubled_X)
-      CALL allgather_mat(fc%S%nat3**2, fc%grid%nq, freqs_doubled_C, gather_doubled_C)
-    ELSE
+    IF(grid%scattered) THEN
+      CALL allgather_mat(S%nat3**2, grid%nq, freqs_doubled_X, gather_doubled_X)
+      CALL allgather_mat(S%nat3**2, grid%nq, freqs_doubled_C, gather_doubled_C)
       gather_doubled_X = freqs_doubled_X
       gather_doubled_C = freqs_doubled_C
     ENDIF
 
     timer_CALL t_freqd%stop()
     timer_CALL t_thtetra%start()
-    DO ibnd = 1, fc%S%nat3
-      weights_X(ibnd,:,:) = tetra_weights_delta(fc%grid%nqtot, fc%S%nat3**2, gather_doubled_X, freq(ibnd,1))
-      weights_C(ibnd,:,:) = tetra_weights_delta(fc%grid%nqtot, fc%S%nat3**2, gather_doubled_C, freq(ibnd,1))
+    DO ibnd = 1, S%nat3
+      weights_X(ibnd,:,:) = tetra_weights_delta(grid%nqtot, nat3**2, gather_doubled_X, freq(ibnd,1))
+      weights_C(ibnd,:,:) = tetra_weights_delta(grid%nqtot, nat3**2, gather_doubled_C, freq(ibnd,1))
     ENDDO
-    IF(fc%grid%scattered) THEN
-      DO iq = 1, fc%grid%nqtot
-        CALL mpi_sum_mat(fc%S%nat3, fc%S%nat3**2, weights_X(:,:,iq)) ! MPI_SUM MPI_REDUCE
-        CALL mpi_sum_mat(fc%S%nat3, fc%S%nat3**2, weights_C(:,:,iq))
+    IF(grid%scattered) THEN
+      DO iq = 1, grid%nqtot
+        CALL mpi_sum_mat(nat3, nat3**2, weights_X(:,:,iq)) ! MPI_SUM MPI_REDUCE
+        CALL mpi_sum_mat(nat3, nat3**2, weights_C(:,:,iq))
       ENDDO
-      CALL scatteri_tns(fc%S%nat3, fc%S%nat3**2, fc%grid%nqtot, weights_X)
-      CALL scatteri_tns(fc%S%nat3, fc%S%nat3**2, fc%grid%nqtot, weights_C)
+      CALL scatteri_tns(nat3, nat3**2, grid%nqtot, weights_X)
+      CALL scatteri_tns(nat3, nat3**2, grid%nqtot, weights_C)
     ENDIF
 
     timer_CALL t_thtetra%stop()
 
   END SUBROUTINE
 
-  PURE function rotate_single_d3(nat3, i, j, k, U, D3, invert) result(D3_s2)
-    INTEGER, INTENT(IN) :: nat3, i, j, k
-    COMPLEX(DP), INTENT(IN) :: U(nat3,nat3,3), D3(nat3, nat3, nat3)
+  PURE function rotate_single_d3(i, j, k, invert) result(D3_s2)
+    INTEGER, INTENT(IN) :: i, j, k
     LOGICAL, INTENT(IN) :: invert
     !
     INTEGER :: a, b, c
@@ -150,88 +213,79 @@ CONTAINS
     D3_s2 = REAL( CONJG(D3_s)* D3_s, kind=DP)
   end function
 
-  FUNCTION sum_q2(xq1, input, fc, calc, weights_C, weights_X, lw_UN, energy)
+  FUNCTION sum_q2(xq1, coalescence)
     USE functions, ONLY : f_gauss
     USE fc3_interpolate, ONLY : sum_R3, d3_mixed
     USE merge_degenerate,   ONLY : merge_degen
-    REAL(DP), INTENT(IN) :: xq1(3)
-    TYPE(code_input_type), INTENT(IN) :: input
-    TYPE(fc_info), INTENT(IN) :: fc
-    CHARACTER(10), INTENT(IN) :: calc
-    REAL(DP), DIMENSION(fc%nat3, fc%nat3**2, fc%grid%nqtot), INTENT(IN), OPTIONAL :: weights_C, weights_X
-    REAL(DP),OPTIONAL,INTENT(out)   :: lw_UN(fc%nat3,2,input%nconf)
-    REAL(DP), OPTIONAL, INTENT(IN) :: energy
 
     !! Normal/Umklapp contribution
-    !
-    COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:)
-    !! (2Nx+1)(2Ny+1)(2Nz+1), where N is the number of supercells, *2 because nfar = 2
+    REAL(DP), INTENT(IN), OPTIONAL :: xq1(3)
+    LOGICAL, INTENT(IN), OPTIONAL :: coalescence
     INTEGER,PARAMETER :: normal=1, umklapp=2
     INTEGER :: iq, jq, j_un, it, nu0(3), i,j,k
-    REAL(DP) :: xq(3,3), freq(fc%nat3,3), bose(fc%nat3,3), f(3)
-    REAL(DP) :: freqm1(fc%nat3,3), freqtotm1_23, freqtotm1, bose_C, bose_X, dom_C, dom_X, sigma
-    COMPLEX(DP) :: aux(fc%nat3), sum_q2(fc%nat3,input%nconf), ctm
-    TYPE(d3_mixed) :: Dqr
+    REAL(DP) :: f(3)
+    REAL(DP) :: freqm1(nat3,3), freqtotm1_23, freqtotm1, bose_C, bose_X, dom_C, dom_X, sigma
+    COMPLEX(DP) :: aux(nat3), sum_q2(nat3,nconf), ctm
 
-    ALLOCATE(U(fc%nat3,fc%nat3,3), D3(fc%nat3,fc%nat3,fc%nat3))
+    ! ALLOCATE(U(nat3,nat3,3), D3(nat3,nat3,nat3))
 
-    ! max_nR = (2*fc%fc3%nq(1) + 1)*(2*fc%fc3%nq(2) + 1)*(2*fc%fc3%nq(3) + 1)
     sum_q2 = 0._dp
-    IF(present(lw_UN)) lw_UN = 0._dp
+    IF(ALLOCATED(lw_UN)) lw_UN = 0._dp
     !
     ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q1
     timer_CALL t_freq%start()
-    xq(:,1) = xq1
-    nu0(1) = set_nu0(xq(:,1), fc%S%at)
-
-    CALL freq_phq_safe(xq(:,1), fc%S, fc%fc2, freq(:,1), U(:,:,1))
+    IF(PRESENT(xq1)) xq(:,1) = xq1
+    nu0(1) = set_nu0(xq(:,1), S%at)
+    CALL freq_phq_safe(xq(:,1), S, fc2, freq(:,1), U(:,:,1))
     timer_CALL t_freq%stop()
 
-    ! ALLOCATE(DR3(fc%nat3, fc%nat3, fc%nat3, max_nR))
-    ! ALLOCATE(R3(max_nR))
-    CALL fc%fc3%sum_R2(xq1,fc%nat3, Dqr)
-    DO iq = 1, fc%grid%nq
+    CALL fc3%sum_R2(xq(:,1), nat3, Dqr)
+    DO iq = 1, grid%nq
       !
       timer_CALL t_freq%start()
       ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q2 and q3
-      xq(:,2) = fc%grid%xq(:,iq)
-      xq(:,3) = -(xq(:,2)+xq1)
-      IF(present(lw_UN)) THEN
-        IF(ALL(ABS(refold_bz(xq(:,1), fc%S%bg) &
-          +refold_bz(xq(:,2), fc%S%bg) &
-          +refold_bz(xq(:,3), fc%S%bg))<1.d-6)) THEN
+      IF(PRESENT(coalescence)) THEN
+        xq(:,2) = grid%xq(:,iq)
+        xq(:,3) = -(xq(:,2)+xq(:,1))
+      ELSE
+        xq(:,2) = - grid%xq(:,iq)
+        xq(:,3) = - xq(:,1) + xq(:,2)
+      ENDIF
+      IF(ALLOCATED(lw_UN)) THEN
+        IF(ALL(ABS(refold_bz(xq(:,1), S%bg) &
+          +refold_bz(xq(:,2), S%bg) &
+          +refold_bz(xq(:,3), S%bg))<1.d-6)) THEN
           j_un = normal
-        ELSE
           j_un = umklapp
         ENDIF
       ENDIF
 
 !$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
       DO jq = 2,3
-        nu0(jq) = set_nu0(xq(:,jq), fc%S%at)
-        CALL freq_phq_safe(xq(:,jq), fc%S, fc%fc2, freq(:,jq), U(:,:,jq))
+        nu0(jq) = set_nu0(xq(:,jq), S%at)
+        CALL freq_phq_safe(xq(:,jq), S, fc2, freq(:,jq), U(:,:,jq))
       ENDDO
 !$OMP END PARALLEL DO
       timer_CALL t_freq%stop()
       !
       timer_CALL t_fc3int%start()
-      ! CALL fc%fc3%interpolate(xq(:,2), xq(:,3), fc%nat3, D3)
-      CALL sum_R3(fc%S, xq(:,3), Dqr, D3)
+      ! CALL fc3%interpolate(xq(:,2), xq(:,3), nat3, D3)
+      CALL sum_R3(S, xq(:,3), Dqr, D3)
+      print*, D3(1,2,3)
       timer_CALL t_fc3int%stop()
-      DO it = 1,input%nconf
+      DO it = 1,nconf
         timer_CALL t_bose%start()
         ! Compute bose-einstein occupation at q2 and q3
 !$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
         DO jq = 1,3
-          CALL bose_phq(input%T(it),fc%nat3, freq(:,jq), bose(:,jq))
+          CALL bose_phq(input%T(it),nat3, freq(:,jq), bose(:,jq))
         ENDDO
 !$OMP END PARALLEL DO
         timer_CALL t_bose%stop()
         timer_CALL t_sum%start()
-
         freqm1 = 0._dp
         aux = 0._dp
-        DO i = 1,fc%nat3
+        DO i = 1,nat3
           do j = 1,3
             IF(i>=nu0(j)) freqm1(i,j) = 0.5_dp/freq(i,j)
           ENDDO
@@ -240,14 +294,14 @@ CONTAINS
 !$OMP             PRIVATE(i,j,k,bose_C,bose_X,dom_C,dom_X,ctm_C,ctm_X,&
 !$OMP                     freqtotm1_23,freqtotm1) &
 !$OMP             REDUCTION(+: aux) COLLAPSE(2)
-        DO k = 1,fc%nat3
-          DO j = 1,fc%nat3
+        DO k = 1,nat3
+          DO j = 1,nat3
             !
             bose_C = 2* (bose(j,2) - bose(k,3))
             bose_X = bose(j,2) + bose(k,3) + 1
             freqtotm1_23= freqm1(j,2) * freqm1(k,3)
             !
-            DO i = 1,fc%nat3
+            DO i = 1,nat3
               !
               !sigma_= MIN(sigma, 0.5_dp*MAX(MAX(freq(i,1), freq(j,2)), freq(k,3)))
               !
@@ -256,12 +310,12 @@ CONTAINS
               !
               sigma = input%sigma(it)
               SELECT CASE (calc)
-               CASE ("gauss")
+               CASE ("lwgauss")
                 dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
                 dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
                 ctm = bose_C * f_gauss(dom_C, sigma) + bose_X * f_gauss(dom_X, sigma)
-               CASE ("tetra")
-                ctm = bose_C * weights_C(i,fc%nat3*(j-1) + k, iq) + bose_X * weights_X(i,fc%nat3*(j-1) + k, iq)
+               CASE ("lwtetra")
+                ctm = bose_C * weights_C(i,nat3*(j-1) + k, iq) + bose_X * weights_X(i,nat3*(j-1) + k, iq)
                CASE ("selfnrg")
                 f(1) = freq(i,1)
                 f(2) = freq(j,2)
@@ -272,33 +326,40 @@ CONTAINS
                 f(2) = freq(j,2)
                 f(3) = freq(k,3)
                 ctm = ctm_selfnrg_spectre(sigma, f, energy, bose_C, bose_X)
+               CASE("cgp_C")
+                !> the prefactor 2 is to annul the 1/2 in the definition of the linewidth, but maybe
+                !> there's another prefactor
+                ctm = 2 * bose(i,1) * bose(j,2) * (1.0_dp + bose(k,3)) * weights_C(i,nat3*(j-1) + k, iq)
                CASE DEFAULT
                 CALL errore("sum_rotate_lw", "you should give sigma/tetra_weights", 1)
               END SELECT
+              !
+              IF(TRIM(input%calculation) == "cgp" .or. TRIM(input%calculation) == "exact") &
+                ctm = ctm * 2 * bose(i,1) * (bose(i,1) + 1)
               ! IF(REAL(ctm, DP) < 1) CYCLE
               ! ci sono tanti negativi che contribuiscono sulla terza cifra, mica da poco
               !
               !> rotation of single D3 only where we know that we have scattering
               timer_CALL t_fc3rot%start()
-              aux(i) = aux(i) + ctm * rotate_single_d3(fc%nat3, i,j,k, U, D3, invert=.true.) * freqtotm1
+              aux(i) = aux(i) + ctm * rotate_single_d3(i,j,k, invert=.true.) * freqtotm1
               timer_CALL t_fc3rot%stop()
             ENDDO
           ENDDO
         ENDDO
 !$OMP END PARALLEL DO
         !
-        CALL merge_degen(fc%nat3, aux, freq(:,1))
+        CALL merge_degen(nat3, aux, freq(:,1))
 
-        sum_q2(:,it) = sum_q2(:,it) + aux * fc%grid%w(iq)
-        IF(present(lw_UN)) lw_UN(:,j_un,it) = lw_UN(:,j_un,it) + aux
+        sum_q2(:,it) = sum_q2(:,it) + aux * grid%w(iq)
+        IF(ALLOCATED(lw_UN)) lw_UN(:,j_un,it) = lw_UN(:,j_un,it) + aux
         timer_CALL t_sum%stop()
       ENDDO
       !
     ENDDO
 
     timer_CALL t_mpicom%start()
-    IF(fc%grid%scattered) CALL mpi_bsum(fc%nat3,input%nconf,sum_q2)
-    IF(fc%grid%scattered .and. present(lw_UN)) CALL mpi_bsum(fc%nat3,2,input%nconf,lw_UN)
+    IF(grid%scattered) CALL mpi_bsum(nat3,input%nconf,sum_q2)
+    IF(grid%scattered .and. ALLOCATED(lw_UN)) CALL mpi_bsum(nat3,2,input%nconf,lw_UN)
     timer_CALL t_mpicom%stop()
 
     sum_q2 = sum_q2 * pi/2
@@ -341,17 +402,15 @@ CONTAINS
     IF(present(freq1) .and. present(U1)) THEN
       freq = freq1
       U    = U1
-    ELSE
       !CALL freq_phq_safe(xq(:,1), S, fc2, freq(:,1), U(:,:,1))
       CALL freq_phq_safe(xq0, fc%S, fc%fc2, freq, U)
     ENDIF
     !
     ! use lineshift to compute 3rd order linewidth and lineshift
     IF(shift)THEN
-      selfnrg = sum_q2(xq0, input, fc, SELFNRG_STRING)
+      selfnrg = sum_q2()
       gamma(:,:) = -DIMAG(selfnrg(:,:))
       delta(:,:) =   DBLE(selfnrg(:,:))
-    ELSE
       gamma = linewidth_q(xq0, input, fc)
       delta = 0._dp
     ENDIF
@@ -371,7 +430,6 @@ CONTAINS
             + 4*omega**2 *gamma(i,it)**2
           IF(ABS(denom)/=0._dp)THEN
             spectralf(ie,i,it) = 2*omega*gamma(i,it) / denom
-          ELSE
             spectralf(ie,i,it) = 0._dp
           ENDIF
         ENDDO
@@ -407,12 +465,12 @@ CONTAINS
     COMPLEX(DP) :: selfnrg(input%ne,fc%nat3,input%nconf)
     ! FUNCTION RESULT:
     REAL(DP)    :: spectralf(input%ne,fc%nat3,input%nconf)
-    CHARACTER(10), PARAMETER :: SELFNRG_SPECTRE_STRING = "selfnrg_sp"
 
-    !
+    calc = "selfnrg_sp"
     ! Once we have the self-energy, the rest is trivial
     do ie = 1, input%ne
-      selfnrg(ie,:,:) = sum_q2(xq0, input, fc, calc=SELFNRG_SPECTRE_STRING, energy=ener(ie))
+      energy = ener(ie)
+      selfnrg(ie,:,:) = sum_q2()
     enddo
     !
     timer_CALL t_mkspf%start()
@@ -423,7 +481,6 @@ CONTAINS
           gamma =  -DIMAG(selfnrg(ie,i,it))
           IF(shift) THEN
             delta =   DBLE(selfnrg(ie,i,it))
-          ELSE
             delta = 0._dp
           ENDIF
           omega = freq1(i)
@@ -431,7 +488,6 @@ CONTAINS
             + 4*omega**2 *gamma**2
           IF(ABS(denom)/=0._dp)THEN
             spectralf(ie,i,it) = 2*omega*gamma / denom
-          ELSE
             spectralf(ie,i,it) = 0._dp
           ENDIF
         ENDDO
@@ -473,7 +529,6 @@ CONTAINS
         DO ie = 1,input%ne
           !IF(freq1(i)/=0._dp)THEN
           spectralf(ie,i,it) = DIMAG(tepsilon(ie,i,it))
-          !ELSE
           !  spectralf(ie,i,it) = 0._dp
           !ENDIF
         ENDDO
@@ -520,7 +575,8 @@ CONTAINS
     !
     ! Once we have the self-energy, the rest is trivial
     do ie = 1, input%ne
-      selfnrg(ie,:,:) = sum_q2(xq0, input, fc, calc=SELFNRG_SPECTRE_STRING, energy=ener(ie))
+      energy = ener(ie)
+      selfnrg(ie,:,:) = sum_q2()
     enddo
     !
     ! S = 4piZ^2/(volume mass omega0^2)
@@ -666,24 +722,19 @@ CONTAINS
       reg = CMPLX(freq(1), sigma, kind=DP)**2
       ctm_X = 2 * bose_X *omega_X/(omega_X**2-reg )
       ctm_C = 2 * bose_C *omega_C/(omega_C**2-reg )
-    ELSE IF(sigma<0._dp)THEN ! (static limit)
       ctm_X = 2 * bose_X *omega_X/(omega_X**2+sigma**2)
       ctm_C = 2 * bose_C *omega_C/(omega_C**2+sigma**2)
-    ELSE !IF (sigma==0._dp)THEN
       ! In the static limit with sigma=0 case we have to take the
       ! derivative of (n_3-n2)/(w_2-w_3) when w_2 is close to w_3
       IF(omega_X>0._dp)THEN
         ctm_X = 2 * bose_X /omega_X
-      ELSE
         ctm_X = 0._dp
       ENDIF
       !
       IF(ABS(omega_C)>1.e-5_dp)THEN
         ctm_C = 2 * bose_C /omega_C
-      ELSE
         IF(T>0._dp)THEN
           ctm_C = -2* df_bose(0.5_dp * omega_X, T)
-        ELSE
           ctm_C = 0._dp
         ENDIF
       ENDIF

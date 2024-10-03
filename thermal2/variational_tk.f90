@@ -7,12 +7,12 @@
 !
 ! This module implements equation 13 of PHYSICAL REVIEW B 88, 045430 (2013)
 ! paying particular attention to having all the scattering process consistent
-! to ensure that the detailed balance condition is respected even at finite 
+! to ensure that the detailed balance condition is respected even at finite
 ! (possibily small) grids. this ensure that the CG procedure will always converge
 ! and that negative termal conductivity is impossible.
-! 
-! As a side effect, we have to interpolate two D3 matrices at each step, 
-! which has a certain additional cost, but it is small price to pay for 
+!
+! As a side effect, we have to interpolate two D3 matrices at each step,
+! which has a certain additional cost, but it is small price to pay for
 ! much faster convergence and reliable results.
 
 !
@@ -23,9 +23,19 @@ MODULE variational_tk
   USE q_grids,         ONLY : q_grid
   USE mpi_thermal,     ONLY : ionode
   USE posix_signal,    ONLY : check_graceful_termination
+  USE constants,          ONLY : RY_TO_CMM1
+  USE q_grids,            ONLY : q_basis, q_grid
+  USE fc3_interpolate,    ONLY : forceconst3
+  USE input_fc,           ONLY : forceconst2_grid, ph_system_info
+  USE isotopes_linewidth, ONLY : isotopic_linewidth_q
+  USE casimir_linewidth,  ONLY : casimir_linewidth_vel
+  USE code_input,         ONLY : code_input_type
+  USE mpi_thermal,        ONLY : mpi_bsum
+  USE linewidth,          ONLY : linewidth_q, lw_init, lw_xq => xq
+  USE timers
   !
   ! <<^V^\\=========================================//-//-//========//O\\//
-  CONTAINS
+CONTAINS
   ! \/o\________\\\_________________________________________/^>
   ! Multiply matrix in diagonal form, like A_out, A_out^-1, A_out^-1/2
   ! with a vector (f, b, etc)
@@ -43,13 +53,13 @@ MODULE variational_tk
 !/!$OMP PARALLEL DEFAULT(SHARED) PRIVATE(nu,it,ix)
     DO iq = 1,nq
 !/!$OMP DO COLLAPSE(3)
-    DO nu = 1,nat3
-      DO it = 1,nconf
-      DO ix = 1,3
-        Af(ix,it,nu,iq) = f(ix,it,nu,iq)*A(it,nu,iq)
+      DO nu = 1,nat3
+        DO it = 1,nconf
+          DO ix = 1,3
+            Af(ix,it,nu,iq) = f(ix,it,nu,iq)*A(it,nu,iq)
+          ENDDO
+        ENDDO
       ENDDO
-      ENDDO
-    ENDDO
 !/!$OMP END DO
     ENDDO
 !/!$OMP END PARALLEL
@@ -59,16 +69,6 @@ MODULE variational_tk
   ! \/o\________\\\_________________________________________/^>
   ! Compute the diagonal matrix A_out
   SUBROUTINE compute_A_out(A_out, input, basis, out_grid, in_grid, S, fc2, fc3)
-    USE constants,          ONLY : RY_TO_CMM1
-    USE linewidth,          ONLY : linewidth_q
-    USE q_grids,            ONLY : q_basis, q_grid
-    USE fc3_interpolate,    ONLY : forceconst3
-    USE isotopes_linewidth, ONLY : isotopic_linewidth_q
-    USE casimir_linewidth,  ONLY : casimir_linewidth_vel
-    USE input_fc,           ONLY : forceconst2_grid, ph_system_info
-    USE code_input,         ONLY : code_input_type
-    USE mpi_thermal,        ONLY : mpi_bsum
-    USE timers
     IMPLICIT NONE
     !
     TYPE(code_input_type),INTENT(in)  :: input
@@ -92,38 +92,38 @@ MODULE variational_tk
     A_out_aux = 0._dp
 
     QPOINT_LOOP : &
-    DO iq = 1,out_grid%nq
-      ! 
+      DO iq = 1,out_grid%nq
+      !
       CALL print_percent_wall(20._dp, 600._dp, iq, out_grid%nq, (iq==1))
       !
       timer_CALL t_lwphph%start()
       !
       ! Compute the ph-ph and the isotope scattering terms
       A_out_aux = A_out_q(out_grid%xq(:,iq), input%nconf, input%T, sigma_ry, S, in_grid, fc2, fc3, &
-                           input%isotopic_disorder)
+        input%isotopic_disorder)
       timer_CALL t_lwphph%stop()
       !
       ! Exchange the order of indexes (the new order is better for the CG algorithm)
       DO it = 1, input%nconf
-      DO nu = 1, S%nat3
-        A_out(it,nu,iq) = A_out_aux(nu,it)
-      ENDDO
+        DO nu = 1, S%nat3
+          A_out(it,nu,iq) = A_out_aux(nu,it)
+        ENDDO
       ENDDO
       !
-      ! Compute Casimir linewidth, and get the scattering term as 
+      ! Compute Casimir linewidth, and get the scattering term as
       !  P^be = n(n+1)/ tau^be = n(n+1) * 2*\gamma^be
       ! note that casimir_linewidth_vel returns the HALF width half maximum
       IF(input%casimir_scattering) THEN
         timer_CALL t_lwcasi%start()
         lw_casimir = 2*casimir_linewidth_vel( basis%c(:,:,iq), input%sample_length, &
-                                              input%sample_dir, S%nat3)
+          input%sample_dir, S%nat3)
         !
         ! Casimir linewidth is temperature/smearing-independent, sum it to all configurations
         DO it = 1,input%nconf
-        DO nu = 1, S%nat3
-          A_out(it,nu,iq) = A_out(it,nu,iq) &
-                          +lw_casimir(nu) *basis%be(nu,it,iq)*( basis%be(nu,it,iq)+1)
-        ENDDO
+          DO nu = 1, S%nat3
+            A_out(it,nu,iq) = A_out(it,nu,iq) &
+              +lw_casimir(nu) *basis%be(nu,it,iq)*( basis%be(nu,it,iq)+1)
+          ENDDO
         ENDDO
         timer_CALL t_lwcasi%stop()
       ENDIF
@@ -138,11 +138,12 @@ MODULE variational_tk
   FUNCTION A_out_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, isotopic_disorder)
     USE q_grids,            ONLY : q_basis
     USE fc2_interpolate,    ONLY : forceconst2_grid, bose_phq, set_nu0, &
-                                   freq_phq_safe, bose_phq
+      freq_phq_safe, bose_phq
     USE fc3_interpolate,    ONLY : forceconst3, ip_cart2pat
     USE isotopes_linewidth, ONLY : sum_isotope_scattering_modes
     USE input_fc,           ONLY : ph_system_info
     USE mpi_thermal,        ONLY : mpi_bsum
+    USE linewidth,          ONLY : sum_q2
     USE merge_degenerate,   ONLY : merge_degen
     USE timers
     IMPLICIT NONE
@@ -189,100 +190,39 @@ MODULE variational_tk
     A_out_isot = 0._dp
     !
     ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q1
-      timer_CALL t_freq%start()
+    timer_CALL t_freq%start()
     xq(:,1) = xq0
     nu0(1)  = set_nu0(xq(:,1), S%at)
     !freq(:,1) = basis%w(:,iq0)
     CALL freq_phq_safe(xq(:,1), S, fc2, freq(:,1), U(:,:,1))
-      timer_CALL t_freq%stop()
+    timer_CALL t_freq%stop()
     !
-    QPOINT_INNER_LOOP : &
-    DO iq = 1, grid%nq
-      !
-      ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q2 and q3
-        timer_CALL t_freq%start()
-      xq(:,2) = grid%xq(:,iq)
-      xq(:,3) = -xq(:,2)-xq(:,1)
-      xq(:,4) =  xq(:,2)-xq(:,1)
-      xq(:,5) = -xq(:,2) ! => xq4 = -xq5-xq1
-!$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
-      DO jq = 2,4
-        nu0(jq) = set_nu0(xq(:,jq), S%at)
-        CALL freq_phq_safe(xq(:,jq), S, fc2, freq(:,jq), U(:,:,jq))
-      ENDDO
-!$OMP END PARALLEL DO
-        timer_CALL t_freq%stop()
-      !
-      ! Interpolate D3(q1,q2,-q1-q2)
-        timer_CALL t_fc3int%start()
-      CALL fc3%interpolate(xq(:,2), xq(:,3), S%nat3, D3)
-        timer_CALL t_fc3int%stop()
-        timer_CALL t_fc3rot%start()
-      CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,2), U(:,:,3))
-        timer_CALL t_fc3rot%stop()
-        timer_CALL t_fc3m2%start()
-      V3sq = REAL( CONJG(D3)*D3 , kind=DP)
-        timer_CALL t_fc3m2%stop()
-      !
-      ! Interpolate D3(q1,-q2, q2-q1)
-      ! For this process, we send q2 -> -q2,
-      ! i.e. D2(-q2,q2) -> D2(q2,-q2) = D2(-q2,q2)*
-        IF( ALL(ABS(xq(:,2))<epsq) ) THEN
-        ! When q2 == 0, just copy over
-        V3Bsq = V3sq
-      ELSE
-        U(:,:,5) = CONJG(U(:,:,2))
-          timer_CALL t_fc3int%start()
-        CALL fc3%interpolate(xq(:,5), xq(:,4), S%nat3, D3)
-          timer_CALL t_fc3int%stop()
-          timer_CALL t_fc3rot%start()
-        CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,5), U(:,:,4))
-          timer_CALL t_fc3rot%stop()
-          timer_CALL t_fc3m2%start()
-        V3Bsq = REAL( CONJG(D3)*D3 , kind=DP)
-          timer_CALL t_fc3m2%stop()
-      ENDIF
-      !
-      CONF_LOOP : &
-      DO it = 1,nconf
-          timer_CALL t_bose%start()
-!$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
-        DO jq = 1,4
-          CALL bose_phq(T(it),S%nat3, freq(:,jq), bose(:,jq))
-        ENDDO
-!$OMP END PARALLEL DO
-          timer_CALL t_bose%stop()
-        !
-          timer_CALL t_sum%start()
-        A_out(:,it) =  A_out(:,it) + grid%w(iq)&
-                    *sum_A_out_modes( S%nat3, sigma(it), freq, bose, V3sq, V3Bsq, nu0)
-          timer_CALL t_sum%stop()
-        !
-        IF(isotopic_disorder)THEN
-            timer_CALL t_lwisot%start()
+    !
+    A_out = REAL(sum_q2(), DP)
+    IF(isotopic_disorder)THEN
+      do iq = 1, grid%nq
+        DO it = 1, nconf
+          timer_CALL t_lwisot%start()
           P3_isot = sum_isotope_scattering_modes(S%nat3, S%nat, sigma(it), &
-                                 freq, bose, S%ntyp, S%ityp, S%amass_variance, U)
+            freq, bose, S%ntyp, S%ityp, S%amass_variance, U)
           ! I have to sum the scattering matrix on the second index in order to get the
           ! A_out diagonal matrix element for isotopic disorder
           DO nu = 1, S%nat3
             A_out_isot(:,it) = A_out_isot(:,it) + grid%w(iq)* P3_isot(:,nu)
           ENDDO
-            timer_CALL t_lwisot%stop()
-        ENDIF
-        !
-      ENDDO &
-      CONF_LOOP
-      !
-    ENDDO &
-    QPOINT_INNER_LOOP
+          timer_CALL t_lwisot%stop()
+        ENDDO
+      ENDDO
+    ENDIF
+    !
     !
     A_out = A_out + A_out_isot
     !
     ! Recollect over MPI processes if necessary
     IF(grid%scattered) THEN
-        timer_CALL t_mpicom%start()
+      timer_CALL t_mpicom%start()
       CALL mpi_bsum(S%nat3, nconf, A_out)
-        timer_CALL t_mpicom%stop()
+      timer_CALL t_mpicom%stop()
     ENDIF
     DO it = 1, nconf
       CALL merge_degen(S%nat3, A_out(:,it), freq(:,1))
@@ -364,7 +304,7 @@ MODULE variational_tk
           sum_ac = sum_a + 0.5_dp*sum_c
           sum_A_out(i) = sum_A_out(i) + sum_ac
           !
-         !leftover_e = sum_a*dom_a + 0.5_dp*sum_c*dom_c
+          !leftover_e = sum_a*dom_a + 0.5_dp*sum_c*dom_c
           !
         ENDDO
       ENDDO
@@ -394,21 +334,21 @@ MODULE variational_tk
 !/!$OMP PARALLEL DEFAULT(SHARED) PRIVATE(nu,it)
     DO iq = 1,nq
 !/!$OMP DO COLLAPSE(2)
-    DO nu = 1,nat3
-      DO it = 1,nconf
-        IF(A(it,nu,iq)>0._dp)THEN
-          inv_sqrt_A(it,nu,iq) = 1/DSQRT(A(it,nu,iq))
-        ELSE IF (A(it,nu,iq)<0._dp) THEN
-          inv_sqrt_A(it,nu,iq) = -1/DSQRT( -A(it,nu,iq) )
-          IF(iq/=1.or.(iq==0.and.nu>3)) WRITE(*,*) "Warning: negative A_out", iq, nu, it
-        ELSE
-          ! This hould be infinity, but it should only happen at Gamma for
-          ! acoustic bands, where we can ignore it because everything is zero
-          inv_sqrt_A(it,nu,iq) = 0._dp
-          !IF(iq/=1.or.(iq==1.and.nu>3)) WRITE(*,*) "Warning: null A_out", iq, nu, it
-        ENDIF
+      DO nu = 1,nat3
+        DO it = 1,nconf
+          IF(A(it,nu,iq)>0._dp)THEN
+            inv_sqrt_A(it,nu,iq) = 1/DSQRT(A(it,nu,iq))
+          ELSE IF (A(it,nu,iq)<0._dp) THEN
+            inv_sqrt_A(it,nu,iq) = -1/DSQRT( -A(it,nu,iq) )
+            IF(iq/=1.or.(iq==0.and.nu>3)) WRITE(*,*) "Warning: negative A_out", iq, nu, it
+          ELSE
+            ! This hould be infinity, but it should only happen at Gamma for
+            ! acoustic bands, where we can ignore it because everything is zero
+            inv_sqrt_A(it,nu,iq) = 0._dp
+            !IF(iq/=1.or.(iq==1.and.nu>3)) WRITE(*,*) "Warning: null A_out", iq, nu, it
+          ENDIF
+        ENDDO
       ENDDO
-    ENDDO
 !/!$OMP END DO
     ENDDO
 !/!$OMP END PARALLEL
@@ -429,7 +369,7 @@ MODULE variational_tk
 !     INTEGER  :: iq, it, nu
 !     !
 ! !/!$OMP PARALLEL DEFAULT(SHARED) PRIVATE(iq, nu,it)
-! !/!$OMP DO 
+! !/!$OMP DO
 !     DO iq = 1,nq
 !     DO nu = 1,nat3
 !       DO it = 1,nconf
@@ -488,9 +428,9 @@ MODULE variational_tk
     DO iq = 1,out_grid%nq
       DO nu = 1,S%nat3
         DO it = 1,input%nconf
-        DO ix = 1,3
-          aux(ix,it,nu,iq) = inv_sqrt_A_out(it,nu,iq)*f(ix,it,nu,iq)
-        ENDDO
+          DO ix = 1,3
+            aux(ix,it,nu,iq) = inv_sqrt_A_out(it,nu,iq)*f(ix,it,nu,iq)
+          ENDDO
         ENDDO
       ENDDO
     ENDDO
@@ -500,14 +440,14 @@ MODULE variational_tk
       CALL print_percent_wall(20._dp, 600._dp, iq, out_grid%nq, (iq==1))
       ! apply A_in
       Af(:,:,:,iq) = A_in_times_f_q(aux, out_grid%xq(:,iq), input%nconf, input%T,&
-            sigma_ry,S, basis, in_grid, fc2, fc3, input%isotopic_disorder)
+        sigma_ry,S, basis, in_grid, fc2, fc3, input%isotopic_disorder)
       ! Apply 1+ and the second A_^(-1/2)
       timer_CALL t_tktld%start()
       DO nu = 1,S%nat3
         DO it = 1,input%nconf
-        DO ix = 1,3
-          Af(ix,it,nu,iq) = f(ix,it,nu,iq) + inv_sqrt_A_out(it,nu,iq)*Af(ix,it,nu,iq)
-        ENDDO
+          DO ix = 1,3
+            Af(ix,it,nu,iq) = f(ix,it,nu,iq) + inv_sqrt_A_out(it,nu,iq)*Af(ix,it,nu,iq)
+          ENDDO
         ENDDO
       ENDDO
       timer_CALL t_tktld%stop()
@@ -524,7 +464,7 @@ MODULE variational_tk
   FUNCTION A_in_times_f_q(f, xq0, nconf, T, sigma, S, basis, grid, fc2, fc3, isotopic_disorder)
     USE q_grids,            ONLY : q_basis
     USE fc2_interpolate,    ONLY : forceconst2_grid, bose_phq, set_nu0, &
-                                   freq_phq_safe, bose_phq
+      freq_phq_safe, bose_phq
     USE fc3_interpolate,    ONLY : forceconst3, ip_cart2pat
     USE isotopes_linewidth, ONLY : sum_isotope_scattering_modes
     USE input_fc,           ONLY : ph_system_info
@@ -576,18 +516,18 @@ MODULE variational_tk
     P3_isot = 0._dp
     !
     ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q1
-      timer_CALL t_freq%start()
+    timer_CALL t_freq%start()
     xq(:,1) = xq0
     nu0(1)  = set_nu0(xq(:,1), S%at)
     !freq(:,1) = basis%w(:,iq0)
     CALL freq_phq_safe(xq(:,1), S, fc2, freq(:,1), U(:,:,1))
-      timer_CALL t_freq%stop()
+    timer_CALL t_freq%stop()
     !
     QPOINT_INNER_LOOP : &
-    DO iq = 1, grid%nq
+      DO iq = 1, grid%nq
       !
       ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q2 and q3
-        timer_CALL t_freq%start()
+      timer_CALL t_freq%start()
       xq(:,2) = grid%xq(:,iq)
       xq(:,3) = -xq(:,2)-xq(:,1)
       xq(:,4) =  xq(:,2)-xq(:,1)
@@ -598,18 +538,18 @@ MODULE variational_tk
         CALL freq_phq_safe(xq(:,jq), S, fc2, freq(:,jq), U(:,:,jq))
       ENDDO
 !$OMP END PARALLEL DO
-        timer_CALL t_freq%stop()
+      timer_CALL t_freq%stop()
       !
       ! Interpolate D3(q1,q2,-q1-q2)
-        timer_CALL t_fc3int%start()
+      timer_CALL t_fc3int%start()
       CALL fc3%interpolate(xq(:,2), xq(:,3), S%nat3, D3)
-        timer_CALL t_fc3int%stop()
-        timer_CALL t_fc3rot%start()
+      timer_CALL t_fc3int%stop()
+      timer_CALL t_fc3rot%start()
       CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,2), U(:,:,3))
-        timer_CALL t_fc3rot%stop()
-        timer_CALL t_fc3m2%start()
+      timer_CALL t_fc3rot%stop()
+      timer_CALL t_fc3m2%start()
       V3sq = REAL( CONJG(D3)*D3 , kind=DP)
-        timer_CALL t_fc3m2%stop()
+      timer_CALL t_fc3m2%stop()
       !
       ! Interpolate D3(q1,-q2, q2-q1)
       ! For this process, we send q2 -> -q2,
@@ -619,64 +559,64 @@ MODULE variational_tk
         ! When q2 == 0, just copy over
         V3Bsq = V3sq
       ELSE
-          timer_CALL t_fc3int%start()
+        timer_CALL t_fc3int%start()
         CALL fc3%interpolate(xq(:,5), xq(:,4), S%nat3, D3)
-          timer_CALL t_fc3int%stop()
-          timer_CALL t_fc3rot%start()
+        timer_CALL t_fc3int%stop()
+        timer_CALL t_fc3rot%start()
         CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,5), U(:,:,4))
-          timer_CALL t_fc3rot%stop()
-          timer_CALL t_fc3m2%start()
+        timer_CALL t_fc3rot%stop()
+        timer_CALL t_fc3m2%start()
         V3Bsq = REAL( CONJG(D3)*D3 , kind=DP)
-          timer_CALL t_fc3m2%stop()
+        timer_CALL t_fc3m2%stop()
       ENDIF
       !
       CONF_LOOP : &
-      DO it = 1,nconf
-          timer_CALL t_bose%start()
+        DO it = 1,nconf
+        timer_CALL t_bose%start()
 !$OMP PARALLEL DO DEFAULT(shared) PRIVATE(jq)
         DO jq = 1,4
           CALL bose_phq(T(it),S%nat3, freq(:,jq), bose(:,jq))
         ENDDO
 !$OMP END PARALLEL DO
-          timer_CALL t_bose%stop()
+        timer_CALL t_bose%stop()
         !
         ! P3 is a 3*nat x 3*nat minor of the A matrix, the implicit indexes are
         ! iq0 and iq, the matrix A has dimension (3*nat*nq x 3*nat*nq)
         ! DO NOT FORGET THE MINUS SIGN!!
-          timer_CALL t_sum%start()
+        timer_CALL t_sum%start()
         P3 =  - sum_A_in_modes( S%nat3, sigma(it), freq, bose, V3sq, V3Bsq, nu0 )
-          timer_CALL t_sum%stop()
+        timer_CALL t_sum%stop()
         !
         IF(isotopic_disorder)THEN
-            timer_CALL t_lwisot%start()
+          timer_CALL t_lwisot%start()
           P3_isot = sum_isotope_scattering_modes(S%nat3, S%nat, sigma(it), freq, &
-                                              bose, S%ntyp, S%ityp, S%amass_variance, U)
+            bose, S%ntyp, S%ityp, S%amass_variance, U)
           P3 = P3 + P3_isot
-            timer_CALL t_lwisot%stop()
+          timer_CALL t_lwisot%stop()
         ENDIF
         !
-          timer_CALL t_xain%start()
+        timer_CALL t_xain%start()
         ! 3*nat lines of the A_in matrix are applied now to f to produce 3*nat elements of A_in f
         DO mu = 1,S%nat3
-        DO nu = 1,S%nat3
-          DO ix = 1,3
-            Af_q(ix,it,nu) = Af_q(ix,it,nu) + P3(nu,mu)*f(ix,it,mu,iq+grid%iq0)*grid%w(iq)
+          DO nu = 1,S%nat3
+            DO ix = 1,3
+              Af_q(ix,it,nu) = Af_q(ix,it,nu) + P3(nu,mu)*f(ix,it,mu,iq+grid%iq0)*grid%w(iq)
+            ENDDO
           ENDDO
         ENDDO
-        ENDDO
-          timer_CALL t_xain%stop()
+        timer_CALL t_xain%stop()
         !
       ENDDO &
-      CONF_LOOP
+        CONF_LOOP
       !
     ENDDO &
-    QPOINT_INNER_LOOP
+      QPOINT_INNER_LOOP
     !
     ! Recollect over MPI processes if necessary
     IF(grid%scattered) THEN
-        timer_CALL t_mpicom%start()
+      timer_CALL t_mpicom%start()
       CALL mpi_bsum(3,nconf,S%nat3, Af_q)
-        timer_CALL t_mpicom%stop()
+      timer_CALL t_mpicom%stop()
     ENDIF
     !
     CALL merge_degen(3,nconf, S%nat3, Af_q, freq(:,1))
@@ -721,12 +661,12 @@ MODULE variational_tk
     p(:,:) = 0._dp
 
     freqm1 = 0._dp
-     DO i = 1,nat3
-       IF(i>=nu0(1)) freqm1(i,1) = 0.5_dp/freq(i,1)
-       IF(i>=nu0(2)) freqm1(i,2) = 0.5_dp/freq(i,2)
-       IF(i>=nu0(3)) freqm1(i,3) = 0.5_dp/freq(i,3)
-       IF(i>=nu0(4)) freqm1(i,4) = 0.5_dp/freq(i,4)
-     ENDDO
+    DO i = 1,nat3
+      IF(i>=nu0(1)) freqm1(i,1) = 0.5_dp/freq(i,1)
+      IF(i>=nu0(2)) freqm1(i,2) = 0.5_dp/freq(i,2)
+      IF(i>=nu0(3)) freqm1(i,3) = 0.5_dp/freq(i,3)
+      IF(i>=nu0(4)) freqm1(i,4) = 0.5_dp/freq(i,4)
+    ENDDO
 !$OMP PARALLEL DEFAULT(SHARED) &
 !$OMP          PRIVATE(i, j, k, bose_a, bose_b, bose_c, dom_a, dom_b, dom_c) &
 !$OMP          PRIVATE(ctm_a, ctm_b, ctm_c, sum_a, sum_bc, sum_abc, norm_a, norm_bc) &
@@ -776,7 +716,7 @@ MODULE variational_tk
     !
   END FUNCTION sum_A_in_modes
   !
-  ! Compute thermal conductivity with the variational form of G. Fugallo et.al. as 
+  ! Compute thermal conductivity with the variational form of G. Fugallo et.al. as
   !   tk = - 2 \lambda F(f)
   !      = - 2 \lambda ( 1/2 f.Af - b.f )
   !      =   - \lambda ( f.g - f.b )
@@ -806,12 +746,12 @@ MODULE variational_tk
       DO nu = 1,nat3
         DO it = 1,nconf
           DO jx = 1,3
-          pref =  weight(iq)*(g(jx,it,nu,iq)-b(jx,it,nu,iq))
-          DO ix = 1,3
-            !
-            tk(ix,jx,it) = tk(ix,jx,it)+ f(ix,it,nu,iq) * pref
-            !
-          ENDDO
+            pref =  weight(iq)*(g(jx,it,nu,iq)-b(jx,it,nu,iq))
+            DO ix = 1,3
+              !
+              tk(ix,jx,it) = tk(ix,jx,it)+ f(ix,it,nu,iq) * pref
+              !
+            ENDDO
           ENDDO
         ENDDO
       ENDDO
@@ -834,7 +774,7 @@ MODULE variational_tk
     INTEGER  :: it
     !
     ! Only check convergence on diagonal elements of tk, as the off
-    ! diagonal ones can take much longer to converge, and are usually 
+    ! diagonal ones can take much longer to converge, and are usually
     ! not very interesting
     conv = .true.
     DO it = 1,nconf
@@ -856,27 +796,27 @@ MODULE variational_tk
     !REAL(DP),INTENT(in) :: sigma(nconf)
     !REAL(DP),INTENT(in) :: T(nconf)
     !INTEGER,INTENT(in) :: nconf
-    CHARACTER(len=*),INTENT(in) :: name
+    CHARACTER(*),INTENT(in) :: name
     INTEGER,INTENT(in) :: unit0, iter
     !
     INTEGER :: it
     !IF(present(unit0) .and. .not. present(iter))&
     !  CALL errore("print_tk", "wrong args",1)
-    
+
     IF(.not. ionode) RETURN
     !
     CALL open_tk_files(input, iter, unit0)
     !
     ioWRITE(stdout,'(2x,a)') name
     ioWRITE(stdout,'(5a)') "       ", " sigma[cmm1]   T[K]  ",&
-                           "    K_x              K_y              K_z              "
+      "    K_x              K_y              K_z              "
     ! Rewind the main file and rewrite the header
     !IF(present(unit0)) THEN
     REWIND(unit0)
     ioWRITE(unit0,'(5a)') "# conf", " sigma[cmm1]   T[K]  ",&
-                          "    K_x              K_y              K_z              ",&
-                          "    K_xy             K_xz             K_yz             ",&
-                          "    K_yx             K_zx             K_zy"
+      "    K_x              K_y              K_z              ",&
+      "    K_xy             K_xz             K_yz             ",&
+      "    K_yx             K_zx             K_zy"
     !ENDIF
     !
     DO it = 1,input%nconf
@@ -891,7 +831,7 @@ MODULE variational_tk
         tk(1,1,it)*RY_TO_WATTMM1KM1, &
         tk(2,2,it)*RY_TO_WATTMM1KM1, &
         tk(3,3,it)*RY_TO_WATTMM1KM1
-      ! on file we write everything, but in this order: 
+      ! on file we write everything, but in this order:
       !   Kxx, Kyy, Kzz, Kxy, Kxz, Kyz, Kyx, Kzx, Kzy
       ioWRITE(unit0,'(i6,2f10.4,3(3e17.8,3x))') it, input%sigma(it), input%T(it), &
         tk(1,1,it)*RY_TO_WATTMM1KM1, &
@@ -908,15 +848,15 @@ MODULE variational_tk
     !
     DO it = 1,input%nconf
       ioWRITE(unit0+it,'(i6,2f10.4,3(3e17.8,3x))') iter, input%sigma(it), input%T(it), &
-      tk(1,1,it)*RY_TO_WATTMM1KM1, &
-      tk(2,2,it)*RY_TO_WATTMM1KM1, &
-      tk(3,3,it)*RY_TO_WATTMM1KM1, &
-      tk(1,2,it)*RY_TO_WATTMM1KM1, &
-      tk(1,3,it)*RY_TO_WATTMM1KM1, &
-      tk(2,3,it)*RY_TO_WATTMM1KM1, &
-      tk(2,1,it)*RY_TO_WATTMM1KM1, &
-      tk(3,1,it)*RY_TO_WATTMM1KM1, &
-      tk(3,2,it)*RY_TO_WATTMM1KM1
+        tk(1,1,it)*RY_TO_WATTMM1KM1, &
+        tk(2,2,it)*RY_TO_WATTMM1KM1, &
+        tk(3,3,it)*RY_TO_WATTMM1KM1, &
+        tk(1,2,it)*RY_TO_WATTMM1KM1, &
+        tk(1,3,it)*RY_TO_WATTMM1KM1, &
+        tk(2,3,it)*RY_TO_WATTMM1KM1, &
+        tk(2,1,it)*RY_TO_WATTMM1KM1, &
+        tk(3,1,it)*RY_TO_WATTMM1KM1, &
+        tk(3,2,it)*RY_TO_WATTMM1KM1
       IF(ionode) FLUSH(unit0+it)
     ENDDO
     !
@@ -933,7 +873,7 @@ MODULE variational_tk
     REAL(DP),INTENT(in) :: sigma(nconf)
     REAL(DP),INTENT(in) :: T(nconf)
     INTEGER,INTENT(in) :: nconf
-    CHARACTER(len=*),INTENT(in) :: name
+    CHARACTER(*),INTENT(in) :: name
     !
     INTEGER :: it
     IF(.not. ionode) RETURN
@@ -945,8 +885,8 @@ MODULE variational_tk
       ENDIF
       !
       IF(      ABS(dtk(1,1,it))>1.d-6 &
-         .and. ABS(dtk(2,2,it))>1.d-6 &
-         .and. ABS(dtk(3,3,it))>1.d-6 &
+        .and. ABS(dtk(2,2,it))>1.d-6 &
+        .and. ABS(dtk(3,3,it))>1.d-6 &
         ) THEN
         ioWRITE(stdout,'(i6,2f10.4,3(3f17.7,3x))') it, sigma(it), T(it), &
           dtk(1,1,it), &
@@ -967,18 +907,18 @@ MODULE variational_tk
     USE code_input,         ONLY : code_input_type
     IMPLICIT NONE
     TYPE(code_input_type),INTENT(in)  :: input
-!     CHARACTER(len=*),INTENT(in) :: outdir, prefix
+!     CHARACTER(*),INTENT(in) :: outdir, prefix
     INTEGER,INTENT(in) :: iter
 !     INTEGER,INTENT(in) :: nconf
 !     REAL(DP),INTENT(in) :: T(nconf), sigma(nconf)
     INTEGER,INTENT(in) :: unit0
     !
     INTEGER :: it
-    CHARACTER(len=512) :: filename
-    CHARACTER(len=6) :: what
-    CHARACTER(len=6) :: position
-    CHARACTER(len=12) :: postfix
-    CHARACTER (LEN=6), EXTERNAL :: int_to_char
+    CHARACTER(512) :: filename
+    CHARACTER(6) :: what
+    CHARACTER(6) :: position
+    CHARACTER(12) :: postfix
+    CHARACTER (6), EXTERNAL :: int_to_char
     !
     IF(.not. ionode) RETURN
     !
@@ -993,16 +933,16 @@ MODULE variational_tk
     DO it = 0,input%nconf
       IF(it==0) THEN
         filename=TRIM(input%outdir)//"/"//&
-                 TRIM(input%prefix)// &
-                 TRIM(postfix)//".out"
+          TRIM(input%prefix)// &
+          TRIM(postfix)//".out"
         what="# conf"
         ! always create a new file for the summary
-        OPEN(unit=unit0+it, file=filename, position="rewind") 
+        OPEN(unit=unit0+it, file=filename, position="rewind")
       ELSE
         filename=TRIM(input%outdir)//"/"//&
-                 TRIM(input%prefix)//&
-                 "_T"//TRIM(write_conf(it,input%nconf,input%T))//&
-                 "_s"//TRIM(write_conf(it,input%nconf,input%sigma))//".out"
+          TRIM(input%prefix)//&
+          "_T"//TRIM(write_conf(it,input%nconf,input%T))//&
+          "_s"//TRIM(write_conf(it,input%nconf,input%sigma))//".out"
         what="# iter"
         ! append to the iteration-dependent file
         OPEN(unit=unit0+it, file=filename, position=position)
@@ -1012,12 +952,12 @@ MODULE variational_tk
         ioWRITE(unit0+it, '(a)') "# Thermal conductivity from BTE"
         IF(it>0) THEN
           ioWRITE(unit0+it, '(a,i6,a,f6.1,a,100f6.1)') "# ", it, &
-                  "     T=",input%T(it), "    sigma=", input%sigma(it)
+            "     T=",input%T(it), "    sigma=", input%sigma(it)
         ENDIF
         ioWRITE(unit0+it,'(5a)') what, " sigma[cmm1]   T[K]  ",&
-                            "    K_x              K_y              K_z              ",&
-                            "    K_xy             K_xz             K_yz             ",&
-                            "    K_yx             K_zx             K_zy"
+          "    K_x              K_y              K_z              ",&
+          "    K_xy             K_xz             K_yz             ",&
+          "    K_yx             K_zx             K_zy"
       ENDIF
       ioFLUSH(unit0+it)
     ENDDO
@@ -1028,13 +968,13 @@ MODULE variational_tk
     INTEGER, INTENT(in) :: unit0, nconf
     INTEGER :: it
     IF(ionode)THEN
-    DO it = 0,nconf
-      CLOSE(unit0+it)
-    ENDDO
+      DO it = 0,nconf
+        CLOSE(unit0+it)
+      ENDDO
     ENDIF
-  END SUBROUTINE  
+  END SUBROUTINE
   !
-  ! Save the current state of CG minimization to file, open and close 
+  ! Save the current state of CG minimization to file, open and close
   ! the files to insure consistency
   ! \/o\________\\\_________________________________________/^>
   SUBROUTINE save_cg_step(input, S, A_out, f, g, h, nconf, nat3, nq, iter, tk)
@@ -1052,8 +992,8 @@ MODULE variational_tk
     INTEGER,INTENT(in)  :: nconf, nat3, nq, iter
     REAL(DP),INTENT(in) :: tk(3, 3, nconf)
     !
-    CHARACTER(len=512) :: filename
-    CHARACTER(len=9) :: cdate, ctime
+    CHARACTER(512) :: filename
+    CHARACTER(9) :: cdate, ctime
     INTEGER :: u
     INTEGER, EXTERNAL :: find_free_unit
     !
@@ -1066,23 +1006,23 @@ MODULE variational_tk
       CALL date_and_tim( cdate, ctime )
       !
       OPEN(unit=u, file=filename, status="unknown", form="unformatted")
-        WRITE(u) cdate, ctime
-        !WRITE(u) input
-        !WRITE(u) S
-        WRITE(u) nconf, nat3, nq
-        WRITE(u) input%T, input%sigma
-        WRITE(u) A_out
-        WRITE(u) f
-        WRITE(u) g
-        WRITE(u) h
-        WRITE(u) iter
-        WRITE(u) tk
+      WRITE(u) cdate, ctime
+      !WRITE(u) input
+      !WRITE(u) S
+      WRITE(u) nconf, nat3, nq
+      WRITE(u) input%T, input%sigma
+      WRITE(u) A_out
+      WRITE(u) f
+      WRITE(u) g
+      WRITE(u) h
+      WRITE(u) iter
+      WRITE(u) tk
       CLOSE(u)
     ENDIF
     !
   END SUBROUTINE
   !
-  ! Read the current state of CG minimization to file, 
+  ! Read the current state of CG minimization to file,
   ! check for consistency with input data
   ! \/o\________\\\_________________________________________/^>
   LOGICAL FUNCTION read_cg_step(input, S, A_out, f, g, h, nconf, nat3, nq, iter0, tk)
@@ -1104,8 +1044,8 @@ MODULE variational_tk
     TYPE(code_input_type):: input_
     TYPE(ph_system_info) :: S_
     INTEGER   :: nconf_, nat3_, nq_
-    CHARACTER(len=512) :: filename
-    CHARACTER(len=9) :: cdate, ctime
+    CHARACTER(512) :: filename
+    CHARACTER(9) :: cdate, ctime
     INTEGER :: u, ios, i
     INTEGER, EXTERNAL :: find_free_unit
     REAL(DP) :: T_(nconf), sigma_(nconf)
@@ -1128,10 +1068,10 @@ MODULE variational_tk
         READ(u, iostat=ios) cdate, ctime
         IF(ios/=0) EXIT
         ioWRITE(stdout,'(2x,2a,x,a)') "Restarting from file of ", cdate, ctime
-  !       READ(u) input_
-  !       READ(u) S_
-  !       IF(.not. same_system(S,S_)) &
-  !         CALL errore("read_cg_step", "cannot restart from different system",1)
+        !       READ(u) input_
+        !       READ(u) S_
+        !       IF(.not. same_system(S,S_)) &
+        !         CALL errore("read_cg_step", "cannot restart from different system",1)
         READ(u, iostat=ios) nconf_, nat3_, nq_
         IF(ios/=0) EXIT
         IF(nconf_/=nconf .or. nat3_/=nat3 .or. nq_/=nq) THEN
