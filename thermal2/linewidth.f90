@@ -53,13 +53,13 @@ CONTAINS
     S = fc%S
     grid = fc%grid
     nat3 = fc%S%nat3
-    nconf = input%nconf
+    input = input_
     if(PRESENT(calc_)) then
       calc = calc_
     else
       calc = input%delta_approx
     endif
-    input = input_
+    nconf = input%nconf
     !
     ALLOCATE(weights_C(nat3, nat3**2, grid%nqtot), weights_X(nat3, nat3**2, grid%nqtot))
     ALLOCATE(U(nat3,nat3,3), D3(nat3,nat3,nat3), V3(nat3,nat3,nat3), freq(nat3,3), bose(nat3,3))
@@ -78,10 +78,8 @@ CONTAINS
     SELECT CASE (input%delta_approx)
      CASE ("tetra")
       CALL weights_tetra()
-      calc = "lwtetra"
       linewidth_q = REAL(sum_q2(), DP)
      CASE("gauss")
-      calc = "lwgauss"
       linewidth_q = REAL(sum_q2(), DP)
      CASE DEFAULT
       CALL errore("linewidth_q", "only delta/gauss as delta_approx are permitted", 1)
@@ -105,7 +103,7 @@ CONTAINS
 
     DO iq = 1,3
       CALL freq_phq_safe(xq(:,iq), S, fc2, freq(:,iq), U(:,:,iq))
-      CALL bose_phq(300._dp, nat3, freq(:,iq), bose(:,iq))
+      CALL bose_phq(300._dp, nat3, freq(:,iq), bose(:,iq)) ! da mettere a posto
     ENDDO
     CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,2), U(:,:,3))
     V3 = REAL( CONJG(D3)*D3 , kind=DP)
@@ -310,11 +308,11 @@ CONTAINS
               !
               sigma = input%sigma(it)
               SELECT CASE (calc)
-               CASE ("lwgauss")
+               CASE ("gauss")
                 dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
                 dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
                 ctm = bose_C * f_gauss(dom_C, sigma) + bose_X * f_gauss(dom_X, sigma)
-               CASE ("lwtetra")
+               CASE ("tetra")
                 ctm = bose_C * weights_C(i,nat3*(j-1) + k, iq) + bose_X * weights_X(i,nat3*(j-1) + k, iq)
                CASE ("selfnrg")
                 f(1) = freq(i,1)
