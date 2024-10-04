@@ -215,7 +215,7 @@ CONTAINS
         timer_CALL t_lwphph%start()
 
         lw_phph = linewidth_q(out_grid%xq(:,iq), input, fc)
-        lw_un = REAL(lw_lw_un, DP)
+        if(allocated(lw_lw_un)) lw_un = REAL(lw_lw_un, DP)
 
         CALL check_negative_lw(lw_phph, S%nat3, input%nconf, "SMA:phph")
         timer_CALL t_lwphph%stop()

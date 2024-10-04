@@ -74,19 +74,27 @@ CONTAINS
     REAL(DP) :: linewidth_q(fc%S%nat3,input_%nconf)
 
     IF(.not.ALLOCATED(D3)) CALL lw_init(input_, fc)
-    xq(:,1) = xq0
-    SELECT CASE (input%delta_approx)
-     CASE ("tetra")
-      CALL weights_tetra()
-      linewidth_q = REAL(sum_q2(), DP)
-     CASE("gauss")
-      linewidth_q = REAL(sum_q2(), DP)
-     CASE DEFAULT
-      CALL errore("linewidth_q", "only delta/gauss as delta_approx are permitted", 1)
-    END SELECT
+
+    !> linewidth is 1/2 of the inverse scattering time
+    linewidth_q = REAL(scattering_3(xq0), DP) / 2
 
   END FUNCTION linewidth_q
-
+  !
+  FUNCTION scattering_3(xq0, calc_)
+    REAL(DP),INTENT(in) :: xq0(3)
+    CHARACTER(*), INTENT(IN), OPTIONAL :: calc_
+    !
+    COMPLEX(DP) :: scattering_3(S%nat3, input%nconf)
+    xq(:,1) = xq0
+    IF(TRIM(input%delta_approx) == "tetra") CALL weights_tetra()
+    IF(PRESENT(calc_)) THEN
+      calc = calc_
+    ELSE
+      calc = input%delta_approx
+    ENDIF
+    scattering_3 = sum_q2(xq0)
+  END FUNCTION scattering_3
+  !
   FUNCTION Pijk(coal)
     LOGICAL, INTENT(IN) :: coal
     !! true if we are computing the coalescence term
@@ -162,6 +170,9 @@ CONTAINS
     IF(grid%scattered) THEN
       CALL allgather_mat(S%nat3**2, grid%nq, freqs_doubled_X, gather_doubled_X)
       CALL allgather_mat(S%nat3**2, grid%nq, freqs_doubled_C, gather_doubled_C)
+    else
+      ALLOCATE(gather_doubled_X(nat3**2, grid%nq))
+      ALLOCATE(gather_doubled_C(nat3**2, grid%nq))
       gather_doubled_X = freqs_doubled_X
       gather_doubled_C = freqs_doubled_C
     ENDIF
@@ -269,7 +280,6 @@ CONTAINS
       timer_CALL t_fc3int%start()
       ! CALL fc3%interpolate(xq(:,2), xq(:,3), nat3, D3)
       CALL sum_R3(S, xq(:,3), Dqr, D3)
-      print*, D3(1,2,3)
       timer_CALL t_fc3int%stop()
       DO it = 1,nconf
         timer_CALL t_bose%start()
@@ -300,14 +310,18 @@ CONTAINS
             freqtotm1_23= freqm1(j,2) * freqm1(k,3)
             !
             DO i = 1,nat3
+              IF(input%calculation == "cgp" .or. input%calculation == "exact") THEN
+                bose_C = bose(i,1) * bose(j,2) * (bose(k,3)+1)
+                bose_X = (bose(i,1)+1) * bose(j,2) * bose(k,3) / 2
+              ENDIF
               !
               !sigma_= MIN(sigma, 0.5_dp*MAX(MAX(freq(i,1), freq(j,2)), freq(k,3)))
               !
               freqtotm1 = freqm1(i,1) * freqtotm1_23
               !IF(freqtot/=0._dp)THEN
               !
-              sigma = input%sigma(it)
-              SELECT CASE (calc)
+              sigma = input%sigma(it)/RY_TO_CMM1
+              SELECT CASE(calc)
                CASE ("gauss")
                 dom_C =(freq(i,1)+freq(j,2)-freq(k,3))
                 dom_X =(freq(i,1)-freq(j,2)-freq(k,3))
@@ -324,16 +338,17 @@ CONTAINS
                 f(2) = freq(j,2)
                 f(3) = freq(k,3)
                 ctm = ctm_selfnrg_spectre(sigma, f, energy, bose_C, bose_X)
-               CASE("cgp_C")
-                !> the prefactor 2 is to annul the 1/2 in the definition of the linewidth, but maybe
-                !> there's another prefactor
-                ctm = 2 * bose(i,1) * bose(j,2) * (1.0_dp + bose(k,3)) * weights_C(i,nat3*(j-1) + k, iq)
+                !  CASE("cgp_C")
+                !   !> the prefactor 2 is to annul the 1/2 in the definition of the linewidth, but maybe
+                !   !> there's another prefactor
+                !   ctm = 2 * bose(i,1) * bose(j,2) * (1.0_dp + bose(k,3)) * weights_C(i,nat3*(j-1) + k, iq)
                CASE DEFAULT
                 CALL errore("sum_rotate_lw", "you should give sigma/tetra_weights", 1)
               END SELECT
               !
-              IF(TRIM(input%calculation) == "cgp" .or. TRIM(input%calculation) == "exact") &
-                ctm = ctm * 2 * bose(i,1) * (bose(i,1) + 1)
+              ! IF(TRIM(input%calculation) == "cgp" .or. TRIM(input%calculation) == "exact") THEN
+              !   ctm = ctm * 2 * bose(i,1) * (bose(i,1) + 1)
+              ! ENDIF
               ! IF(REAL(ctm, DP) < 1) CYCLE
               ! ci sono tanti negativi che contribuiscono sulla terza cifra, mica da poco
               !
@@ -360,7 +375,7 @@ CONTAINS
     IF(grid%scattered .and. ALLOCATED(lw_UN)) CALL mpi_bsum(nat3,2,input%nconf,lw_UN)
     timer_CALL t_mpicom%stop()
 
-    sum_q2 = sum_q2 * pi/2
+    sum_q2 = sum_q2 * pi
   END FUNCTION
 
   ! \/o\________\\\_________________________________________/^>

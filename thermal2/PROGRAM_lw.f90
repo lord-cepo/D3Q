@@ -266,9 +266,9 @@ CONTAINS
     REAL(DP) :: w2(S%nat3)
     CHARACTER(6), EXTERNAL :: int_to_char
     CHARACTER(6) :: pos
-    REAL(DP) :: UNIT_CONVERSION, sigma_cm(input%nconf)
+    REAL(DP) :: UNIT_CONVERSION, sigma_ry(input%nconf)
 
-    sigma_cm = input%sigma * RY_TO_CMM1
+    sigma_ry = input%sigma / RY_TO_CMM1
     !
     ioWRITE(*,*) "--> Setting up inner grid"
     CALL setup_grid(input%grid_type, S%bg, input%nk(1), input%nk(2), input%nk(3), grid, scatter=.true., xq0=input%xk0)
@@ -287,9 +287,9 @@ CONTAINS
         OPEN(unit=1000+it, position=pos, &
           file=TRIM(input%outdir)//"/"//TRIM(input%prefix)//&
           "_T"//TRIM(write_conf(it,input%nconf,input%T))//&
-          "_s"//TRIM(write_conf(it,input%nconf,sigma_cm))//".out")
+          "_s"//TRIM(write_conf(it,input%nconf,input%sigma))//".out")
         ioWRITE(1000+it, *) "# spectral function mode: ", input%mode
-        ioWRITE(1000+it, '(a,i6,a,f6.1,a,100f6.1)') "#", it, "T=",input%T(it), "sigma=", sigma_cm(it)
+        ioWRITE(1000+it, '(a,i6,a,f6.1,a,100f6.1)') "#", it, "T=",input%T(it), "sigma=", input%sigma(it)
         ioWRITE(1000+it, *) "#   q-path     energy (cm^-1)         total      band1      band2    ....     "
         ioFLUSH(1000+it)
       ENDDO
@@ -310,7 +310,7 @@ CONTAINS
           OPEN(unit=1000+it, position=pos, &
             file=TRIM(input%outdir)//"/"//TRIM(input%prefix)//&
             "_T"//TRIM(write_conf(it,input%nconf,input%T))//&
-            "_s"//TRIM(write_conf(it,input%nconf,sigma_cm))//&
+            "_s"//TRIM(write_conf(it,input%nconf,sigma_ry))//&
             "_p"//TRIM(int_to_char(newfile))//".out")
         ENDIF
         ioWRITE(1000+it, *)
@@ -531,7 +531,7 @@ PROGRAM linewidth_p
   CALL READ_INPUT("LW", lwinput, qpath, S, fc2, fc3)
   ! if (ionode) CALL tetra_init( lwinput%nk, S%bg, .true.)
   !
-  lwinput%sigma = lwinput%sigma / RY_TO_CMM1
+  ! lwinput%sigma = lwinput%sigma / RY_TO_CMM1
 
   IF(    TRIM(lwinput%calculation) == "lw"   &
     .or. TRIM(lwinput%calculation) == "grid" &

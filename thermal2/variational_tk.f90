@@ -143,7 +143,7 @@ CONTAINS
     USE isotopes_linewidth, ONLY : sum_isotope_scattering_modes
     USE input_fc,           ONLY : ph_system_info
     USE mpi_thermal,        ONLY : mpi_bsum
-    USE linewidth,          ONLY : sum_q2
+    USE linewidth,          ONLY : scattering_3
     USE merge_degenerate,   ONLY : merge_degen
     USE timers
     IMPLICIT NONE
@@ -167,11 +167,10 @@ CONTAINS
 !     REAL(DP) :: lw(S%nat3,nconf)
     REAL(DP) :: P3_isot(S%nat3,S%nat3)
     !
-    COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:)
-    REAL(DP),ALLOCATABLE    :: V3sq(:,:,:), V3Bsq(:,:,:)
+    COMPLEX(DP),ALLOCATABLE :: U(:,:,:)
     INTEGER :: iq, jq, mu, nu, it, nu0(4), ix
     !
-    REAL(DP) :: freq(S%nat3,5), bose(S%nat3,5), xq(3,5)
+    REAL(DP) :: freq(S%nat3,5), bose(S%nat3,5)
     REAL(DP),PARAMETER :: epsq = 1.e-12_dp
     !
     ! xq(:,1) -> xq1
@@ -182,27 +181,27 @@ CONTAINS
     ! And accordingly for U(:,:,i).
     ! Note that U(5) = CONJG(U(2)) and freq(5)=freq(2)
     ALLOCATE(U(S%nat3, S%nat3,5))
-    ALLOCATE(V3sq(S%nat3, S%nat3, S%nat3))
-    ALLOCATE(V3Bsq(S%nat3, S%nat3, S%nat3))
-    ALLOCATE(D3(S%nat3, S%nat3, S%nat3))
     !
     A_out = 0._dp
     A_out_isot = 0._dp
     !
     ! Compute eigenvalues, eigenmodes and bose-einstein occupation at q1
     timer_CALL t_freq%start()
-    xq(:,1) = xq0
-    nu0(1)  = set_nu0(xq(:,1), S%at)
+    ! lw_xq(:,1) = xq0
+    ! nu0(1)  = set_nu0(lwxq(:,1), S%at)
     !freq(:,1) = basis%w(:,iq0)
-    CALL freq_phq_safe(xq(:,1), S, fc2, freq(:,1), U(:,:,1))
+    CALL freq_phq_safe(xq0, S, fc2, freq(:,1), U(:,:,1))
     timer_CALL t_freq%stop()
     !
-    !
-    A_out = REAL(sum_q2(), DP)
+    !> the 2 stands from the 2 pi  factor in (5) and (6) (which is not present in the 
+    !> scattering time calculation)
+    A_out = REAL(scattering_3(xq0), DP) * 2
     IF(isotopic_disorder)THEN
       do iq = 1, grid%nq
         DO it = 1, nconf
           timer_CALL t_lwisot%start()
+          CALL freq_phq_safe(grid%xq(:,iq), S, fc2, freq(:,2), U(:,:,2))
+          CALL bose_phq(T(it), S%nat3, freq(:,2), bose(:,2))
           P3_isot = sum_isotope_scattering_modes(S%nat3, S%nat, sigma(it), &
             freq, bose, S%ntyp, S%ityp, S%amass_variance, U)
           ! I have to sum the scattering matrix on the second index in order to get the
@@ -219,11 +218,11 @@ CONTAINS
     A_out = A_out + A_out_isot
     !
     ! Recollect over MPI processes if necessary
-    IF(grid%scattered) THEN
-      timer_CALL t_mpicom%start()
-      CALL mpi_bsum(S%nat3, nconf, A_out)
-      timer_CALL t_mpicom%stop()
-    ENDIF
+    ! IF(grid%scattered) THEN
+    !   timer_CALL t_mpicom%start()
+    !   CALL mpi_bsum(S%nat3, nconf, A_out)
+    !   timer_CALL t_mpicom%stop()
+    ! ENDIF
     DO it = 1, nconf
       CALL merge_degen(S%nat3, A_out(:,it), freq(:,1))
     ENDDO
@@ -233,7 +232,7 @@ CONTAINS
     !
     CALL check_graceful_termination
     !
-    DEALLOCATE(U, V3sq, V3Bsq, D3)
+    ! DEALLOCATE(U, V3sq, V3Bsq, D3)
     !
   END FUNCTION A_out_q
   !
@@ -286,20 +285,21 @@ CONTAINS
       DO j = 1,nat3
         DO i = 1,nat3
           !
-          bose_a = bose(i,1) * bose(j,2) * (bose(k,3)+1)
-          bose_c = (bose(i,1)+1) * bose(j,2) * bose(k,4)
+          bose_a = bose(i,1) * bose(j,2) * (bose(k,3)+1) ! Coalescence, eq. (5)
+          bose_c = (bose(i,1)+1) * bose(j,2) * bose(k,3) ! scattering, eq. (6)
+          !> seeing that n1(n2 + 1)(n3 + 1) = (n1 + 1)n2n3
           !
           dom_a =  freq(i,1) + freq(j,2) - freq(k,3)
-          dom_c = -freq(i,1) + freq(j,2) + freq(k,4)
+          dom_c = -freq(i,1) + freq(j,2) + freq(k,3)
           !
           ctm_a = bose_a *  f_gauss(dom_a, sigma)
           ctm_c = bose_c *  f_gauss(dom_c, sigma)
           !
           norm_a = tpi*freqm1(i,1)*freqm1(j,2)*freqm1(k,3)
-          norm_c = tpi*freqm1(i,1)*freqm1(j,2)*freqm1(k,4)
+          norm_c = tpi*freqm1(i,1)*freqm1(j,2)*freqm1(k,3)
           !
           sum_a = norm_a * ctm_a * V3sq(i,j,k)
-          sum_c = norm_c * ctm_c * V3Bsq(i,j,k)
+          sum_c = norm_c * ctm_c * V3sq(i,j,k)
           !
           sum_ac = sum_a + 0.5_dp*sum_c
           sum_A_out(i) = sum_A_out(i) + sum_ac
