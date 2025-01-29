@@ -145,7 +145,7 @@ CONTAINS
     USE constants, ONLY : tpi
     IMPLICIT NONE
     !
-    REAL(DP),INTENT(in) :: xq(3)
+    REAL(DP),INTENT(in) :: xq(:)
     TYPE(ph_system_info),INTENT(in) :: S
     TYPE(forceconst2_grid),INTENT(in) :: fc
     COMPLEX(DP),INTENT(out) :: D(S%nat3, S%nat3)
@@ -183,7 +183,7 @@ CONTAINS
 !/!$OMP END DO
 !/!$OMP END PARALLEL
     !
-    IF(S%lrigid) CALL add_rgd_blk_d3(xq, S, D, xq_hat)
+    IF(S%lrigid .and. size(xq) == 3) CALL add_rgd_blk_d3(xq, S, D, xq_hat)
     !
   END SUBROUTINE fftinterp_mat2_flat_mkl
   !
@@ -811,7 +811,7 @@ CONTAINS
     USE input_fc,    ONLY : ph_system_info, forceconst2_grid, write_fc2, multiply_mass_dyn, div_mass_fc2
     USE asr2_module,        ONLY : impose_asr2
     USE rigid_d3, ONLY : rgd_blk_d3
-  
+
     IMPLICIT NONE
     INTEGER :: nfar
     CHARACTER(len=256) :: filein, fileout
@@ -833,7 +833,7 @@ CONTAINS
     ALLOCATE(Din(S%nat3,S%nat3))
     ALLOCATE(Dout(S%nat3,S%nat3))
     ALLOCATE(U(S%nat3,S%nat3))
-  
+
     nq = 0
     DO i = 0,nqi-1
     DO j = 0,nqj-1
@@ -841,15 +841,15 @@ CONTAINS
       nq = nq+1
       xq = s%bg(:,1)*i/DBLE(nqi) + s%bg(:,2)*j/DBLE(nqj) + s%bg(:,3)*k/DBLE(nqk)
       gridq(:,nq) = xq
-      
+
       IF(nq==1) THEN
          xq(1) = 1.d-8
       ENDIF
-  
+
       CALL fftinterp_mat2(xq, S, fcin, Din)
       !Din = multiply_mass_dyn(S, Din)
-  
-  
+
+
       DO nb = 1,S%nat
       DO na = 1,S%nat
       DO b = 1,3
@@ -866,11 +866,11 @@ CONTAINS
     ENDDO
     ENDDO
     ENDDO
-  
+
     !S%lrigid    = .false.
     !S%zeu = 0._dp
     !S%epsil = 0._dp
-  
+
     CALL quter(nqi, nqj, nqk, S%nat,S%tau,S%at,S%bg, matq, gridq, fcout, far=nfar)
     !CALL write_fc2(fileout, S, fcout)
     !

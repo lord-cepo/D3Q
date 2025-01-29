@@ -160,9 +160,9 @@ CONTAINS
       !
       INTEGER,PARAMETER :: normal=1, umklapp=2
       INTEGER :: iq, jq, j_un, it, nu0(3), i,j,k
-      REAL(DP) :: f(3), xq(3,3), freq(S%nat3,3), bose(S%nat3,3)
+      REAL(DP) :: xq(3,3), freq(S%nat3,3), bose(S%nat3,3)
       REAL(DP) :: freqm1(S%nat3,3), freqtotm1_23, freqtotm1, bose_C, bose_X, dom_C, dom_X, sigma
-      COMPLEX(DP) :: aux(S%nat3), linewidth_q(S%nat3,input%nconf)
+      real(DP) :: aux(S%nat3), linewidth_q(S%nat3,input%nconf)
       complex(DP) :: U(S%nat3,S%nat3,3), D3(S%nat3,S%nat3,S%nat3)
       TYPE(d3_mixed) :: Dqr
       REAL(DP), allocatable :: weights_C(:,:,:), weights_X(:,:,:)
@@ -338,7 +338,7 @@ CONTAINS
 
    END FUNCTION
 
-   !> helper function for selfnrg. Not tesed, not used. It would be nice to use 
+   !> helper function for selfnrg. Not tesed, not used. It would be nice to use
    !> only linewidth_q and various ctm functions for each case
    FUNCTION ctm_selfnrg_spectre(sigma, freq, ener, bose_C, bose_X)
       USE input_fc,           ONLY : ph_system_info
@@ -1301,7 +1301,7 @@ CONTAINS
     REAL(DP) :: sum_linewidth_modes(S%nat3)
     !
     ! _C -> scattering, _X -> cohalescence
-    REAL(DP) :: bose_C, bose_X ! final/initial state populations 
+    REAL(DP) :: bose_C, bose_X ! final/initial state populations
     REAL(DP) :: dom_C, dom_X   ! \delta\omega
     REAL(DP) :: ctm_C, ctm_X   !
     REAL(DP) :: freqtotm1, freqtotm1_23

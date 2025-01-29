@@ -10,9 +10,9 @@ MODFLAGS= $(MOD_FLAG)../../Modules $(MOD_FLAG)../../LAXlib $(MOD_FLAG)../../Util
 	  $(MOD_FLAG)../src \
 	  $(MOD_FLAG).
 
-IFLAGS+=-I../../FFTXlib -I../../include -I../../PHonon/PH 
+IFLAGS+=-I../../FFTXlib -I../../include -I../../PHonon/PH
 
-# Remove the following line if you want to use intel compiler but not MKL 
+# Remove the following line if you want to use intel compiler but not MKL
 # vectorized vdCos and vdSin
 DFLAGS+= -D__HASVTRIG
 
@@ -20,7 +20,7 @@ DFLAGS+= -D__HASVTRIG
 #-check all -traceback -g
 #F90FLAGS += -check all -traceback -g
 
-#F90FLAGS += -qopenmp 
+#F90FLAGS += -qopenmp
 #LDFLAGS  += -qopenmp #-pg -g
 
 # For profiling
@@ -105,7 +105,8 @@ MYNAME       = $(shell basename $(CURDIR))
 FATHERNAME   = $(shell cd ..; basename `pwd -P`)
 THELINKPLACE = $(FATHERNAME)/$(MYNAME)
 
-EXEC = db tk lw qha asr3 sqom sparse q2r r2q qq2rr import_shengbte recenter interpolate2 rmzeu tdph mtx impurity
+EXEC = $(shell ls PROGRAM_*.f90 | sed -e 's/PROGRAM_//' -e 's/\.f90//')
+# db tk lw qha asr3 sqom sparse q2r r2q qq2rr import_shengbte recenter interpolate2 rmzeu tdph mtx impurity dd prova
 #make_wedge decompose_d2
 #gruneisen
 #interpolate2
@@ -135,12 +136,12 @@ thermal2-libs : libthermal2.a
 libthermal2.a : $(OBJ)
 #$(THERMALK2_OBJS)
 	$(AR) $(ARFLAGS) $@ $?
-	$(RANLIB) $@ 
+	$(RANLIB) $@
 
 tldeps:
 	test -n "$(TLDEPS)" && ( cd ../.. ; $(MAKE) $(MFLAGS) $(TLDEPS) || exit 1) || :
 
-clean : 
+clean :
 	- /bin/rm -f *.x *.o *~ *.F90 *.mod *.d *.i *.L *.a
 
 include make.depend

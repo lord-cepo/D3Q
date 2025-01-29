@@ -56,6 +56,7 @@ MODULE code_input
     LOGICAL  :: q_resolved, q_summed
     REAL(DP) :: sigmaq
     CHARACTER(len=5)   :: delta_approx
+    integer :: n_omega
     !! can be "tetra" or "gauss"
 
 !threshold to detect degeneracies between phonons, in cm-1
@@ -78,7 +79,7 @@ MODULE code_input
 !
     LOGICAL  :: use_symm
     !! if .TRUE., calculates tk in IRR-BZ using constant weights, then symmetrizes it
-    
+
     INTEGER :: nk(3), nk_in(3)
     REAL(DP) :: xk0(3), xk0_in(3)
 !
@@ -138,12 +139,13 @@ CONTAINS
     CHARACTER(256) :: file_mat2_final  = INVALID ! default = file_mat2
     CHARACTER(256) :: file_mat2_plus  = INVALID ! default = file_mat2//'_p'
     CHARACTER(256) :: file_mat2_minus  = INVALID ! default = file_mat2//'_m'
-    CHARACTER(256) :: file_dzeu = INVALID 
+    CHARACTER(256) :: file_dzeu = INVALID
     CHARACTER(256) :: prefix     = INVALID ! default: calculation.mode
     !
     CHARACTER(256) :: outdir = './'              ! where to write output files
     CHARACTER(8)   :: asr2 = "no"                ! apply sum rule to phonon force constants
     CHARACTER(10)   :: delta_approx = 'tetra'     ! 'gauss': dirac_delta = gaussian, 'tetra' dirac_delta = scattering surface with optimized tetrahedra
+    integer :: n_omega = 100
     INTEGER            :: nconf = -1                 ! number of smearing/temperature couples
     INTEGER            :: nq = -1                    ! number of q-point to read, only for lw
     INTEGER            :: skip_q = 0                 ! skip this many points when computing a BZ path
@@ -251,7 +253,7 @@ CONTAINS
 
     NAMELIST  / tkinput / &
       calculation, outdir, prefix, &
-      file_mat2, file_mat3, asr2, use_symm, delta_approx, &
+      file_mat2, file_mat3, asr2, use_symm, delta_approx, file_mat2_final, &
       thr_tk, niter_max, &
       nconf, nk, nk_in, grid_type, grid_type_in, xk0, xk0_in, &
       optimize_grid, optimize_grid_thr, &
@@ -262,7 +264,7 @@ CONTAINS
       casimir_scattering, mfp_cutoff, sample_dir, &
       sample_length_au, sample_length_mu, sample_length_mm, &
       volume_factor, &
-      max_seconds, max_time, restart
+      max_seconds, max_time, restart, n_omega
 
     NAMELIST  / dbinput / &
       calculation, outdir, prefix, &
@@ -384,6 +386,7 @@ CONTAINS
     input%outdir                       =  TRIMCHECK(outdir)
     input%asr2                         =  asr2
     input%delta_approx                 =  delta_approx
+    input%n_omega                      =  n_omega
     input%skip_q                       =  skip_q
     input%nconf                        =  nconf
     input%nk                           =  nk
@@ -943,6 +946,7 @@ CONTAINS
       CALL mpi_broadcast(grid_type)
       CALL mpi_broadcast(grid_type_in)
       CALL mpi_broadcast(delta_approx)
+      CALL mpi_broadcast(n_omega)
       CALL mpi_broadcast(use_symm)
       CALL mpi_broadcast(threshold_f_degeneracy_cmm1)
       CALL mpi_broadcast(intrinsic_scattering)
@@ -992,7 +996,7 @@ CONTAINS
   ! read everything from files mat2R and mat3R
   SUBROUTINE READ_DATA(input, s, fc2, fc3)
     USE input_fc,           ONLY : same_system, read_fc2, aux_system, &
-                                   forceconst2_grid, ph_system_info, read_dzeu
+      forceconst2_grid, ph_system_info, read_dzeu
     USE asr2_module,        ONLY : impose_asr2
     !USE io_global,          ONLY : stdout
     USE fc3_interpolate,    ONLY : read_fc3, forceconst3

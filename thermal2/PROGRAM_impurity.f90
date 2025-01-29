@@ -19,9 +19,10 @@ END MODULE
 
 PROGRAM interpolate2
   !USE constants,       ONLY : RY_TO_CMM1
-  !USE input_fc,        ONLY : read_system, ph_system_info, read_fc2, write_dyn, 
+  !USE input_fc,        ONLY : read_system, ph_system_info, read_fc2, write_dyn,
   USE ph_system,       ONLY : aux_system
   USE impurity_module
+  use mpi_thermal, only: start_mpi, stop_mpi
   USE cmdline_param_module
   USE quter_module,       ONLY : quter
   USE input_fc,           ONLY : read_fc2, ph_system_info, forceconst2_grid, write_fc2, allocate_fc2_grid
@@ -32,7 +33,7 @@ PROGRAM interpolate2
 
   IMPLICIT NONE
   INTEGER :: far, ios
-  REAL(DP),PARAMETER :: eps_r = 1.d-4 ! tolerance on atomic positions, in bohr 
+  REAL(DP),PARAMETER :: eps_r = 1.d-1 ! tolerance on atomic positions, in bohr
   CHARACTER(len=256) :: filein_uc, filein_sc, fileout
   TYPE(forceconst2_grid) :: fc_uc, fc_sc, fc_out, fc_out_c
   TYPE(ph_system_info) :: S_uc, S_sc
@@ -45,7 +46,7 @@ PROGRAM interpolate2
   REAL(DP) :: weight, scale
   REAL(DP),ALLOCATABLE :: tau_b(:,:), Rtau_b(:,:)
   !
-
+  call start_mpi()
   filein_uc  = cmdline_param_char("u", "mat2R_uc")
   filein_sc  = cmdline_param_char("p", "mat2R_sc")
   fileout    = cmdline_param_char("o", "mat2R_out")
@@ -80,10 +81,10 @@ PROGRAM interpolate2
   IF(TRIM(fileout)==TRIM(filein_sc) .or. TRIM(fileout)==TRIM(filein_uc)) &
     CALL errore("interpolate2","filein and fileout are the same, I refuse to do that",1)
   !
-  WRITE(*,*) "Input file", TRIM(filein_uc)
-  WRITE(*,*) "Perturbed supercell file", TRIM(filein_sc)
-  WRITE(*,*) "Output file", TRIM(fileout)
- 
+  WRITE(*,*) "Input file: ", TRIM(filein_uc)
+  WRITE(*,*) "Perturbed supercell file: ", TRIM(filein_sc)
+  WRITE(*,*) "Output file: ", TRIM(fileout)
+
   CALL read_fc2(filein_uc,  S_uc,  fc_uc)
   CALL aux_system(S_uc)
   !CALL impose_asr2("simple", S_uc%nat, fc_uc)
@@ -146,7 +147,7 @@ PROGRAM interpolate2
   !
   fc_out%FC = 0._dp
   !
-  ! For every couple tau, tau+R in the unit-cell find its equivalent tau,tau in the supercell. 
+  ! For every couple tau, tau+R in the unit-cell find its equivalent tau,tau in the supercell.
   ! using periodic boudary condition can be required
   DO i_uc = 1, S_uc%nat
   DO j_uc = 1, S_uc%nat
@@ -207,11 +208,10 @@ PROGRAM interpolate2
   fc_out%periodic = fc_uc%periodic
   fc_out%centered = fc_uc%centered
   CALL write_fc2(fileout, S_uc, fc_out)
-  
+
   CALL fc2_recenter(S_uc, fc_out, fc_out_c, 2)
   CALL write_fc2(TRIM(fileout)//'_c', S_uc, fc_out_c)
   !
-  CONTAINS
-
+  call stop_mpi()
 END PROGRAM
 !
