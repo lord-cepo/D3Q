@@ -56,6 +56,7 @@ ph_velocity.o : mpi_thermal.o
 posix_signal.o : mpi_thermal.o
 q_grids.o : mpi_thermal.o
 quter.o : mpi_thermal.o
+quter_defect.o : mpi_thermal.o
 read_md.o : mpi_thermal.o
 rigid_d3.o : mpi_thermal.o
 tetra_raja.o : mpi_thermal.o
@@ -289,6 +290,7 @@ defect.o : ./functions.o
 defect.o : ./input_fc.o
 defect.o : ./mpi_thermal.o
 defect.o : ./q_grids.o
+defect.o : ./quter_defect.o
 defect.o : ./thtetra.o
 defect.o : ./utils.o
 dynbubble.o : ./fc2_interp.o
@@ -393,6 +395,9 @@ q_grids.o : ./ph_system.o
 q_grids.o : ./ph_velocity.o
 quter.o : ./functions.o
 quter.o : ./input_fc.o
+quter_defect.o : ./fc2_interp.o
+quter_defect.o : ./ph_system.o
+quter_defect.o : ./utils.o
 read_md.o : ./input_fc.o
 read_md.o : ./mpi_thermal.o
 tetra_raja.o : ./mpi_thermal.o

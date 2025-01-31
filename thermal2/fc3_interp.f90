@@ -677,7 +677,7 @@ CONTAINS
          Dqr%minr(i) = MINVAL(fc%yR2(i,:))
          Dqr%maxr(i) = MAXVAL(fc%yR2(i,:))
       ENDDO
-      limits = Dqr%maxr - Dqr%minr + 1
+      limits = Dqr%maxr - Dqr%minr + 1 ! hopefully min is not positive
       nr = PRODUCT(limits)
       ALLOCATE(Dqr%R3(nr), Dqr%DR3(nat3, nat3, nat3, nr))
       Dqr%DR3 = (0._dp, 0._dp)
@@ -1491,46 +1491,46 @@ CONTAINS
       COMPLEX(DP), INTENT(INOUT) :: d3in(nat3, nat3, nat3)
       INTEGER, INTENT(IN)        :: nat3
       COMPLEX(DP), INTENT(IN)    :: u1(nat3, nat3), u2(nat3, nat3), u3(nat3, nat3)
-   
+
       ! Temporary arrays
       COMPLEX(DP), ALLOCATABLE :: tmp(:,:,:)
       INTEGER :: i, k, nat32
       COMPLEX(DP) :: u3c(nat3, nat3)
-   
+
       ! Allocate temporary arrays
       ALLOCATE(tmp(nat3, nat3, nat3))
       ! ALLOCATE(tmp2(nat3, nat3, nat3))
-   
+
       ! Initialize temporary arrays
       tmp = 0._dp
       ! tmp2 = 0._dp
       nat32 = nat3**2
-   
+
       ! d3(i,j,k) = u(a,i) * u(b,j) * u(c,k) * d3in(a,b,c)
-   
+
       u3c = CONJG(u3)
       ! Step 1: tmp(a,b,k) = d3in(a,b,c) * CONJG(u3(c,k))
       CALL zgemm3m('N', 'N', nat32, nat3, nat3, 1.0_DP, d3in, nat32, u3c, nat3, 0.0_DP, tmp, nat32)
-   
+
       ! ! Step 2: tmp2(i,b,k) = TRANSCONJ(u(a,i)) * tmp(a,b,k)
       CALL zgemm3m('C', 'N', nat3, nat32, nat3, 1.0_DP, u1, nat3, tmp, nat3, 0.0_DP, d3in, nat3)
-   
+
       ! Step 3: tmp(b,i,k) = RESHAPE(tmp2(i,b,k))
       do k = 1, nat3
          tmp(:, :, k) = TRANSPOSE(d3in(:, :, k))
       enddo
-   
+
       ! Step 3: d3in(i,j,k) = TRANSCONJ(u2(b,j)) * tmp(b,i,k)
       CALL zgemm3m('C', 'N', nat3, nat32, nat3, 1.0_DP, u2, nat3, tmp, nat3, 0.0_DP, d3in, nat3)
-   
+
       do k = 1, nat3
          d3in(:, :, k) = TRANSPOSE(d3in(:, :, k))
       enddo
-   
+
       ! Deallocate temporary arrays
       DEALLOCATE(tmp)
       ! DEALLOCATE(tmp2)
-   
+
       RETURN
    END SUBROUTINE
 

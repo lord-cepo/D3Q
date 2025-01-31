@@ -27,7 +27,7 @@ contains
     atoms_sc = map_atm_sc(S, S_sc, sc_grid)
     do R1 = 1, nR
       do R2 = 1, nR
-        R = index2v(R1, sc_grid) - index2v(R2, sc_grid)
+        R = index2v(R2, sc_grid) - index2v(R1, sc_grid)
         do j1 = 1, 3
           if (R(j1) < 0) R(j1) = R(j1) + sc_grid(j1)
         enddo
@@ -142,19 +142,20 @@ contains
   subroutine main_defect(S, Sd, fc2, fc2d, grid, out_grid, input)
     use quter_defect, only: center_sc
     type(ph_system_info), intent(in) :: S, Sd
-    type(forceconst2_grid), intent(in) :: fc2
+    type(forceconst2_grid) :: fc2
     type(forceconst2_grid) :: fc2d
     type(q_grid), intent(in) :: grid, out_grid
     type(code_input_type), intent(in) :: input
     !
     type(q_grid) :: grid_serial, G_grid
-    type(forceconst2_grid) :: fc2_big, fc2_centered
+    type(forceconst2_grid) :: fc2_centered
     complex(dp), dimension(S%nat3, S%nat3) :: VM, Id, VK
     real(dp) :: freqs(S%nat3, grid%nqtot), omega2(S%nat3), omega2R(Sd%nat3)
     real(dp), dimension(S%nat3, out_grid%nqtot) :: out_freqs, lws, lws2, lws2R, lwsR, incoherent
     ! real(dp) :: dos(0:input%n_omega)
     complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
     complex(dp) :: out_Us(S%nat3, S%nat3, out_grid%nqtot)
+    integer :: map_R(Sd%nat)
     complex(dp), dimension(S%nat3, S%nat3) :: T, G, V
     complex(dp) :: tetra_weights(S%nat3, grid%nqtot, 0:input%n_omega)
     complex(dp) :: tetra_interp(S%nat3, grid%nqtot)
@@ -164,30 +165,49 @@ contains
     complex(dp) :: UR(Sd%nat3)
 
     ! complex(dp) :: tetra_interp(S%nat3, grid%nqtot)
-    real(dp) :: max_freq, omega, omegaq, R(3), delta_q(3), q(6)
+    real(dp) :: max_freq, omega, omegaq, R(3), delta_q(3), q6(6), q3(3)
     !
     integer :: iq, iw, ibnd, iqp, nR, iR, jR, jbnd, jq, atm_sc(S%nat, product(fc2%nq))
     ! integer :: na1, na2, j1, j2, na1_sc, na2_sc, jn1, jn2, R1, R2, Rint(3)
-    integer :: R1, R2
+    ! integer :: R1, R2, i, j
     !
     nR = product(fc2%nq)
     Id = id_mat(S%nat3)
     IdR = id_mat(S%nat3*nR)
     !
-    ! CALL allocate_fc2_grid(nR, S%nat, fc2_centered_in)
+    ! call allocate_fc2_grid(1, Sd%nat, fc2_big)
+    ! iR = 0
+    ! do R1 = 1, nR
+    !   do R2 = 1, nR
+    !     iR = iR + 1
+    !     fc2_big%yR(:,iR) = [index2v(R1, fc2%nq), index2v(R2, fc2%nq)]
+    !   enddo
+    ! enddo
+    ! call cryst_to_cart(nR**2, fc2%yR, S%at, 1)
+    ! fc2_big%xR = 0.0_dp
+    ! fc2_big%yR = 0.0_dp
+
+    ! fc2%FC = 0._dp
+    ! fc2%FC(1,1,3) = 1.0_dp
+
+    ! fc2_big%FC(:,:,1) = fc2_sc(S, Sd, fc2%nq, fc2)
     CALL fc2_recenter(S, fc2, fc2_centered, 2)
-    ! call center_sc(fc2d, fc2%nq, S, Sd)
+    VKR = fc2d%FC(:,:,1) ! - fc2_sc(S, Sd, fc2%nq, fc2)
+    call center_sc(fc2d, fc2%nq, S, Sd)
+    print*, fc2d%n_R
+    !
     call freq_in_grid(S, fc2_centered, grid, freqs, Us)
     ! call setup_grid("simple", S%bg, fc2%nq(1), fc2%nq(2), fc2%nq(3), G_grid, scatter=.false.)
     print*, "setting up serial inner grid"
     CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
       input%nk_in(2), input%nk_in(3),&
       grid_serial, scatter=.false., xq0=input%xk0_in)
-    !
-    !> max_freq is slightly larger than the maximum frequency, to be sure that
-    !> maxval(out_freqs) <= max_freq
+    ! !
+    ! !> max_freq is slightly larger than the maximum frequency, to be sure that
+    ! !> maxval(out_freqs) <= max_freq
     max_freq = maxval(freqs) * 1.1_dp
-    !
+    ! map_R = (map_sc_atm(S, Sd, fc2%nq) -1 ) / S%nat + 1
+    ! !
     call tetra_init(grid%n, S%bg, freqs**2)
     !
     do iw = 1, input%n_omega
@@ -196,7 +216,7 @@ contains
       ! Gs(:,:,iw) = green_function(S, grid, tetra_weights(:,:,iw), Us)
       ! do iR = 1, nR
       !   do jR = 1, nR
-      !     R = index2v(iR, fc2%nq) - index2v(jR, fc2%nq)
+      !     R = REAL(index2v(iR, fc2%nq) - index2v(jR, fc2%nq), DP)
       !     CALL cryst_to_cart(1, R, S%at, 1)
       !     GsR((iR-1)*S%nat3+1:iR*S%nat3,(jR-1)*S%nat3+1:jR*S%nat3,iw) = &
       !       green_function(S, grid, tetra_weights(:,:,iw), Us, R)
@@ -215,26 +235,12 @@ contains
 
     if(ionode) print*, "end of green function calculation"
 
-    atm_sc = map_atm_sc(S, Sd, fc2%nq)
+    ! atm_sc = map_atm_sc(S, Sd, fc2%nq)
     ! VK = fc00(S, fc2d, atm_sc) - fc2%FC(:,:,fc2%i_0)
-    call allocate_fc2_grid(1, Sd%nat, fc2_big)
-    ! iR = 0
-    ! do R1 = 1, nR
-    !   do R2 = 1, nR
-    !     iR = iR + 1
-    !     fc2_big%yR(:,iR) = [index2v(R1, fc2%nq), index2v(R2, fc2%nq)]
-    !   enddo
-    ! enddo
-    ! call cryst_to_cart(nR**2, fc2%yR, S%at, 1)
-    fc2_big%xR = 0.0_dp
-    fc2_big%yR = 0.0_dp
-    fc2_big%FC(:,:,1) = fc2_sc(S, Sd, fc2%nq, fc2)
-    VKR = CMPLX(fc2_big%FC(:,:,1), 0._dp, dp)
-    call mat2_diag(Sd%nat3, VKR, omega2R)
+    ! call mat2_diag(Sd%nat3, VKR, omega2R)
+    ! call center_sc(VKR, fc2%nq, S, Sd)
 
-    call center_sc(fc2_big, fc2%nq, S, Sd)
-    print*, fc2_big%nq, fc2_big%n_R
-    VKR = fc2d%FC(:,:,1) - fc2_big%FC(:,:,1)
+    ! VKR = fc2d%FC(:,:,1) - fc2_big%FC(:,:,1)
     Ts = 0.0_dp
     Ts2 = 0.0_dp
     TsR = 0.0_dp
@@ -261,13 +267,13 @@ contains
     !   ! CALL invzmat(S%nat3*nR, TR)
     !   ! Ts2R(:,:,iw) = matmul(TR, VR)
     ! enddo
-    CALL mpi_bsum(S%nat3, S%nat3, input%n_omega, Ts)
-    CALL mpi_bsum(S%nat3, S%nat3, input%n_omega, Ts2)
-    CALL mpi_bsum(S%nat3*nR, S%nat3*nR, input%n_omega, TsR)
+    ! CALL mpi_bsum(S%nat3, S%nat3, input%n_omega, Ts)
+    ! CALL mpi_bsum(S%nat3, S%nat3, input%n_omega, Ts2)
+    ! CALL mpi_bsum(S%nat3*nR, S%nat3*nR, input%n_omega, TsR)
     ! CALL mpi_bsum(S%nat3*nR, S%nat3*nR, input%n_omega, Ts2R)
 
     if(ionode) print*, "end of born calculation"
-    !
+    ! !
     CALL freq_in_grid(S, fc2_centered, out_grid, out_freqs, out_Us)
 
     lws = 0.0_dp
@@ -278,78 +284,41 @@ contains
     incoherent = 0.0_dp
     do iq = 1, out_grid%nq
       iqp = iq + out_grid%iq0
-      ! do iw = 0, input%n_omega
-      ! omega = max_freq*iw/input%n_omega
-      q = [-out_grid%xq(:,iq), out_grid%xq(:,iq)]
-      call fftinterp_mat2(q, S, fc2_big, VK)
-      call mat2_diag(S%nat3, VK, omega2)
+      ! ! do iw = 0, input%n_omega
+      ! ! omega = max_freq*iw/input%n_omega
+      ! ! q6 = [-out_grid%xq(:,iq), out_grid%xq(:,iq)]
+      ! ! call fftinterp_mat2(q6, S, fc2d, VK)
+      ! ! call mat2_diag(S%nat3, VK, omega2)
+      ! ! lws2(:,iqp) =  omega2
       do ibnd = 1, S%nat3
         omegaq = out_freqs(ibnd,iqp)
         if(omegaq < 1e-12) cycle
+        tetra_interp = interp1_matrix(tetra_weights, omegaq*input%n_omega/max_freq)
         !
-        !
-        ! T = interp1_matrix(Ts, omegaq*input%n_omega/max_freq)
-        ! lws(ibnd,iqp) =  - AIMAG(braket(out_Us(:,ibnd,iqp),T)) * omegaq
-
-        ! T = interp1_matrix(Ts2, omegaq*input%n_omega/max_freq)
-        ! lws2(ibnd,iqp) =  - AIMAG(braket(out_Us(:,ibnd,iqp),T)) * omegaq
-
-
-        ! tetra_interp = interp1_matrix(tetra_weights, omegaq*input%n_omega/max_freq)
-        ! ! VM = Id * 1e-6_dp * omegaq**2
-        ! do jq = 1, grid_serial%nq
-        !   do jbnd = 1, S%nat3
-        !     q = [-out_grid%xq(:,iq), grid_serial%xq(:,jq)]
-        !     CALL fftinterp_mat2(q, S, fc2d, VK)
-        !     lws(ibnd, iq) = lws(ibnd, iq) - &
-        !       ABS(braket(out_Us(:,ibnd,iqp), VK, Us(:,jbnd,jq)))**2 * &
-        !       AIMAG(tetra_interp(jbnd,jq)) * omegaq
-        !   enddo
-        ! enddo
+        do jq = 1, grid_serial%nq
+          if (ibnd == 1) then
+            q6 = [-out_grid%xq(:,iq), grid_serial%xq(:,jq)]
+            CALL fftinterp_mat2(q6, S, fc2d, VK)
+          endif
+          do jbnd = 1, S%nat3
+            lws(ibnd, iq) = lws(ibnd, iq) - &
+              ABS(braket(out_Us(:,ibnd,iqp), VK, Us(:,jbnd,jq)))**2 * &
+              AIMAG(tetra_interp(jbnd,jq))
+          enddo
+        enddo
 
         ! UR = 0.0_dp
         ! do iR = 1, nR
-        !   R = index2v(iR, fc2%nq)
+        !   R = REAL(index2v(iR, fc2%nq), DP)
         !   CALL cryst_to_cart(1, R, S%at, 1)
         !   UR((iR-1)*S%nat3+1:iR*S%nat3) = out_Us(:,ibnd,iqp) * e_iqr(out_grid%xq(:,iq), R)
         ! enddo
 
         ! TR = interp1_matrix(TsR, omegaq*input%n_omega/max_freq)
-        ! lwsR(ibnd,iqp) =  - AIMAG(braket(UR,TR)) * omegaq
+        ! lwsR(ibnd,iqp) =  - AIMAG(braket(UR,TR))
 
-        ! tetra_interp = interp1_matrix(tetra_weights, omegaq*input%n_omega/max_freq)
-        ! do iR = 1, nR
-        !   do jR = 1, nR
-        !     R = index2v(iR, fc2%nq) - index2v(jR, fc2%nq)
-        !     CALL cryst_to_cart(1, R, S%at, 1)
-        !     do jq = 1, grid%nqtot
-        !       do jbnd = 1, S%nat3
-        !         delta_q = grid_serial%xq(:,jq) - out_grid%xq(:,iqp)
-        !         incoherent(ibnd,iqp) = incoherent(ibnd,iqp) - &
-        !         ! 2 * (nR-iR) * &
-        !         ! COS(tpi*dot_product(delta_q, R)) * &
-        !           AIMAG(tetra_interp(jbnd,jq) * e_iqr(delta_q, R)) * &
-        !           ABS(dot_product(Us(:,jbnd,jq), out_Us(:,ibnd,iqp)))**2 * omegaq**3
-        !       enddo
-        !     enddo
-        !   enddo
-        ! enddo
-        ! T = interp1_matrix(Ts2R, omegaq*input%n_omega/max_freq)
-        ! lws2R(ibnd,iqp) =  - AIMAG(braket(UR,T)) * omegaq**3
-
-        ! dos(iw) = dos(iw) + AIMAG(dot_product(CONJG(out_Us(ibnd,:,iqp)), &
-        !   matmul(Ts(:,:,iw), out_Us(ibnd,:,iqp))))
-        ! tetra_interp = interp1_matrix(tetra_weights, omegaq*input%n_omega/max_freq)
-        ! do iqin = 1, grid%nq
-        !   do jbnd = 1, S%nat3
-        !     d = dot_product(CONJG(Us(:,jbnd,iqin+grid%iq0 )), out_Us(:,ibnd,iqp))
-        !     lws2(ibnd,iqp) =  lws2(ibnd,iqp) + AIMAG(tetra_interp(jbnd,iqin+grid%iq0)) * &
-        !       REAL(d * CONJG(d), dp) * omegaq**3
-        !   enddo
-        ! enddo
-        ! call mpi_bsum(lws2(ibnd,iqp))
       enddo
-      lws2(:,iqp) =  omega2
+      ! call mpi_bsum(lws2(ibnd,iqp))
     enddo
     if (out_grid%scattered) CALL mpi_bsum(S%nat3, out_grid%nqtot, lws)
     if (out_grid%scattered) CALL mpi_bsum(S%nat3, out_grid%nqtot, lws2)
@@ -367,13 +336,13 @@ contains
       enddo
       close(10)
       !
-      open(12, file='defect2.dat', status='unknown')
-      do iq = 1, out_grid%nqtot
-        do ibnd = 1, S%nat3
-          write(12, *) out_freqs(ibnd,iq), SQRT(omega2(ibnd + S%nat3*(iq-1)))
-        enddo
-      enddo
-      close(12)
+      ! open(12, file='defect2.dat', status='unknown')
+      ! do iq = 1, out_grid%nqtot
+      !   do ibnd = 1, S%nat3
+      !     write(12, *) out_freqs(ibnd,iq), SQRT(lws2(ibnd,iq)/64)
+      !   enddo
+      ! enddo
+      ! close(12)
 
       ! open(12, file='defectR.dat', status='unknown')
       ! do iq = 1, out_grid%nqtot
