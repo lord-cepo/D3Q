@@ -7,6 +7,7 @@ program defectp
   use input_fc, only: read_fc2, aux_system, div_mass_fc2
   use asr2_module, only: impose_asr2
   use thutils, only: v2index
+  use quter_defect, only : map_uc2sc
   IMPLICIT NONE
   !
   type(ph_system_info) :: S, Sd
@@ -49,7 +50,7 @@ program defectp
   !> probably one should also divide by mass of the UC, I'm not sure #TOFIX
   nR = product(fc2%nq)
   allocate(atoms(S%nat, nR))
-  atoms = map_atm_sc(S, Sd, fc2%nq)
+  atoms = map_uc2sc(S, Sd, fc2%nq)
   do R1 = 1, nR
     do R2 = 1, nR
       do na1 = 1, S%nat

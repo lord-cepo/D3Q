@@ -70,6 +70,27 @@ contains
     !
   end function
   !
+  function interp1_tns4(matrices, x)
+    !> interpolates linearly a 2D matrix on a 1D grid,
+    !> the last dimension of matrices is the grid index.
+    !> The matrices should be calculated from 0 to N included
+    complex(dp), intent(in) :: matrices(:,:,:,:,0:)
+    real(dp), intent(in) :: x
+    complex(dp), allocatable :: interp1_tns4(:,:,:,:)
+    real(dp) :: dx
+    integer :: x0
+    !
+    if(x > size(matrices, 5)) call errore('interp1_tns4', ': x out of range', INT(x))
+    allocate(interp1_tns4, source=matrices(:,:,:,:,0))
+    !
+    x0 = INT(x)
+    dx = x - x0
+
+    interp1_tns4 = (1.0_dp - dx) * matrices(:,:,:,:,x0) + &
+      dx * matrices(:,:,:,:,x0+1)
+    !
+  end function
+  !
   function id_mat(n)
     integer, intent(in) :: n
     real(dp) :: id_mat(n,n)
@@ -140,4 +161,27 @@ contains
     q = num/denom
     r = mod(num, denom)
   end subroutine int_div
+  !
+  function grid_vec(mesh)
+    !! Generates a grid of wave vectors.
+    !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
+
+    integer, intent(in) :: mesh(3)
+    integer, allocatable :: grid_vec(:,:)
+    integer :: i, j, k, n
+
+    n = product(mesh)
+    allocate(grid_vec(3,n))
+
+    n = 0
+    do i = 0, mesh(1)-1
+      do j = 0, mesh(2)-1
+        do k = 0, mesh(3)-1
+          n = n + 1
+          grid_vec(:,n) = [i, j, k]
+        end do
+      end do
+    end do
+  end function
+  !
 end module
