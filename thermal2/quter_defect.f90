@@ -100,6 +100,7 @@ contains
       CALL errore(sub, 'some element is already allocated', 1)
     !
     n_R = PRODUCT(grid)
+    fc%n_R(:) = n_R
     !
     ALLOCATE(fc%yR(3,n_R,2))
     fc%yR(:,:,1) = grid_vec(grid)
@@ -108,7 +109,6 @@ contains
     ALLOCATE(fc%xR(3,n_R,2))
     call fc%cart(S)
     ALLOCATE(fc%FC(S%nat3,S%nat3,n_R,n_R))
-    fc%n_R(:) = n_R
     fc%nq = grid
     fc%stage = -1
     fc%i_0(:) = 1
@@ -125,7 +125,7 @@ contains
     do i = 1, 2
       allocate(R(3,fc%n_R(i)))
       R = REAL(fc%yR(:,:,i), DP)
-      call cryst_to_cart(fc%n_R(1), R, S%at, 1)
+      call cryst_to_cart(fc%n_R(i), R, S%at, 1)
       fc%xR(:,:,i) = R
       deallocate(R)
     enddo
@@ -142,7 +142,7 @@ contains
     do i = 1, 2
       allocate(R(3,fc%n_R(i)))
       R = fc%xR(:,:,i)
-      call cryst_to_cart(fc%n_R(1), R, S%bg, -1)
+      call cryst_to_cart(fc%n_R(i), R, S%bg, -1)
       if (ALL(ABS(R - NINT(R)) < 1e-6)) then
         fc%yR(:,:,i) = NINT(R)
       else

@@ -39,6 +39,7 @@ contains
     nA=size(A)
     allocate(AA(nA,nA))
 
+    AA = 0.0_dp
     DO i = 1, nA
       DO j = i+1, nA
         r = A(i) * CONJG(A(j))
@@ -46,6 +47,23 @@ contains
         AA(j,i) = CONJG(r)
       END DO
       AA(i,i) = A(i) * CONJG(A(i))
+    END DO
+  end function
+  !
+  pure function outer_product2(A,B) result(AA)
+    COMPLEX(dp), intent(in) :: A(:), B(:)
+    COMPLEX(dp), allocatable :: AA(:,:)
+    COMPLEX(dp) :: r
+    integer :: nA, i, j,nB
+    nA=size(A)
+    nB=size(B)
+    allocate(AA(nA,nB))
+
+    AA = 0.0_dp
+    DO i = 1, nA
+      DO j = 1, nB
+        AA(i,j) = A(i) * CONJG(B(j))
+      END DO
     END DO
   end function
   !
@@ -184,4 +202,54 @@ contains
     end do
   end function
   !
+  function reshape_RR_cmplx(mat, nat3, N3) result(mat_flat)
+    complex(dp) :: mat(nat3,nat3,N3,N3)
+    integer :: nat3, N3
+    !
+    complex(dp), dimension(nat3*N3, nat3*N3) :: mat_flat
+    integer :: i, j, na1, na2, n1, n2
+    !
+    do n1 = 1, N3
+      do n2 = 1, N3
+        do na1 = 1, nat3
+          do na2 = 1, nat3
+            i = na1 + (n1-1)*nat3
+            j = na2 + (n2-1)*nat3
+            mat_flat(i,j) = mat(na1,na2,n1,n2)
+          enddo
+        enddo
+      enddo
+    enddo
+  end function
+  !
+  function reshape_RR_real(mat, nat3, N3) result(mat_flat)
+    real(dp) :: mat(nat3,nat3,N3,N3)
+    integer :: nat3, N3
+    !
+    real(dp), dimension(nat3*N3, nat3*N3) :: mat_flat
+    integer :: i, j, na1, na2, n1, n2
+    !
+    do n1 = 1, N3
+      do n2 = 1, N3
+        do na1 = 1, nat3
+          do na2 = 1, nat3
+            i = na1 + (n1-1)*nat3
+            j = na2 + (n2-1)*nat3
+            mat_flat(i,j) = mat(na1,na2,n1,n2)
+          enddo
+        enddo
+      enddo
+    enddo
+  end function
+  !
+  function minus_ind(q, mesh)
+    real(dp), intent(in) :: q(3)
+    integer, intent(in) :: mesh(3)
+    integer :: minus_ind
+    real(dp) :: mq(3)
+    !
+    mq = -q
+    where(mq < 0) mq = mq + 1
+    minus_ind = v2index(NINT(mq*mesh), mesh)
+  end function
 end module
