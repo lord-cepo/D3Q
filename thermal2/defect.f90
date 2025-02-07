@@ -46,71 +46,78 @@ contains
   end function
   !
   subroutine main_defect(S, Sd, fc2, fc2d, grid, out_grid, input)
-    type(ph_system_info) :: S, Sd
-    type(forceconst2_grid) :: fc2, fc2d
+    type(ph_system_info), intent(in):: S, Sd
+    type(forceconst2_grid), intent(in) :: fc2, fc2d
     type(q_grid), intent(in) :: grid, out_grid
     type(code_input_type), intent(in) :: input
     !
-    type(q_grid) :: grid_serial
     type(forceconst2_grid) :: fc2_centered
     type(forceconst2_sc) :: fc2_sc
-    complex(dp), dimension(S%nat3, S%nat3) :: VM, Id, VK, VK1
-    real(dp) :: freqs(S%nat3, grid%nqtot), omega2(S%nat3), omega2R(Sd%nat3)
-    real(dp), dimension(S%nat3, out_grid%nqtot) :: out_freqs, lws, lws2, lws2R, lwsR, incoherent
-    ! real(dp) :: dos(0:input%n_omega)
-    real(dp), dimension(3) :: Ri, Rj, q
+    complex(dp), dimension(S%nat3, S%nat3) :: VK
+    real(dp) :: freqs(S%nat3, grid%nqtot)
+    real(dp), dimension(S%nat3, out_grid%nqtot) :: out_freqs, lws, lwsR
     complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
     complex(dp) :: out_Us(S%nat3, S%nat3, out_grid%nqtot)
-    integer :: map_R(Sd%nat), kR, mjq
-    complex(dp), dimension(S%nat3, S%nat3) :: T, G, V
     complex(dp) :: tetra_weights(S%nat3, grid%nqtot, 0:input%n_omega)
     complex(dp) :: tetra_interp(S%nat3, grid%nqtot)
-    complex(dp), dimension(S%nat3, S%nat3, 0:input%n_omega) :: Ts, Ts2, Gs
-    complex(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq),0:input%n_omega) :: TsR, Ts2R, GsR
-    complex(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq)) :: TR, GR, VR, IdR, VKR, temp, VKK
-    complex(dp), dimension(S%nat3, product(fc2%nq)) :: UR, UR1
-    real(dp) :: SC(Sd%nat3, Sd%nat3), freqs1(S%nat3, grid%nqtot)
+    complex(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq),0:input%n_omega) :: TsR, GsR
+    complex(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq)) :: TR, GR, temp
+    real(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq)) :: VR, VKR
+    complex(dp), dimension(S%nat3, product(fc2%nq)) :: UR
     logical, parameter :: full = .true.
-    !
-    ! complex(dp) :: tetra_interp(S%nat3, grid%nqtot)
-    real(dp) :: max_freq, omega, omegaq, R(3) !, delta_q(3), q6(6), q3(3)
-    !
-    integer :: iq, iw, ibnd, iqp, nR, iR, jR, jbnd, jq !, atm_sc(S%nat, product(fc2%nq))
-    integer :: iRin !, jRin
-    ! integer :: na1, na2, j1, j2, na1_sc, na2_sc, jn1, jn2, R1, R2, Rint(3)
-    ! integer :: R1, R2, i, j
+    real(dp) :: max_freq, omega, omegaq, R(3), R_def(3), mass_def
+    real(dp) :: mass_matrix(S%nat3, S%nat3)
+    integer :: iq, iw, ibnd, jqp, nR, iR, jR, jbnd, jq, iRin
+    integer :: iR_def, na_def, j
+    complex(dp) :: phase_def
     !
     nR = product(fc2%nq)
-    Id = id_mat(S%nat3)
-    ! IdR = id_mat(S%nat3*nR)
     !
+    !> construct mass_matrix, it will be put in the correct R position
+    !> in real space, in reciprocal space the translation becomes a phase
+    CALL build_mass_ratios(S, Sd, fc2%nq, mass_def, iR_def, na_def)
+    mass_matrix = 0.0_dp
+    do j = 1, 3
+      mass_matrix(j+3*(na_def),j+3*(na_def)) = mass_def
+    enddo
+    !> needed to construct the phase in reciprocal space
+    R_def = REAL(index2v(iR_def, fc2%nq), DP)
+    CALL cryst_to_cart(1, R_def, S%at, 1)
+    !
+    !> input files are periodic, it can be changed
     CALL fc2_recenter(S, fc2, fc2_centered, 2)
     !
-    VKR = fc_gamma2RR(fc2%nq, S, Sd, fc2d%fc)
+    !> SC: grid type   (big_nat3,big_nat3,1)
+    !> UC: grid type   (nat3,nat3,nR)
+    !> RR: new SC type (nat3,nat3,nR,nR)
+    VKR = fc_sc2RR(fc2%nq, S, Sd, fc2d%fc) - fc_uc2RR(S, fc2%nq, fc2%fc)
     CALL fc2_sc%allocate(S, fc2%nq)
-    fc2_sc%fc = REAL(VKR, DP)
+    fc2_sc%fc = VKR
     !> VKR should have the following symmetry:
     !> VKR(na1,na2,i,j) == VKR(na2,na1,j,i) (CHECKED)
-    call fc2_sc%center(fc2%nq, S, Sd)
-    !
-    ! call center_grid_sc(fc2d, fc2%nq, S, Sd)
+
+    !> centering procedure gives different output
+    ! call fc2_sc%center(fc2%nq, S, Sd)
     !
     call freq_in_grid(S, fc2_centered, grid, freqs, Us)
-    !
-    print*, "setting up serial inner grid"
-    CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
-      input%nk_in(2), input%nk_in(3),&
-      grid_serial, scatter=.false., xq0=input%xk0_in)
+    CALL freq_in_grid(S, fc2_centered, out_grid, out_freqs, out_Us)
     !
     !> max_freq is slightly larger than the maximum frequency, to be sure that
     !> maxval(out_freqs) <= max_freq
     max_freq = maxval(freqs) * 1.1_dp
-    ! !
+    !
+    !> tetra have already the square of freq, it can be changed with
+    !> the usual delta formula after some benchmarking
     call tetra_init(grid%n, S%bg, freqs**2)
     !
+    !> serially calculate tetras for an equally spaced omega
+    !> interval, after we will interpolate them (even at more than 1st order).
+    !> The cycle is serial cause the tetra_weights_green is already parallelized
     do iw = 1, input%n_omega
       omega = max_freq*iw/input%n_omega
       tetra_weights(:,:,iw) = tetra_weights_green(omega**2)
+
+      !> builds big green function matrix in RR format
       if (full) then
         do iR = 1, nR
           do jR = 1, nR
@@ -123,29 +130,23 @@ contains
       endif
     enddo
 
+    if(ionode) print*, "                                 "
+    if(ionode) print*, "---------------------------------"
     if(ionode) print*, "end of green function calculation"
+    if(ionode) print*, "---------------------------------"
+    if(ionode) print*, "                                 "
 
-    Ts = 0.0_dp
-    Ts2 = 0.0_dp
     TsR = 0.0_dp
-    Ts2R = 0.0_dp
     if (full) then
+      !> cycle is now parallel, for this reason I spliced it
       do iw = 1+my_id, input%n_omega, num_procs
-        ! omega = max_freq*iw/input%n_omega
-        !> unit cell
-        ! V = Id * 1e-6_dp * omega**2 + VK
-        ! G = Gs(:,:,iw)
-        ! !> first born
-        ! Ts(:,:,iw) = matmul(matmul(V, G), V)
-        ! !> full born
-        ! T = Id - matmul(V, G)
-        ! CALL invzmat(S%nat3, T)
-        ! Ts2(:,:,iw) = matmul(T, V)
+        omega = max_freq*iw/input%n_omega
+        VR = VKR ! VK
+        VR(:,:,iR_def, iR_def) = VR(:,:,iR_def, iR_def) + &
+          mass_matrix * omega**2 ! VM
 
-        !> supercell
-        VR = VKR ! + IdR * 1e-6_dp * omega**2
         GR = GsR(:,:,:,:,iw)
-        !> first bornz
+        !> first born, temp is needed to if we want to precompute
         temp = 0.0_dp
         do iR = 1, nR
           do jR = 1, nR
@@ -164,56 +165,65 @@ contains
             enddo
           enddo
         enddo
-
-        !> full born
-        ! TR = IdR - matmul(VR, GR)
-        ! CALL invzmat(S%nat3*nR, TR)
-        ! Ts2R(:,:,iw) = matmul(TR, VR)
+        !
       enddo
     endif
 
+    if(ionode) print*, "                       "
+    if(ionode) print*, "-----------------------"
     if(ionode) print*, "end of born calculation"
-    ! !
-    CALL freq_in_grid(S, fc2_centered, out_grid, out_freqs, out_Us)
-
+    if(ionode) print*, "-----------------------"
+    if(ionode) print*, "                       "
+    !
     lws = 0.0_dp
-    ! dos = 0.0_dp
-    lws2 = 0.0_dp
-    lws2R = 0.0_dp
     lwsR = 0.0_dp
-    incoherent = 0.0_dp
-    ! fc2%fc = fc2_sc%fc(:,:,:,1)
-    ! S%ldrigid = .false.
-    ! print*, SUM(ABS(fc2_sc%xR(:,:,1) - fc2%xR(:,:)))
-
-    do iq = 1, out_grid%nq
-      iqp = iq + out_grid%iq0
-      call fc2_sc%interpolate( grid%xq(:,iqp), S,  1)
-      do jq = 1, grid_serial%nq
-        call fc2_sc%interpolate( - grid_serial%xq(:,jq), S, VK)
+    !> inner grid is parallel
+    do iq = 1, out_grid%nqtot
+      !> the last parameter says that we're interpolating
+      !> on the ith component (1 or 2)
+      call fc2_sc%interpolate( out_grid%xq(:,iq), S,  1)
+      do jq = 1, grid%nq
+        jqp = jq + grid%iq0
+        !> translation phase for VM
+        phase_def = e_iqr(grid%xq(:,jqp) - out_grid%xq(:,iq), R_def)
+        !> second step of the interpolation (it's slower in the second
+        !> component for centered grids, it's not that wise to keep it like this)
+        call fc2_sc%interpolate( - grid%xq(:,jqp), S, VK)
+        !> outer band loop
         do ibnd = 1, S%nat3
-          omegaq = out_freqs(ibnd,iqp)
+          omegaq = out_freqs(ibnd,iq)
           if(omegaq < 1e-12) cycle
+          !> 1D interpolation of the tetra weights
           tetra_interp = interp1_matrix(tetra_weights, omegaq*input%n_omega/max_freq)
+          !> inner band loop
           do jbnd = 1, S%nat3
             lws(ibnd, iq) = lws(ibnd, iq) - &
-              ABS(braket(out_Us(:,ibnd,iqp), VK, Us(:,jbnd,jq)))**2 * &
-              AIMAG(tetra_interp(jbnd,jq))
+              ABS(braket(out_Us(:,ibnd,iq), &
+              VK + mass_matrix * phase_def * omegaq**2, & ! omegaq can give slightly different results than interp(VM(omega))
+              Us(:,jbnd,jqp)))**2 * &
+              AIMAG(tetra_interp(jbnd,jqp)) !> only IMG needed
           enddo
         enddo
       enddo
+      ! call mpi_bsum(lws()) ! to be implemented
 
       if (full) then
+        !> only outer cylce, inner is inside green function definition
         do ibnd = 1, S%nat3
+          omegaq = out_freqs(ibnd,iq)
+          if(omegaq < 1e-12) cycle
+          !> builds long outer vector
           UR = 0.0_dp
           do iR = 1, nR
             R = REAL(index2v(iR, fc2%nq), DP)
             CALL cryst_to_cart(1, R, S%at, 1)
-            UR(:, iR) = out_Us(:,ibnd,iqp) * e_iqr(out_grid%xq(:,iq), R)
+            UR(:, iR) = out_Us(:,ibnd,iq) * e_iqr(out_grid%xq(:,iq), R)
           enddo
 
+          !> interpolation in RR form (4 indices)
           TR = interp1_tns4(TsR, omegaq*input%n_omega/max_freq)
 
+          !> usual matrix multiplication with 4 indices
           do iR = 1, nR
             do jR = 1, nR
               lwsR(ibnd, iq) = lwsR(ibnd, iq) - &
@@ -240,14 +250,6 @@ contains
       enddo
       close(10)
       !
-      ! open(12, file='defect2.dat', status='unknown')
-      ! do iq = 1, out_grid%nqtot
-      !   do ibnd = 1, S%nat3
-      !     write(12, *) out_freqs(ibnd,iq), SQRT(ABS(lws2(ibnd,iq)))/8
-      !   enddo
-      ! enddo
-      ! close(12)
-      !
       if (full) then
         open(12, file='defectR.dat', status='unknown')
         do iq = 1, out_grid%nqtot
@@ -257,15 +259,6 @@ contains
         enddo
         close(12)
       endif
-
-      ! open(12, file='defect2R.dat', status='unknown')
-      ! do iq = 1, out_grid%nqtot
-      !   do ibnd = 1, S%nat3
-      !     write(12, *) out_freqs(ibnd,iq), lws2R(ibnd,iq)
-      !   enddo
-      ! enddo
-      ! close(12)
-      !
     endif
     !
   end subroutine

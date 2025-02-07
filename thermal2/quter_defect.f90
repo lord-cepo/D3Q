@@ -5,7 +5,7 @@ module quter_defect
   use thutils,            only : v2index, index2v
   implicit none
   !
-  integer, parameter :: nfar = 0
+  integer, parameter :: nfar = 2
   !
   type forceconst2_sc
     INTEGER :: n_R(2) = 0, i_0(2) = -1
@@ -167,7 +167,7 @@ contains
     integer, dimension(2) :: ind, nxR, ixR
     integer, dimension(3) :: far_grid, Rbig_from_0
     !
-    integer, parameter :: SAFE_LIMIT = 10
+    integer, parameter :: SAFE_LIMIT = 1000
     !
     integer, allocatable :: new_yR_list(:,:,:)
     real(dp), allocatable :: new_fc(:,:,:,:)
@@ -188,8 +188,8 @@ contains
     endif
     far_grid = 2*nfar+1
     nRbig = PRODUCT(far_grid)
-    allocate(new_yR_list(3, nR*SAFE_LIMIT,2))
-    allocate(new_fc(S%nat3, S%nat3, nR, nR*SAFE_LIMIT))
+    allocate(new_yR_list(3, nR*nRbig,2))
+    allocate(new_fc(S%nat3, S%nat3, nR, nR*nRbig))
     !
     map_sc = map_uc2sc(S, S_sc, grid)
     !
@@ -214,7 +214,7 @@ contains
               ! if (nfar == 0) wg = 1._dp
               if (wg > 1e-6) then
                 R_vec(:,2) = index2v(R2, grid) + grid * (Rbig_from_0 - nfar)
-                ind(2) = v2index(R_vec(:,2) + grid * Rbig_from_0, grid * far_grid)
+                ind(2) = v2index(index2v(R2, grid) + grid * Rbig_from_0, grid * far_grid)
                 do which = 1, 2
                   if (R_list(ind(which),which) == -1) then
                     nxR(which) = nxR(which) + 1
@@ -234,7 +234,10 @@ contains
                 enddo
               endif
             enddo
-            if (ABS(wg_tot -1)<1e-6) CALL errore("center_sc", "sum of weights is not 1", 1)
+            if (ABS(wg_tot -1) > 1e-6) then
+              print"(A,F14.6)", "wg_tot is", wg_tot
+              CALL errore("center_sc", "sum of weights is not 1", 1)
+            endif
           enddo
         enddo
       enddo
@@ -355,23 +358,23 @@ contains
     fc%FC = new_fc(:,:,1:nxR)
   end subroutine
   !
-  function fc_gamma2RR(grid, S, S_sc, fc)
+  function fc_sc2RR(grid, S, S_sc, fc)
     integer, intent(in) :: grid(3)
     type(ph_system_info), intent(in) :: S, S_sc
     real(dp), intent(in) :: FC(S_sc%nat3,S_sc%nat3)
     !
-    real(dp) :: fc_gamma2RR(S%nat3, S%nat3, product(grid), product(grid))
+    real(dp) :: fc_sc2RR(S%nat3, S%nat3, product(grid), product(grid))
     integer :: sc_na1, sc_na2, j1, j2
     integer, dimension(S_sc%nat) :: map_R, map_nat
     !
     map_R = map_sc2uc(S, S_sc, grid, "R")
     map_nat = map_sc2uc(S, S_sc, grid, "nat")
-    fc_gamma2RR = 0._dp
+    fc_sc2RR = 0._dp
     do sc_na1 = 1, S_sc%nat
       do sc_na2 = 1, S_sc%nat
         do j1 = 1, 3
           do j2 = 1, 3
-            fc_gamma2RR(j1+(map_nat(sc_na1)-1)*3, j2+(map_nat(sc_na2)-1)*3, map_R(sc_na1), map_R(sc_na2)) = &
+            fc_sc2RR(j1+(map_nat(sc_na1)-1)*3, j2+(map_nat(sc_na2)-1)*3, map_R(sc_na1), map_R(sc_na2)) = &
               FC(j1+(sc_na1-1)*3, j2+(sc_na2-1)*3)
           enddo
         enddo
@@ -379,10 +382,10 @@ contains
     enddo
   end function
   !
-  function fc_uc2sc(S, S_sc, sc_grid, fc2)
+  function fc_uc2sc(S, S_sc, sc_grid, fc)
     TYPE(ph_system_info), intent(in) :: S, S_sc
     integer, intent(in) :: sc_grid(3)
-    type(forceconst2_grid), intent(in) :: fc2
+    real(dp), intent(in) :: fc(S%nat3,S%nat3,PRODUCT(sc_grid))
     integer :: R1, R2, nR, j1, j2, jn1, jn2, na1, na2, na1_sc, na2_sc, R(3)
     real(dp) :: fc_uc2sc(S_sc%nat3, S_sc%nat3)
     integer :: atoms_sc(S%nat, product(sc_grid))
@@ -405,11 +408,30 @@ contains
                 na2_sc = atoms_sc(na2, R2)
 
                 fc_uc2sc(j1 + 3*(na1_sc-1), j2 + 3*(na2_sc-1)) = &
-                  fc2%FC(jn1, jn2, v2index(R, sc_grid))
+                  fc(jn1, jn2, v2index(R, sc_grid))
               enddo
             enddo
           enddo
         enddo
+      enddo
+    enddo
+  end function
+  !
+  function fc_uc2RR(S, sc_grid, fc)
+    TYPE(ph_system_info), intent(in) :: S
+    integer, intent(in) :: sc_grid(3)
+    real(dp), intent(in) :: fc(S%nat3,S%nat3,PRODUCT(sc_grid))
+    integer :: R1, R2, nR, j1, R(3)
+    real(dp) :: fc_uc2RR(S%nat3, S%nat3, product(sc_grid), product(sc_grid))
+    !
+    nR = product(sc_grid)
+    do R1 = 1, nR
+      do R2 = 1, nR
+        R = index2v(R2, sc_grid) - index2v(R1, sc_grid)
+        do j1 = 1, 3
+          if (R(j1) < 0) R(j1) = R(j1) + sc_grid(j1)
+        enddo
+        fc_uc2RR(:,:,R1,R2) = fc(:,:,v2index(R, sc_grid))
       enddo
     enddo
   end function
@@ -532,5 +554,53 @@ contains
     enddo
     !
   END SUBROUTINE
+  !
+  subroutine build_mass_ratios(S, Sd, grid, mass_def, iR_def, na_def)
+    type(ph_system_info), intent(in):: S, Sd
+    integer, intent(in) :: grid(3)
+    real(dp), intent(out) :: mass_def
+    integer, intent(out) :: iR_def, na_def
+    !
+    integer :: which_iR(S%nat)
+    real(dp):: mass_ratio(S%nat)
+    integer :: minority, majority, tot_defects
+    integer :: map(S%nat, product(grid)), typ(product(grid))
+    integer :: na, iR, nR
+    !
+    nR = product(grid)
+    map = map_uc2sc(S, Sd, grid)
+    mass_ratio = 0._dp
+    do na = 1, S%nat
+      do iR = 1, nR
+        typ(iR) = Sd%ityp(map(na, iR))
+      enddo
+      if (all(typ == typ(1))) then
+        which_iR(na) = -1
+        cycle
+      endif
+      minority = typ(1)
+      which_iR(na) = 1
+      do iR = 2, nR-1
+        if (Sd%ityp(map(na, iR)) == minority) then
+          minority = typ(iR+1)
+          which_iR(na) = iR+1
+        endif
+      enddo
+      majority = (SUM(typ)-minority)/(nR-1)
+      mass_ratio(na) = (Sd%amass(minority) - Sd%amass(majority)) / &
+        (Sd%amass(majority))
+    enddo
+    !
+    tot_defects = 0
+    do na = 1, S%nat
+      if (which_iR(na) < 0) cycle
+      tot_defects = tot_defects + 1
+      iR_def = which_iR(na)
+      na_def = na
+      mass_def = mass_ratio(na)
+    enddo
+    if (tot_defects /= 1) &
+      CALL errore("build_mass_ratios", "there should be only one defect", ABS(tot_defects))
+  end subroutine
   !
 end module
