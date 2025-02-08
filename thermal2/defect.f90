@@ -64,7 +64,7 @@ contains
     complex(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq)) :: TR, GR, temp
     real(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq)) :: VR, VKR
     complex(dp), dimension(S%nat3, product(fc2%nq)) :: UR
-    logical, parameter :: full = .false.
+    logical, parameter :: full = .true.
     real(dp) :: max_freq, omega, omegaq, R(3), R_def(3), mass_def
     real(dp) :: mass_matrix(S%nat3, S%nat3)
     integer :: iq, iw, ibnd, nR, iR, jR, jbnd, jq, iRin
@@ -181,7 +181,7 @@ contains
         !> component for centered grids, it's not that wise to keep it like this)
         call fc2_sc%interpolate( - grid%xq(:,jq), S, VK)
         !> outer band loop
-        do ibnd = 4,4
+        do ibnd = 1, S%nat3
           omegaq = out_freqs(ibnd,iq)
           if(omegaq < 1e-12) cycle
           !> 1D interpolation of the tetra weights

@@ -53,7 +53,6 @@ contains
   pure function outer_product2(A,B) result(AA)
     COMPLEX(dp), intent(in) :: A(:), B(:)
     COMPLEX(dp), allocatable :: AA(:,:)
-    COMPLEX(dp) :: r
     integer :: nA, i, j,nB
     nA=size(A)
     nB=size(B)
