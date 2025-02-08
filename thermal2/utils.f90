@@ -252,4 +252,20 @@ contains
     where(mq < 0) mq = mq + 1
     minus_ind = v2index(NINT(mq*mesh), mesh)
   end function
+  !
+  subroutine print_message(message)
+    use mpi_thermal, only: ionode
+    character(len=*), intent(in) :: message
+    !
+    character(len(message)) :: dashes
+    !
+    dashes = repeat('-', len(message))
+    if (ionode) print*, " "
+    if (ionode) print*, dashes
+    if (ionode) print*, message
+    if (ionode) print*, dashes
+    if (ionode) print*, " "
+    !
+  end subroutine
+  !
 end module

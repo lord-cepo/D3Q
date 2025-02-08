@@ -18,6 +18,7 @@ program defectp
   ! integer :: wait_for_debugger
   integer, allocatable :: atoms(:,:)
   integer :: na1, na2, j1, j2, na1_sc, na2_sc, jn1, jn2, R1, R2, nR
+  integer :: iq
   !
   CALL start_mpi()
   !
@@ -34,20 +35,20 @@ program defectp
   !
 
   CALL READ_INPUT("TK", input, out_grid, S, fc2, fc3)
-  CALL out_grid%destroy()
+
+  ! CALL out_grid%destroy()
+  ! CALL setup_grid(input%grid_type, S%bg, input%nk(1), &
+  !   input%nk(2), input%nk(3),&
+  !   out_grid, scatter=.true., xq0=input%xk0)
 
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&
     in_grid, scatter=.true., xq0=input%xk0_in)
 
-  CALL setup_grid(input%grid_type, S%bg, input%nk(1), &
-    input%nk(2), input%nk(3),&
-    out_grid, scatter=.true., xq0=input%xk0)
 
   CALL read_fc2(input%file_mat2_final, Sd, fc2d)
   CALL aux_system(Sd)
 
-  !> probably one should also divide by mass of the UC, I'm not sure #TOFIX
   nR = product(fc2%nq)
   allocate(atoms(S%nat, nR))
   atoms = map_uc2sc(S, Sd, fc2%nq)

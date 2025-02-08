@@ -64,10 +64,10 @@ contains
     complex(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq)) :: TR, GR, temp
     real(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq)) :: VR, VKR
     complex(dp), dimension(S%nat3, product(fc2%nq)) :: UR
-    logical, parameter :: full = .true.
+    logical, parameter :: full = .false.
     real(dp) :: max_freq, omega, omegaq, R(3), R_def(3), mass_def
     real(dp) :: mass_matrix(S%nat3, S%nat3)
-    integer :: iq, iw, ibnd, jqp, nR, iR, jR, jbnd, jq, iRin
+    integer :: iq, iw, ibnd, nR, iR, jR, jbnd, jq, iRin
     integer :: iR_def, na_def, j
     complex(dp) :: phase_def
     !
@@ -130,11 +130,7 @@ contains
       endif
     enddo
 
-    if(ionode) print*, "                                 "
-    if(ionode) print*, "---------------------------------"
-    if(ionode) print*, "end of green function calculation"
-    if(ionode) print*, "---------------------------------"
-    if(ionode) print*, "                                 "
+    call print_message("end of green function calculation")
 
     TsR = 0.0_dp
     if (full) then
@@ -168,12 +164,8 @@ contains
         !
       enddo
     endif
-
-    if(ionode) print*, "                       "
-    if(ionode) print*, "-----------------------"
-    if(ionode) print*, "end of born calculation"
-    if(ionode) print*, "-----------------------"
-    if(ionode) print*, "                       "
+    !
+    call print_message("end of born calculation")
     !
     lws = 0.0_dp
     lwsR = 0.0_dp
@@ -183,14 +175,13 @@ contains
       !> on the ith component (1 or 2)
       call fc2_sc%interpolate( out_grid%xq(:,iq), S,  1)
       do jq = 1, grid%nq
-        jqp = jq + grid%iq0
         !> translation phase for VM
-        phase_def = e_iqr(grid%xq(:,jqp) - out_grid%xq(:,iq), R_def)
+        phase_def = e_iqr(grid%xq(:,jq) - out_grid%xq(:,iq), R_def)
         !> second step of the interpolation (it's slower in the second
         !> component for centered grids, it's not that wise to keep it like this)
-        call fc2_sc%interpolate( - grid%xq(:,jqp), S, VK)
+        call fc2_sc%interpolate( - grid%xq(:,jq), S, VK)
         !> outer band loop
-        do ibnd = 1, S%nat3
+        do ibnd = 4,4
           omegaq = out_freqs(ibnd,iq)
           if(omegaq < 1e-12) cycle
           !> 1D interpolation of the tetra weights
@@ -198,14 +189,13 @@ contains
           !> inner band loop
           do jbnd = 1, S%nat3
             lws(ibnd, iq) = lws(ibnd, iq) - &
-              ABS(braket(out_Us(:,ibnd,iq), &
-              VK + mass_matrix * phase_def * omegaq**2, & ! omegaq can give slightly different results than interp(VM(omega))
-              Us(:,jbnd,jqp)))**2 * &
-              AIMAG(tetra_interp(jbnd,jqp)) !> only IMG needed
+            ABS(braket(out_Us(:,ibnd,iq), &
+            VK + mass_matrix * phase_def * omegaq**2, & ! omegaq can give slightly different results than interp(VM(omega))
+            Us(:,jbnd,jq + grid%iq0)))**2 * &
+            AIMAG(tetra_interp(jbnd,jq + grid%iq0)) !> only IMG needed
           enddo
         enddo
       enddo
-      ! call mpi_bsum(lws()) ! to be implemented
 
       if (full) then
         !> only outer cylce, inner is inside green function definition
@@ -232,14 +222,11 @@ contains
           enddo
         enddo
       endif
-      ! call mpi_bsum(lws2(ibnd,iqp))
     enddo
-    ! if (out_grid%scattered) CALL mpi_bsum(S%nat3, out_grid%nqtot, lws)
-    ! if (out_grid%scattered) CALL mpi_bsum(S%nat3, out_grid%nqtot, lws2)
-    ! if (out_grid%scattered) CALL mpi_bsum(S%nat3, out_grid%nqtot, lwsR)
-    ! if (out_grid%scattered) CALL mpi_bsum(S%nat3, out_grid%nqtot, incoherent)
-
-
+    call mpi_bsum(S%nat3, out_grid%nqtot, lws)
+    !
+    call print_message("writing defect linewidths to file")
+    !
     ! write freqs and lws to file
     if(ionode) then
       open(10, file='defect.dat', status='unknown')
