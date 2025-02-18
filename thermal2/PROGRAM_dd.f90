@@ -36,10 +36,10 @@ program defectp
 
   CALL READ_INPUT("TK", input, out_grid, S, fc2, fc3)
 
-  ! CALL out_grid%destroy()
-  ! CALL setup_grid(input%grid_type, S%bg, input%nk(1), &
-  !   input%nk(2), input%nk(3),&
-  !   out_grid, scatter=.true., xq0=input%xk0)
+  CALL out_grid%destroy()
+  CALL setup_grid(input%grid_type, S%bg, input%nk(1), &
+    input%nk(2), input%nk(3),&
+    out_grid, scatter=.true., xq0=input%xk0)
 
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&

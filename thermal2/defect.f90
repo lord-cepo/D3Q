@@ -53,22 +53,24 @@ contains
     !
     type(forceconst2_grid) :: fc2_centered
     type(forceconst2_sc) :: fc2_sc
-    complex(dp), dimension(S%nat3, S%nat3) :: VK
+    complex(dp), dimension(S%nat3, S%nat3) :: VK, T_Us
     real(dp) :: freqs(S%nat3, grid%nqtot)
-    real(dp), dimension(S%nat3, out_grid%nqtot) :: out_freqs, lws, lwsR
+    real(dp), dimension(S%nat3, out_grid%nqtot) :: out_freqs, lws
+    real(dp) :: lws_full_iw(S%nat3, out_grid%nqtot, 0:input%n_omega)
+    real(dp) :: lws_full(S%nat3, out_grid%nqtot)
+    complex(dp) :: tetra_flat(S%nat3*grid%nqtot,0:input%n_omega)
+    real(dp) :: interp_flat(S%nat3*grid%nqtot)
     complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
     complex(dp) :: out_Us(S%nat3, S%nat3, out_grid%nqtot)
     complex(dp) :: tetra_weights(S%nat3, grid%nqtot, 0:input%n_omega)
-    complex(dp) :: tetra_interp(S%nat3, grid%nqtot)
-    complex(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq),0:input%n_omega) :: TsR, GsR
-    complex(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq)) :: TR, GR, temp
-    real(dp), dimension(S%nat3,S%nat3,product(fc2%nq),product(fc2%nq)) :: VR, VKR
-    complex(dp), dimension(S%nat3, product(fc2%nq)) :: UR
-    logical, parameter :: full = .true.
-    real(dp) :: max_freq, omega, omegaq, R(3), R_def(3), mass_def
+    complex(dp), dimension(S%nat3,S%nat3,grid%nqtot,out_grid%nqtot) :: M_K, M_M
+    complex(dp), dimension(S%nat3*grid%nqtot,S%nat3*out_grid%nqtot) :: M_flat, Id_flat, MK_flat, MM_flat, V_flat
+    logical, parameter :: full_born = .true.
+    real(dp) :: max_freq, omega, omegaq, R_def(3), mass_def
     real(dp) :: mass_matrix(S%nat3, S%nat3)
-    integer :: iq, iw, ibnd, nR, iR, jR, jbnd, jq, iRin
-    integer :: iR_def, na_def, j
+    integer :: iq, iqp, iw, ibnd, nR, jq
+    integer :: iR_def, na_def, j, comp
+    ! real(dp) :: eigenvalues(S%nat3*out_grid%nqtot)
     complex(dp) :: phase_def
     !
     nR = product(fc2%nq)
@@ -90,9 +92,9 @@ contains
     !> SC: grid type   (big_nat3,big_nat3,1)
     !> UC: grid type   (nat3,nat3,nR)
     !> RR: new SC type (nat3,nat3,nR,nR)
-    VKR = fc_sc2RR(fc2%nq, S, Sd, fc2d%fc) - fc_uc2RR(S, fc2%nq, fc2%fc)
     CALL fc2_sc%allocate(S, fc2%nq)
-    fc2_sc%fc = VKR
+    fc2_sc%fc = fc_sc2RR(fc2%nq, S, Sd, fc2d%fc(:,:,1)) - &
+      fc_uc2RR(fc2%nq, S, fc2%fc)
     !> VKR should have the following symmetry:
     !> VKR(na1,na2,i,j) == VKR(na2,na1,j,i) (CHECKED)
 
@@ -100,7 +102,7 @@ contains
     ! call fc2_sc%center(fc2%nq, S, Sd)
     !
     call freq_in_grid(S, fc2_centered, grid, freqs, Us)
-    CALL freq_in_grid(S, fc2_centered, out_grid, out_freqs, out_Us)
+    call freq_in_grid(S, fc2_centered, out_grid, out_freqs, out_Us)
     !
     !> max_freq is slightly larger than the maximum frequency, to be sure that
     !> maxval(out_freqs) <= max_freq
@@ -113,117 +115,95 @@ contains
     !> serially calculate tetras for an equally spaced omega
     !> interval, after we will interpolate them (even at more than 1st order).
     !> The cycle is serial cause the tetra_weights_green is already parallelized
-    do iw = 1, input%n_omega
+    do iw = 0, input%n_omega
       omega = max_freq*iw/input%n_omega
       tetra_weights(:,:,iw) = tetra_weights_green(omega**2)
-
-      !> builds big green function matrix in RR format
-      if (full) then
-        do iR = 1, nR
-          do jR = 1, nR
-            R = REAL(index2v(iR, fc2%nq) - index2v(jR, fc2%nq), DP)
-            CALL cryst_to_cart(1, R, S%at, 1)
-            GsR(:,:,iR,jR,iw) = &
-              green_function(S, grid, tetra_weights(:,:,iw), Us, R)
-          enddo
-        enddo
-      endif
+      tetra_flat(:,iw) = reshape(tetra_weights(:,:,iw), [S%nat3*grid%nqtot])
     enddo
+    !
+    call print_message("end of tetra weights calculation")
+    !
+    do iq = 1, grid%nq
+      iqp = iq + out_grid%iq0
+      call fc2_sc%interpolate( grid%xq(:,iq), S)
+      T_Us = CONJG(TRANSPOSE(Us(:,:,iqp)))
+      do jq = 1, out_grid%nqtot
+        call fc2_sc%interpolate( - out_grid%sxq(:,jq), S, VK)
+        phase_def = e_iqr(out_grid%sxq(:,jq) - grid%xq(:,iq), R_def)
+        M_K(:,:,iqp,jq) = matmul(T_Us, &
+          matmul(VK, out_Us(:,:,jq)))
+        !
+        M_M(:,:,iqp,jq) = phase_def * matmul(T_Us, &
+          matmul(mass_matrix, out_Us(:,:,jq)))
+      enddo
+    enddo
+    MK_flat = reshape_RR_cmplx(M_K)
+    MM_flat = reshape_RR_cmplx(M_M)
 
-    call print_message("end of green function calculation")
-
-    TsR = 0.0_dp
-    if (full) then
-      !> cycle is now parallel, for this reason I spliced it
-      do iw = 1+my_id, input%n_omega, num_procs
+    !
+    call print_message("end of braket calculation")
+    !
+    lws_full = 0._dp
+    lws_full_iw = 0._dp
+    if(full_born) then
+      if (out_grid%nqtot /= grid%nqtot) &
+        call errore("defect", "out_grid%nqtot /= grid%nqtot", 1)
+      !
+      Id_flat = id_mat(S%nat3*out_grid%nqtot)
+      do iw = my_id, input%n_omega, num_procs
         omega = max_freq*iw/input%n_omega
-        VR = VKR ! VK
-        VR(:,:,iR_def, iR_def) = VR(:,:,iR_def, iR_def) + &
-          mass_matrix * omega**2 ! VM
-
-        GR = GsR(:,:,:,:,iw)
-        !> first born, temp is needed to if we want to precompute
-        temp = 0.0_dp
-        do iR = 1, nR
-          do jR = 1, nR
-            do iRin = 1, nR
-              temp(:,:,iR,jR) = temp(:,:,iR,jR) + matmul( &
-                VR(:,:,iR,iRin), GR(:,:,iRin,jR))
-            enddo
-          enddo
-        enddo
-
-        do iR = 1, nR
-          do jR = 1, nR
-            do iRin = 1, nR
-              TsR(:,:,iR,jR,iw) = TsR(:,:,iR,jR,iw) + &
-                matmul(temp(:,:,iR,iRin), VR(:,:,iRin,jR))
-            enddo
-          enddo
+        V_flat = MK_flat + omega**2 * MM_flat
+        !
+        do comp = 1, out_grid%nqtot * S%nat3
+          M_flat(:,comp) = V_flat(:,comp) * tetra_flat(:,iw)
         enddo
         !
+        ! if (iw /= 0) then
+        !   call mat2_diag(S%nat3*out_grid%nqtot, M_flat, eigenvalues)
+        !   do comp = 1, size(eigenvalues)
+        !     if (abs(eigenvalues(comp)) > 1._dp) then
+        !       print *, "outside", iw, eigenvalues(comp)
+        !     endif
+        !   enddo
+        ! endif
+        ! print*, "siamo a ", iw
+
+        !> These are the only two lines that enable Full Born
+        M_flat = Id_flat - M_flat
+        call invzmat(S%nat3*out_grid%nqtot, M_flat)
+        ! M_flat = M_flat + matmul(M_flat, M_flat)
+        !
+        M_flat = matmul(V_flat, M_flat)
+        !
+        do iqp = 1, out_grid%nqtot
+          do ibnd = 1, S%nat3
+            comp = ibnd + (iqp-1)*S%nat3
+            lws_full_iw(ibnd,iqp,iw) = -AIMAG(M_flat(comp,comp))
+          enddo
+        enddo
       enddo
+      ! call mpi_bsum(input%n_omega+1, S%nat3, out_grid%nqtot, lws_full_iw)
+      !
+      call print_message("end of born calculation")
+      !
     endif
     !
-    call print_message("end of born calculation")
-    !
-    lws = 0.0_dp
-    lwsR = 0.0_dp
-    !> inner grid is parallel
-    do iq = 1, out_grid%nqtot
-      !> the last parameter says that we're interpolating
-      !> on the ith component (1 or 2)
-      call fc2_sc%interpolate( out_grid%xq(:,iq), S,  1)
-      do jq = 1, grid%nq
-        !> translation phase for VM
-        phase_def = e_iqr(grid%xq(:,jq) - out_grid%xq(:,iq), R_def)
-        !> second step of the interpolation (it's slower in the second
-        !> component for centered grids, it's not that wise to keep it like this)
-        call fc2_sc%interpolate( - grid%xq(:,jq), S, VK)
-        !> outer band loop
-        do ibnd = 1, S%nat3
-          omegaq = out_freqs(ibnd,iq)
-          if(omegaq < 1e-12) cycle
-          !> 1D interpolation of the tetra weights
-          tetra_interp = interp1_matrix(tetra_weights, omegaq*input%n_omega/max_freq)
-          !> inner band loop
-          do jbnd = 1, S%nat3
-            lws(ibnd, iq) = lws(ibnd, iq) - &
-            ABS(braket(out_Us(:,ibnd,iq), &
-            VK + mass_matrix * phase_def * omegaq**2, & ! omegaq can give slightly different results than interp(VM(omega))
-            Us(:,jbnd,jq + grid%iq0)))**2 * &
-            AIMAG(tetra_interp(jbnd,jq + grid%iq0)) !> only IMG needed
-          enddo
-        enddo
+    lws = 0._dp
+    lws_full = 0._dp
+    do iq = 1, out_grid%nq
+      iqp = iq + out_grid%iq0
+      do ibnd = 1, S%nat3
+        comp = ibnd + (iqp-1)*S%nat3
+        omegaq = out_freqs(ibnd,iqp)
+
+        lws_full(ibnd,iqp) = interp1_scl(lws_full_iw(ibnd,iqp,:), omegaq*input%n_omega/max_freq)
+
+        interp_flat = -AIMAG(interp1_vector(tetra_flat, omegaq*input%n_omega/max_freq))
+        lws(ibnd,iqp) = SUM(ABS(MK_flat(:,comp) + MM_flat(:,comp) * omegaq**2)**2 * interp_flat)
       enddo
-
-      if (full) then
-        !> only outer cylce, inner is inside green function definition
-        do ibnd = 1, S%nat3
-          omegaq = out_freqs(ibnd,iq)
-          if(omegaq < 1e-12) cycle
-          !> builds long outer vector
-          UR = 0.0_dp
-          do iR = 1, nR
-            R = REAL(index2v(iR, fc2%nq), DP)
-            CALL cryst_to_cart(1, R, S%at, 1)
-            UR(:, iR) = out_Us(:,ibnd,iq) * e_iqr(out_grid%xq(:,iq), R)
-          enddo
-
-          !> interpolation in RR form (4 indices)
-          TR = interp1_tns4(TsR, omegaq*input%n_omega/max_freq)
-
-          !> usual matrix multiplication with 4 indices
-          do iR = 1, nR
-            do jR = 1, nR
-              lwsR(ibnd, iq) = lwsR(ibnd, iq) - &
-                AIMAG(braket(UR(:,iR), TR(:,:,iR,jR), UR(:,jR)))
-            enddo
-          enddo
-        enddo
-      endif
     enddo
     call mpi_bsum(S%nat3, out_grid%nqtot, lws)
+    call mpi_bsum(S%nat3, out_grid%nqtot, lws_full)
     !
     call print_message("writing defect linewidths to file")
     !
@@ -236,16 +216,16 @@ contains
         enddo
       enddo
       close(10)
-      !
-      if (full) then
-        open(12, file='defectR.dat', status='unknown')
-        do iq = 1, out_grid%nqtot
-          do ibnd = 1, S%nat3
-            write(12, *) out_freqs(ibnd,iq), lwsR(ibnd,iq), ibnd
-          enddo
+    endif
+    !
+    if(ionode .and. full_born) then
+      open(10, file='defect_FB.dat', status='unknown')
+      do iq = 1, out_grid%nqtot
+        do ibnd = 1, S%nat3
+          write(10, *) out_freqs(ibnd,iq), lws_full(ibnd,iq), ibnd
         enddo
-        close(12)
-      endif
+      enddo
+      close(10)
     endif
     !
   end subroutine

@@ -87,6 +87,47 @@ contains
     !
   end function
   !
+  function interp1_scl(scl, x)
+    !> interpolates linearly a 2D matrix on a 1D grid,
+    !> the last dimension of scalars is the grid index.
+    !> The scalars should be calculated from 0 to N included
+    real(dp), intent(in) :: scl(0:)
+    real(dp), intent(in) :: x
+    real(dp) :: interp1_scl
+    real(dp) :: dx
+    integer :: x0
+    !
+    if(x > size(scl)) call errore('interp1_scl', ': x out of range', INT(x))
+    !
+    x0 = INT(x)
+    dx = x - x0
+
+    interp1_scl = (1.0_dp - dx) * scl(x0) + &
+      dx * scl(x0+1)
+    !
+  end function
+  !
+  function interp1_vector(vectors, x)
+    !> interpolates linearly a 2D matrix on a 1D grid,
+    !> the last dimension of vectors is the grid index.
+    !> The vectors should be calculated from 0 to N included
+    complex(dp), intent(in) :: vectors(:,0:)
+    real(dp), intent(in) :: x
+    complex(dp), allocatable :: interp1_vector(:)
+    real(dp) :: dx
+    integer :: x0
+    !
+    if(x > size(vectors, 2)) call errore('interp1_vector', ': x out of range', INT(x))
+    allocate(interp1_vector(size(vectors, 1)))
+    !
+    x0 = INT(x)
+    dx = x - x0
+
+    interp1_vector = (1.0_dp - dx) * vectors(:,x0) + &
+      dx * vectors(:,x0+1)
+    !
+  end function
+  !
   function interp1_tns4(matrices, x)
     !> interpolates linearly a 2D matrix on a 1D grid,
     !> the last dimension of matrices is the grid index.
@@ -201,19 +242,25 @@ contains
     end do
   end function
   !
-  function reshape_RR_cmplx(mat, nat3, N3) result(mat_flat)
-    complex(dp) :: mat(nat3,nat3,N3,N3)
-    integer :: nat3, N3
+  function reshape_RR_cmplx(mat) result(mat_flat)
+    complex(dp) :: mat(:,:,:,:)
+    integer :: nat3i, nat3j, n3i, n3j
     !
-    complex(dp), dimension(nat3*N3, nat3*N3) :: mat_flat
+    complex(dp), allocatable :: mat_flat(:,:)
     integer :: i, j, na1, na2, n1, n2
     !
-    do n1 = 1, N3
-      do n2 = 1, N3
-        do na1 = 1, nat3
-          do na2 = 1, nat3
-            i = na1 + (n1-1)*nat3
-            j = na2 + (n2-1)*nat3
+    nat3i = size(mat,1)
+    nat3j = size(mat,2)
+    n3i = size(mat,3)
+    n3j = size(mat,4)
+
+    allocate(mat_flat(nat3i*n3i, nat3j*n3j))
+    do n1 = 1, n3i
+      do n2 = 1, n3j
+        do na1 = 1, nat3i
+          do na2 = 1, nat3j
+            i = na1 + (n1-1)*nat3i
+            j = na2 + (n2-1)*nat3j
             mat_flat(i,j) = mat(na1,na2,n1,n2)
           enddo
         enddo
@@ -221,19 +268,25 @@ contains
     enddo
   end function
   !
-  function reshape_RR_real(mat, nat3, N3) result(mat_flat)
-    real(dp) :: mat(nat3,nat3,N3,N3)
-    integer :: nat3, N3
+  function reshape_RR_real(mat) result(mat_flat)
+    real(dp) :: mat(:,:,:,:)
+    integer :: nat3i, nat3j, n3i, n3j
     !
-    real(dp), dimension(nat3*N3, nat3*N3) :: mat_flat
+    real(dp), allocatable :: mat_flat(:,:)
     integer :: i, j, na1, na2, n1, n2
     !
-    do n1 = 1, N3
-      do n2 = 1, N3
-        do na1 = 1, nat3
-          do na2 = 1, nat3
-            i = na1 + (n1-1)*nat3
-            j = na2 + (n2-1)*nat3
+    nat3i = size(mat,1)
+    nat3j = size(mat,2)
+    n3i = size(mat,3)
+    n3j = size(mat,4)
+
+    allocate(mat_flat(nat3i*n3i, nat3j*n3j))
+    do n1 = 1, n3i
+      do n2 = 1, n3j
+        do na1 = 1, nat3i
+          do na2 = 1, nat3j
+            i = na1 + (n1-1)*nat3i
+            j = na2 + (n2-1)*nat3j
             mat_flat(i,j) = mat(na1,na2,n1,n2)
           enddo
         enddo

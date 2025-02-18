@@ -28,6 +28,8 @@ MODULE q_grids
     REAL(DP) :: xq0(3) = 0._dp ! the shift applied to the grid (if shifted)
     REAL(DP),ALLOCATABLE :: xq(:,:) ! coordinates of the q-point
     REAL(DP),ALLOCATABLE :: w(:)    ! weight for integral of the BZ
+    integer, allocatable :: yq(:,:) ! grid in crystalline coordinate, to be divided by n(3)
+    real(dp), allocatable :: sxq(:,:) ! serial grid in cartesian coordinates
   CONTAINS
     procedure :: scatter => q_grid_scatter
     procedure :: destroy => q_grid_destroy
@@ -417,7 +419,7 @@ CONTAINS
     grid%n(2) = n2
     grid%n(3) = n3
     grid%nq = n1*n2*n3
-        !
+    !
     IF(allocated(grid%xq)) CALL errore("setup_simple_grid", "grid is already allocated", 1)
     ALLOCATE(grid%xq(3,grid%nq))
     ALLOCATE(grid%w(grid%nq))
@@ -545,11 +547,25 @@ CONTAINS
     !print*, "me", my_id, nqfirst, nqme, nqresidual, nqdiv, num_procs
     !
     IF(allocated(grid%xq)) CALL errore("setup_simple_grid", "grid is already allocated", 1)
-    ALLOCATE(grid%xq(3,grid%nq))
+    ALLOCATE(grid%xq(3,grid%nq), grid%yq(3,grid%nq), grid%sxq(3,grid%nqtot))
     ALLOCATE(grid%w(grid%nq))
     grid%w = 1._dp/grid%nqtot
     grid%scattered = .true.
     !
+
+    idx = 0
+    do i = 0, n1-1
+      do j = 0, n2-1
+        do k = 0, n3-1
+          idx = idx+1
+          grid%sxq(1,idx) = REAL(i,kind=DP)/REAL(n1,kind=DP)
+          grid%sxq(2,idx) = REAL(j,kind=DP)/REAL(n2,kind=DP)
+          grid%sxq(3,idx) = REAL(k,kind=DP)/REAL(n3,kind=DP)
+        enddo
+      enddo
+    enddo
+    call cryst_to_cart(grid%nqtot, grid%sxq, bg, 1)
+
     idx = 0
     NQ_LOOP : &
       DO i = 0, n1-1
@@ -564,6 +580,9 @@ CONTAINS
             grid%xq(1,my_idx) = REAL(i,kind=DP)/REAL(n1,kind=DP)
             grid%xq(2,my_idx) = REAL(j,kind=DP)/REAL(n2,kind=DP)
             grid%xq(3,my_idx) = REAL(k,kind=DP)/REAL(n3,kind=DP)
+            grid%yq(1,my_idx) = i
+            grid%yq(2,my_idx) = j
+            grid%yq(3,my_idx) = k
           ENDIF
           !
         ENDDO
@@ -704,11 +723,11 @@ CONTAINS
     grid%xq = grid%xq*max_q/nshells
     IF(nshells>1)THEN
       DO j = order,1,-1
-      DO i = nshells,1,-1
-         !print*, ">>", i, (j-1)*nshells+i, grid%nq
-         grid%xq(:,(j-1)*nshells+i) = grid%xq(:,j) * i
-         grid%w((j-1)*nshells+i) = grid%w(j) * i ! this is "r dr" once renormalized
-      ENDDO
+        DO i = nshells,1,-1
+          !print*, ">>", i, (j-1)*nshells+i, grid%nq
+          grid%xq(:,(j-1)*nshells+i) = grid%xq(:,j) * i
+          grid%w((j-1)*nshells+i) = grid%w(j) * i ! this is "r dr" once renormalized
+        ENDDO
       ENDDO
       ! I only include Gamma once, with no weight
       grid%xq(:,grid%nq) = 0._dp
