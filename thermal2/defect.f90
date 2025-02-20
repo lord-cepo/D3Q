@@ -70,7 +70,6 @@ contains
     real(dp) :: mass_matrix(S%nat3, S%nat3)
     integer :: iq, iqp, iw, ibnd, nR, jq
     integer :: iR_def, na_def, j, comp
-    ! real(dp) :: eigenvalues(S%nat3*out_grid%nqtot)
     complex(dp) :: phase_def
     !
     nR = product(fc2%nq)
@@ -99,7 +98,7 @@ contains
     !> VKR(na1,na2,i,j) == VKR(na2,na1,j,i) (CHECKED)
 
     !> centering procedure gives different output
-    ! call fc2_sc%center(fc2%nq, S, Sd)
+    call fc2_sc%center(fc2%nq, S, Sd)
     !
     call freq_in_grid(S, fc2_centered, grid, freqs, Us)
     call freq_in_grid(S, fc2_centered, out_grid, out_freqs, out_Us)
@@ -123,6 +122,8 @@ contains
     !
     call print_message("end of tetra weights calculation")
     !
+    M_K = 0.0_dp
+    M_M = 0.0_dp
     do iq = 1, grid%nq
       iqp = iq + out_grid%iq0
       call fc2_sc%interpolate( grid%xq(:,iq), S)
@@ -137,9 +138,11 @@ contains
           matmul(mass_matrix, out_Us(:,:,jq)))
       enddo
     enddo
+    call mpi_bsum(S%nat3, S%nat3, grid%nqtot, out_grid%nqtot, M_K)
+    call mpi_bsum(S%nat3, S%nat3, grid%nqtot, out_grid%nqtot, M_M)
+    !
     MK_flat = reshape_RR_cmplx(M_K)
     MM_flat = reshape_RR_cmplx(M_M)
-
     !
     call print_message("end of braket calculation")
     !
@@ -158,23 +161,13 @@ contains
           M_flat(:,comp) = V_flat(:,comp) * tetra_flat(:,iw)
         enddo
         !
-        ! if (iw /= 0) then
-        !   call mat2_diag(S%nat3*out_grid%nqtot, M_flat, eigenvalues)
-        !   do comp = 1, size(eigenvalues)
-        !     if (abs(eigenvalues(comp)) > 1._dp) then
-        !       print *, "outside", iw, eigenvalues(comp)
-        !     endif
-        !   enddo
-        ! endif
-        ! print*, "siamo a ", iw
-
         !> These are the only two lines that enable Full Born
         M_flat = Id_flat - M_flat
         call invzmat(S%nat3*out_grid%nqtot, M_flat)
         ! M_flat = M_flat + matmul(M_flat, M_flat)
         !
         M_flat = matmul(V_flat, M_flat)
-        !
+
         do iqp = 1, out_grid%nqtot
           do ibnd = 1, S%nat3
             comp = ibnd + (iqp-1)*S%nat3
@@ -182,7 +175,7 @@ contains
           enddo
         enddo
       enddo
-      ! call mpi_bsum(input%n_omega+1, S%nat3, out_grid%nqtot, lws_full_iw)
+      call mpi_bsum(S%nat3, out_grid%nqtot, input%n_omega+1, lws_full_iw)
       !
       call print_message("end of born calculation")
       !
