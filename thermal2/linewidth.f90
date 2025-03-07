@@ -23,7 +23,6 @@ MODULE linewidth
   USE functions,        ONLY : refold_bz
   USE code_input,       ONLY : code_input_type
   USE timers
-  use thutils, only: print_message
   USE thtetra,          ONLY : tetra_init, tetra_weights_delta
 CONTAINS
 
@@ -126,7 +125,6 @@ CONTAINS
     USE functions, ONLY : f_gauss
     USE fc3_interpolate, ONLY : sum_R3, d3_mixed
     USE merge_degenerate,   ONLY : merge_degen
-    use thutils, only : print_message
 
     IMPLICIT NONE
     !! Normal/Umklapp contribution
@@ -170,7 +168,6 @@ CONTAINS
       allocate(freq_C(S%nat3**2, grid%nqtot), freq_X(S%nat3**2, grid%nqtot))
       CALL energy_tetra(grid, xq1, S, fc2, freq_C, freq_X)
       allocate(weights_C(S%nat3**2, grid%nqtot), weights_X(S%nat3**2, grid%nqtot))
-      call print_message("fine di freq doubled")
 
     endif
     !
@@ -182,7 +179,6 @@ CONTAINS
         call tetra_init(grid%n, S%bg, freq_X)
         call tetra_weights_delta(freq(i,1), weights_X)
         timer_CALL t_thtetra%stop()
-        call print_message("fine di tetra")
       endif
       DO iq = 1, grid%nq
         !
@@ -295,7 +291,6 @@ CONTAINS
       ENDDO
       !
     ENDDO
-
     timer_CALL t_mpicom%start()
     IF(grid%scattered) CALL mpi_bsum(S%nat3,input%nconf,linewidth_q)
     IF(grid%scattered .and. present(lw_UN)) CALL mpi_bsum(S%nat3,2,input%nconf,lw_UN)

@@ -70,7 +70,9 @@ MODULE mpi_thermal
 
     MODULE PROCEDURE mpi_bsum_scl
     MODULE PROCEDURE mpi_bsum_vec
+    MODULE PROCEDURE mpi_bsum_int_mat
     MODULE PROCEDURE mpi_bsum_mat
+    MODULE PROCEDURE mpi_bsum_int_tns
     MODULE PROCEDURE mpi_bsum_tns
     MODULE PROCEDURE mpi_bsum_tns4
 
@@ -214,6 +216,16 @@ CONTAINS
 #endif
   END SUBROUTINE
   !
+  SUBROUTINE mpi_bsum_int_mat(mm, nn, mat)
+    IMPLICIT NONE
+    INTEGER,INTENT(in)     :: mm, nn
+    integer,INTENT(inout) :: mat(mm,nn)
+#ifdef __MPI
+    CALL MPI_ALLREDUCE(MPI_IN_PLACE, mat, mm*nn, MPI_INTEGER, MPI_SUM,&
+      MPI_COMM_WORLD, ierr)
+#endif
+  END SUBROUTINE
+  !
   SUBROUTINE mpi_bsum_mat(mm, nn, mat)
     IMPLICIT NONE
     INTEGER,INTENT(in)     :: mm, nn
@@ -241,6 +253,16 @@ CONTAINS
       CALL MPI_REDUCE( mat, mat, mm*nn, MPI_DOUBLE_PRECISION, MPI_SUM, 0, MPI_COMM_WORLD, info )
       IF( info /= 0 ) CALL errore( 'reduce_base_real', 'error in mpi_reduce 1', info )
     ENDIF
+#endif
+  END SUBROUTINE
+  !
+  SUBROUTINE mpi_bsum_int_tns(ll, mm, nn, tns)
+    IMPLICIT NONE
+    INTEGER,INTENT(in)     :: ll, mm, nn
+    integer,INTENT(inout) :: tns(ll, mm,nn)
+#ifdef __MPI
+    CALL MPI_ALLREDUCE(MPI_IN_PLACE, tns, ll*mm*nn, MPI_INTEGER, MPI_SUM,&
+      MPI_COMM_WORLD, ierr)
 #endif
   END SUBROUTINE
   !
@@ -595,12 +617,12 @@ CONTAINS
     !
     ii_scatt = 0
     DO i = 2,num_procs
-       ii_scatt(i) = ii_scatt(i-1)+nn_scatt(i-1)
+      ii_scatt(i) = ii_scatt(i-1)+nn_scatt(i-1)
     ENDDO
     !
     CALL MPI_scatterv(mat_send, nn_scatt, ii_scatt, MPI_DOUBLE_PRECISION, &
-       mat_recv, nn_scatt(my_id+1), MPI_DOUBLE_PRECISION, &
-       0, MPI_COMM_WORLD, ierr )
+      mat_recv, nn_scatt(my_id+1), MPI_DOUBLE_PRECISION, &
+      0, MPI_COMM_WORLD, ierr )
 #else
     nn_recv = nn_send
     IF(allocated(mat_recv)) DEALLOCATE(mat_recv)
@@ -608,8 +630,8 @@ CONTAINS
     mat_recv = mat_send
 #endif
 
- END SUBROUTINE
- !
+  END SUBROUTINE
+  !
   SUBROUTINE scatteri_tns(mm, ll, nn, mat)
     IMPLICIT NONE
     INTEGER,INTENT(in)  :: mm, ll
@@ -637,7 +659,7 @@ CONTAINS
 #else
     ! do nothing
 #endif
- END SUBROUTINE
+  END SUBROUTINE
 
   ! Divide a vector among all the CPUs
   SUBROUTINE scatter_vec(nn_send, vec_send, nn_recv, vec_recv, ii_recv)

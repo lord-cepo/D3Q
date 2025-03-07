@@ -403,7 +403,7 @@ CONTAINS
     !
     INTEGER :: i1, i2, i3, itet, itettot, ii, ik,  &
       ivvec(3,20,6), divvec(4,4), ivvec0(4), ikv(3), ibnd, &
-      jk, isym, itvalid, count
+      jk, isym, itvalid, count, rest, ind
     ! integer :: tetra_ik(nq(1) * nq(2) * nq(3))
     !
     REAL(DP) :: l(4), bvec2(3,3), bvec3(3,4) !xkg(3, product(nq))
@@ -425,7 +425,6 @@ CONTAINS
     ALLOCATE(ek_sort(4,nbnd,ntetra))
     ALLOCATE(ek_in(nbnd,nqs))
     ek_in = ek
-    ek_sort = 0.0_dp
     ALLOCATE(itetra (4,nbnd,ntetra))
     allocate(iisize_tetra(ntetra))
     allocate(nt_tetra(ntetra))
@@ -553,61 +552,169 @@ CONTAINS
       wlsm(4,4) = 1.0_dp
       !
     ENDIF
-    itettot = 0
-    itvalid = 0
-    ! tetra_ik = 0
-    DO i1 = 1, nq(1)
-      DO i2 = 1, nq(2)
-        DO i3 = 1, nq(3)
-          !
-          DO itet = 1, 6
-            !
-            ! count = 0
-            ! do ii = 1, nntetra
-            !   ik = tetra(ii, itettot+1)
-            !   if (ik == equiv(ik)) then
-            !     count = count + 1
-            !     ii_tetra(count,itvalid+1) = ii
-            !   endif
-            ! enddo
-            ! if (count > 0) then
-            !   count_tetra(itettot) = count
-            ! endif
+    ! itettot = 0
+    ! itvalid = 0
+    ! ! tetra_ik = 0
+    ! DO i1 = 1, nq(1)
+    !   DO i2 = 1, nq(2)
+    !     DO i3 = 1, nq(3)
+    !       !
+    !       DO itet = 1, 6
+    !         !
+    !         ! count = 0
+    !         ! do ii = 1, nntetra
+    !         !   ik = tetra(ii, itettot+1)
+    !         !   if (ik == equiv(ik)) then
+    !         !     count = count + 1
+    !         !     ii_tetra(count,itvalid+1) = ii
+    !         !   endif
+    !         ! enddo
+    !         ! if (count > 0) then
+    !         !   count_tetra(itettot) = count
+    !         ! endif
 
-            itettot = itettot + 1
-            DO ibnd = 1, nbnd
-              !
-              count = 0
-              DO ii = 1, nntetra
-                !
-                ikv(1:3) = (/i1, i2, i3/) - 1
-                ikv(1:3) = ikv(1:3) + ivvec(1:3,ii,itet)
-                ikv(1:3) = MODULO(ikv(1:3), (/nq(1), nq(2), nq(3)/))
-                !
-                ik = ikv(3) + nq(3) * (ikv(2) + nq(2) * ikv(1)) + 1
-                !
-                tetra(ii, itettot) = ik
-                !
-                ek_sort(:,ibnd,itettot) = ek_sort(:,ibnd,itettot) + wlsm(:,ii) * ek(ibnd,ik)
-                ! ELSE
-                !    ek_sort(ii,ibnd,itettot) = ek(ibnd,ik)
-                ! ENDIF
+    !         itettot = itettot + 1
+    !         DO ibnd = 1, nbnd
+    !           !
+    !           count = 0
+    !           DO ii = 1, nntetra
+    !             !
+    !             ikv(1:3) = (/i1, i2, i3/) - 1
+    !             ikv(1:3) = ikv(1:3) + ivvec(1:3,ii,itet)
+    !             ikv(1:3) = MODULO(ikv(1:3), (/nq(1), nq(2), nq(3)/))
+    !             !
+    !             ik = ikv(3) + nq(3) * (ikv(2) + nq(2) * ikv(1)) + 1
+    !             !
+    !             tetra(ii, itettot) = ik
+    !             !
+    !             ek_sort(:,ibnd,itettot) = ek_sort(:,ibnd,itettot) + wlsm(:,ii) * ek(ibnd,ik)
+    !             ! ELSE
+    !             !    ek_sort(ii,ibnd,itettot) = ek(ibnd,ik)
+    !             ! ENDIF
 
-              END DO ! ii
-              !
-              itetra(1,ibnd,itettot) = 0 ! needed to initialize index inside hpsort
-              CALL hpsort( 4, ek_sort(:,ibnd,itettot), itetra(:,ibnd,itettot))
-            ENDDO ! ibnd
-            !
-          ENDDO ! itet
+    !           END DO ! ii
+    !           !
+    !           itetra(1,ibnd,itettot) = 0 ! needed to initialize index inside hpsort
+    !           CALL hpsort( 4, ek_sort(:,ibnd,itettot), itetra(:,ibnd,itettot))
+    !         ENDDO ! ibnd
+    !         !
+    !       ENDDO ! itet
+    !       !
+    !     ENDDO ! i3
+    !   ENDDO ! i2
+    ! ENDDO ! i1
+
+    ek_sort = 0._dp
+    itetra = 0
+    tetra = 0
+    DO itettot = 1+my_id, ntetra, num_procs
+      itet = mod(itettot,6) + 1
+      rest = itettot / 6
+      i3 = mod(rest,nq(3)) + 1
+      rest = rest / nq(3)
+      i2 = mod(rest,nq(2)) + 1
+      rest = rest / nq(2)
+      i1 = mod(rest,nq(1)) + 1
+      !
+      DO ibnd = 1, nbnd
+        DO ii = 1, nntetra
           !
-        ENDDO ! i3
-      ENDDO ! i2
-    ENDDO ! i1
+          ikv(1:3) = (/i1, i2, i3/) - 1
+          ikv(1:3) = ikv(1:3) + ivvec(1:3,ii,itet)
+          ikv(1:3) = MODULO(ikv(1:3), (/nq(1), nq(2), nq(3)/))
+          !
+          ik = ikv(3) + nq(3) * (ikv(2) + nq(2) * ikv(1)) + 1
+          !
+          tetra(ii, itettot) = ik
+          !
+          ek_sort(:,ibnd,itettot) = ek_sort(:,ibnd,itettot) + wlsm(:,ii) * ek(ibnd,ik)
+        enddo
+        itetra(1,ibnd,itettot) = 0 ! needed to initialize index inside hpsort
+        CALL hpsort( 4, ek_sort(:,ibnd,itettot), itetra(:,ibnd,itettot))
+      END DO
+      !
+    ENDDO !
+    call mpi_bsum(nntetra, ntetra, tetra)
+    call mpi_bsum(4, nbnd, ntetra, ek_sort)
+    call mpi_bsum(4, nbnd, ntetra, itetra)
     !
   END SUBROUTINE
   !
   subroutine tetra_weights_delta(ef, wI)
+    USE constants, ONLY : pi
+    !-----------------------------------------------------------------------------------
+    !! Calculate weights for an integral of the kind int(Ak delta(ef-ek))
+    !! The resulting wg can be used as sum(Ak * wk)
+    !-----------------------------------------------------------------------------------
+    REAL(DP), intent(out) :: wI(nbnd, nqs)
+    !! COMPLEX Integration weight of each k
+    REAL(DP), INTENT(IN) :: ef
+    !! The Fermi energy
+    INTEGER :: ik, ibnd, ii_, ii, it, jbnd, kbnd
+    REAL(DP) :: e(4), wI0(4), wg1
+    !
+    wI = 0._dp
+    !
+    DO it = 1+my_id, ntetra, num_procs
+      !
+      ! nt = nt_tetra(it)
+      !
+      DO ibnd = 1, nbnd
+        !
+        e = ek_sort(:,ibnd,it)
+        ! print"(4E12.4)", e, ef
+        wI0 = delta_vertices(ef, e)
+        ! if(ef < maxval(e) .and. ef > minval(e)) print*, "non va"
+        ! if(any(wi0 > 0)) print"(4E12.4)", e, ef
+        !
+        DO ii = 1, nntetra
+          !
+          ik = tetra(ii, it)
+          ! IF(opt_flag) THEN
+          ! if(ik > nqs) cycle
+          wI(ibnd,ik) = wI(ibnd,ik) + DOT_PRODUCT(wlsm(itetra(:,ibnd,it),ii), wI0(:))
+          ! ELSE
+          !   ik_s = tetra(itetra(ii,ibnd,nt), nt)
+          !   wI(ibnd,ik_s) = wI(ibnd,ik_s) + wI0(ii)
+          !   wR(ibnd,ik_s) = wR(ibnd,ik_s) + wR0(ii)
+          ! ENDIF
+        ENDDO
+        !
+      ENDDO ! ibnd
+      !
+    ENDDO ! nt
+    ! wg = wg / REAL(ntetra, dp)
+    wI = wI / ntetra
+    !
+    ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
+    CALL mpi_bsum(nbnd, nqs, wI)
+    !
+    ! DO ik = 1, nqs
+    !   DO ibnd = 1, nbnd
+    !     !
+    !     wg1 = wI(ibnd,ik)
+    !     !
+    !     DO jbnd = ibnd + 1, nbnd
+    !       !
+    !       IF (ABS(ek_in(ibnd,ik) - ek_in(jbnd,ik)) < 1e-6_dp) THEN
+    !         wg1 = wg1 + wI(jbnd,ik)
+    !       ELSE
+    !         !
+    !         DO kbnd = ibnd, jbnd - 1
+    !           wI(kbnd,ik) = wg1 / REAL(jbnd - ibnd, dp)
+    !         ENDDO
+    !         !
+    !         EXIT
+    !       ENDIF
+    !       !
+    !     ENDDO
+    !     !
+    !   ENDDO
+    ! ENDDO
+    !
+  END subroutine
+  !
+  subroutine tetra_weights_delta_sym(ef, wI)
     USE constants, ONLY : pi
     !-----------------------------------------------------------------------------------
     !! Calculate weights for an integral of the kind int(Ak delta(ef-ek))
@@ -657,31 +764,8 @@ CONTAINS
     ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
     CALL mpi_bsum(nbnd, nqs, wI)
     !
-    DO ik = 1, nqs
-      DO ibnd = 1, nbnd
-        !
-        wg1 = wI(ibnd,ik)
-        !
-        DO jbnd = ibnd + 1, nbnd
-          !
-          IF (ABS(ek_in(ibnd,ik) - ek_in(jbnd,ik)) < 1e-6_dp) THEN
-            wg1 = wg1 + wI(jbnd,ik)
-          ELSE
-            !
-            DO kbnd = ibnd, jbnd - 1
-              wI(kbnd,ik) = wg1 / REAL(jbnd - ibnd, dp)
-            ENDDO
-            !
-            EXIT
-          ENDIF
-          !
-        ENDDO
-        !
-      ENDDO
-    ENDDO
-    !
   END subroutine
-
+  !
   subroutine rm_degen_vertices(hw, D)
     real(dp), INTENT(IN) :: hw
     real(dp), INTENT(INOUT) :: D(4)
