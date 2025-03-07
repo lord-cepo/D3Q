@@ -930,13 +930,14 @@ CONTAINS
     nqs = 0
     nbnd = 0
     nvalid = 0
-    IF (ALLOCATED(tetra  )) DEALLOCATE (tetra  )
-    IF (ALLOCATED(wlsm   )) DEALLOCATE (wlsm   )
-    IF (ALLOCATED(ek_sort)) DEALLOCATE (ek_sort)
-    IF (ALLOCATED(itetra )) DEALLOCATE (itetra )
-    if(allocated(ii_tetra)) deallocate(ii_tetra)
-    if(allocated(nt_tetra)) deallocate(nt_tetra)
-    if(allocated(iisize_tetra)) deallocate(iisize_tetra)
+    IF (ALLOCATED(tetra  ))      DEALLOCATE (tetra  )
+    IF (ALLOCATED(wlsm   ))      DEALLOCATE (wlsm   )
+    IF (ALLOCATED(ek_sort))      DEALLOCATE (ek_sort)
+    IF (ALLOCATED(itetra ))      DEALLOCATE (itetra )
+    if (allocated(ii_tetra))     deallocate (ii_tetra)
+    if (allocated(ek_in))        deallocate (ek_in   )
+    if (allocated(nt_tetra))     deallocate (nt_tetra)
+    if (allocated(iisize_tetra)) deallocate (iisize_tetra)
     !
   END SUBROUTINE deallocate_tetra
   !

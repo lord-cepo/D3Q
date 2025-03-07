@@ -176,11 +176,12 @@ CONTAINS
     !
     do i = 1, S%nat3
       if (input%delta_approx == 'tetra') then
+        timer_CALL t_thtetra%start()
         call tetra_init(grid%n, S%bg, freq_C)
         call tetra_weights_delta(freq(i,1), weights_C)
         call tetra_init(grid%n, S%bg, freq_X)
         call tetra_weights_delta(freq(i,1), weights_X)
-
+        timer_CALL t_thtetra%stop()
         call print_message("fine di tetra")
       endif
       DO iq = 1, grid%nq
@@ -304,7 +305,7 @@ CONTAINS
     if (input%delta_approx == 'tetra') linewidth_q = linewidth_q * grid%nqtot
 
     if(allocated(weights_C)) deallocate(weights_C, weights_X)
-
+    call dqr%deallocate()
 
   END FUNCTION
 
