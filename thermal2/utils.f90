@@ -91,9 +91,9 @@ contains
     !> interpolates linearly a 2D matrix on a 1D grid,
     !> the last dimension of scalars is the grid index.
     !> The scalars should be calculated from 0 to N included
-    real(dp), intent(in) :: scl(0:)
+    complex(dp), intent(in) :: scl(0:)
     real(dp), intent(in) :: x
-    real(dp) :: interp1_scl
+    complex(dp) :: interp1_scl
     real(dp) :: dx
     integer :: x0
     !

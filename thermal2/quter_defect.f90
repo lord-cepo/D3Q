@@ -240,10 +240,9 @@ contains
               if (wg > 1e-6) then
                 !> R2 is in the unit cell, so we multiply Rbig by grid to transform it in a
                 !> supercell vector of the unit cell
-                R_vec = index2v(R2, grid) + grid * Rbig_shift
+                R_vec = - index2v(R2, grid) - grid * Rbig_shift
                 !> I use the 0-indexing to populate R_list at the correct non-negative integer
                 ind = v2index(index2v(R2, grid) + grid * Rbig_from_0, grid * far_grid)
-                ! if(r1 == 1) print*, ind(2)
                 !> R_list contains the ixR or -1. The nxR is refreshed at each step
                 if (R_list(ind) == -1) then
                   nxR(R1) = nxR(R1) + 1
@@ -368,7 +367,6 @@ contains
               do j2 = 1, 3
                 new_fc(j1+3*(map_nat(na1)-1),j2+3*(map_nat(na2)-1),ixR) = &
                   fc%FC(j1+(na1-1)*3, j2+(na2-1)*3, 1) * wg
-                ! if(map_R(na1) == 1 .and. map_R(na2) == 3) print*, fc%FC(j1+(na1-1)*3, j2+(na2-1)*3, 1) * wg
               enddo
             enddo
           endif
@@ -406,7 +404,7 @@ contains
       do sc_na2 = 1, S_sc%nat
         do j1 = 1, 3
           do j2 = 1, 3
-            fc_sc2RR(j1+(map_nat(sc_na1)-1)*3, j2+(map_nat(sc_na2)-1)*3, map_R(sc_na1), map_R(sc_na2)) = &
+            fc_sc2RR(j1+(map_nat(sc_na1)-1)*3, j2+(map_nat(sc_na2)-1)*3, map_R(sc_na2), map_R(sc_na1)) = &
               FC(j1+(sc_na1-1)*3, j2+(sc_na2-1)*3)
           enddo
         enddo
@@ -459,11 +457,11 @@ contains
     nR = product(sc_grid)
     do R1 = 1, nR
       do R2 = 1, nR
-        R = index2v(R2, sc_grid) - index2v(R1, sc_grid)
+        R = index2v(R1, sc_grid) - index2v(R2, sc_grid)
         do j1 = 1, 3
           if (R(j1) < 0) R(j1) = R(j1) + sc_grid(j1)
         enddo
-        fc_uc2RR(:,:,R1,R2) = fc(:,:,v2index(R, sc_grid))
+        fc_uc2RR(:,:,R2,R1) = fc(:,:,v2index(R, sc_grid))
       enddo
     enddo
   end function

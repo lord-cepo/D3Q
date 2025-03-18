@@ -40,37 +40,43 @@ program defectp
   CALL setup_grid(input%grid_type, S%bg, input%nk(1), &
     input%nk(2), input%nk(3),&
     out_grid, scatter=.true., xq0=input%xk0)
+  ! call out_grid%symmetrize(S)
+  ! call out_grid%scatter()
 
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&
     in_grid, scatter=.true., xq0=input%xk0_in)
+  ! call in_grid%symmetrize(S)
+  ! call in_grid%scatter()
 
 
   CALL read_fc2(input%file_mat2_final, Sd, fc2d)
   CALL aux_system(Sd)
+  call impose_asr2(input%asr2, Sd%nat, fc2d)
+  call div_mass_fc2(Sd, fc2d)
 
-  nR = product(fc2%nq)
-  allocate(atoms(S%nat, nR))
-  atoms = map_uc2sc(S, Sd, fc2%nq)
-  do R1 = 1, nR
-    do R2 = 1, nR
-      do na1 = 1, S%nat
-        na1_sc = atoms(na1,R1)
-        do na2 = 1, S%nat
-          na2_sc = atoms(na2,R2)
-          do j1 = 1, 3
-            jn1 = j1 + 3*(na1_sc-1)
-            do j2 = 1, 3
-              jn2 = j2 + 3*(na2_sc-1)
-              fc2d%FC(jn1, jn2, 1) = &
-                fc2d%FC(jn1, jn2, 1) * &
-                S%sqrtmm1(j1 + 3*(na1-1)) * S%sqrtmm1(j2 + 3*(na2-1)) ! UC here
-            enddo
-          enddo
-        enddo
-      enddo
-    enddo
-  enddo
+  ! nR = product(fc2%nq)
+  ! allocate(atoms(S%nat, nR))
+  ! atoms = map_uc2sc(S, Sd, fc2%nq)
+  ! do R1 = 1, nR
+  !   do R2 = 1, nR
+  !     do na1 = 1, S%nat
+  !       na1_sc = atoms(na1,R1)
+  !       do na2 = 1, S%nat
+  !         na2_sc = atoms(na2,R2)
+  !         do j1 = 1, 3
+  !           jn1 = j1 + 3*(na1_sc-1)
+  !           do j2 = 1, 3
+  !             jn2 = j2 + 3*(na2_sc-1)
+  !             fc2d%FC(jn1, jn2, 1) = &
+  !               fc2d%FC(jn1, jn2, 1) * &
+  !               S%sqrtmm1(j1 + 3*(na1-1)) * S%sqrtmm1(j2 + 3*(na2-1)) ! UC here
+  !           enddo
+  !         enddo
+  !       enddo
+  !     enddo
+  !   enddo
+  ! enddo
 
   CALL main_defect(S, Sd, fc2, fc2d, in_grid, out_grid, input)
   CALL stop_mpi()
