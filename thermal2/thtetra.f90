@@ -57,6 +57,7 @@ MODULE thtetra
   !
   PUBLIC :: nntetra, tetra_weights_green, tetra_init_sym
   PUBLIC :: tetra_init, deallocate_tetra, tetra_weights_delta
+  PUBLIC :: tetra_weights_delta_sym
 
   EXTERNAL :: errore, hpsort
 
@@ -64,7 +65,7 @@ MODULE thtetra
 CONTAINS
   !
   !--------------------------------------------------------------------------
-  SUBROUTINE tetra_init_sym(nq, S, grid, ek)
+  SUBROUTINE tetra_init_sym(grid, S, ek, opt)
     !-----------------------------------------------------------------------------
     !! This rouotine sets the corners and additional points for each tetrahedron.
     !
@@ -74,14 +75,13 @@ CONTAINS
     USE noncollin_module,   ONLY : colin_mag
     IMPLICIT NONE
     !
-    INTEGER, INTENT(IN) :: nq(3)
-    !! number of q-points in each direction
     type(ph_system_info), intent(in) :: S
     !! usual system info
     REAL(DP), INTENT(IN) :: ek(:,:)
     !! energy in the form ek(ibnd, iq)
     type(q_grid), intent(in) :: grid
     !! accepts symmetrized grids
+    logical, intent(in), optional :: opt
 
     ! LOGICAL, INTENT(IN) :: is_mpi
     !! if .true., the grid is scattered
@@ -90,9 +90,9 @@ CONTAINS
 
     REAL(DP), PARAMETER :: eps = 1e-5_dp
     !
-    INTEGER :: i1, i2, i3, itet, itettot, ii, ik,  &
+    INTEGER :: i1, i2, i3, itet, itettot, ii, ik,  rest, &
       ivvec(3,20,6), divvec(4,4), ivvec0(4), ikv(3), ibnd, &
-      jk, isym, itvalid, count, equiv(product(nq)), iks(20)
+      jk, isym, itvalid, count, equiv(product(grid%n)), iks(20)
     ! integer :: tetra_ik(nq(1) * nq(2) * nq(3))
     !
     REAL(DP) :: l(4), bvec2(3,3), bvec3(3,4) !xkg(3, product(nq))
@@ -112,23 +112,26 @@ CONTAINS
     !   print*, "size of original grid", nq
     !   CALL errore("tetra_init", "n(1) * n(2) * n(3) /= SIZE(ek,2)", SIZE(ek,2))
     ! ENDIF
-    ntetra  = 6*product(nq)
+    ntetra  = 6*product(grid%n)
     !
     ALLOCATE(ek_sort(4,nbnd,ntetra))
     ek_sort = 0.0_dp
+    ALLOCATE(ek_in(nbnd,nqs))
+    ek_in = ek
     ALLOCATE(itetra (4,nbnd,ntetra))
     allocate(iisize_tetra(ntetra))
     allocate(nt_tetra(ntetra))
     ! ALLOCATE(which_tetra (2,nqs,24))
     !
     opt_flag = .true.
+    if (present(opt)) opt_flag = opt
     ! if(PRESENT(opt)) opt_flag = opt
     !
     ! Take the shortest diagonal line as the "shaft" of tetrahedral devision
     !
-    bvec2(1:3,1) = S%bg(:,1) / REAL(nq(1), dp)
-    bvec2(1:3,2) = S%bg(:,2) / REAL(nq(2), dp)
-    bvec2(1:3,3) = S%bg(:,3) / REAL(nq(3), dp)
+    bvec2(1:3,1) = S%bg(:,1) / REAL(grid%n(1), dp)
+    bvec2(1:3,2) = S%bg(:,2) / REAL(grid%n(2), dp)
+    bvec2(1:3,3) = S%bg(:,3) / REAL(grid%n(3), dp)
     !
     bvec3(1:3,1) = -bvec2(1:3,1) + bvec2(1:3,2) + bvec2(1:3,3)
     bvec3(1:3,2) =  bvec2(1:3,1) - bvec2(1:3,2) + bvec2(1:3,3)
@@ -234,6 +237,7 @@ CONTAINS
     ELSE
       !
       nntetra = 4
+      allocate(ii_tetra(nntetra, ntetra))
       IF(.NOT. ALLOCATED(tetra)) ALLOCATE ( tetra(nntetra,ntetra) )
       IF(.NOT. ALLOCATED(wlsm))  ALLOCATE ( wlsm(4,nntetra) )
       wlsm(:,:) = 0.0_dp
@@ -249,134 +253,123 @@ CONTAINS
     !
     !  bring irreducible k-points to crystal axis
     !
-    call setup_grid(grid%type, S%bg, grid%n(1), grid%n(2), grid%n(3), &
-      full_grid, xq0=grid%xq0, scatter = .false., quiet = .true.)
+    if(grid%symmetrized) then
+      call setup_grid(grid%type, S%bg, grid%n(1), grid%n(2), grid%n(3), &
+        full_grid, xq0=grid%xq0, scatter = .false., quiet = .true.)
 
-    CALL cryst_to_cart( grid%nqtot, grid%xq, S%at, -1 )
-    call cryst_to_cart( full_grid%nqtot, full_grid%xq, S%at, -1 )
+      CALL cryst_to_cart( grid%nqtot, grid%xq, S%at, -1 )
+      call cryst_to_cart( full_grid%nqtot, full_grid%xq, S%at, -1 )
 
-    DO ik = 1, product(nq)
-      ! if (ik == 11) print"(3F8.2)", full_grid%xq(:,ik)
-      DO jk = 1, grid%nqtot
-        DO isym = 1, nsym
-          !
-          xkr(1:3) = MATMUL(REAL(symms(:,:,isym), dp), grid%xq(:,jk))
-          IF (t_rev(isym) == 1 .AND. colin_mag < 2) xkr(1:3) = - xkr(1:3)
-          !  xkr is the n-th irreducible k-point rotated wrt the ns-th symmetry
-          deltap = xkr - full_grid%xq(:,ik)
-          deltap = deltap - NINT(deltap)
-          deltam = xkr + full_grid%xq(:,ik)
-          deltam = deltam - NINT(deltam)
-          !  deltap is the difference vector, brought back in the first BZ
-          !  deltam is the same but with k => -k (for time reversal)
-          IF ( norm2(deltap) < eps .OR. ( time_reversal .AND. &
-            norm2(deltam) < eps ) ) THEN
-            !  equivalent irreducible k-point found
-            equiv(ik) = jk
-            if (first_point(jk) == 0) first_point(jk) = ik
-            GOTO 15
-          ENDIF
-          !
+      DO ik = 1, product(grid%n)
+        ! if (ik == 11) print"(3F8.2)", full_grid%xq(:,ik)
+        DO jk = 1, grid%nqtot
+          DO isym = 1, nsym
+            !
+            xkr(1:3) = MATMUL(REAL(symms(:,:,isym), dp), grid%xq(:,jk))
+            IF (t_rev(isym) == 1 .AND. colin_mag < 2) xkr(1:3) = - xkr(1:3)
+            !  xkr is the n-th irreducible k-point rotated wrt the ns-th symmetry
+            deltap = xkr - full_grid%xq(:,ik)
+            deltap = deltap - NINT(deltap)
+            deltam = xkr + full_grid%xq(:,ik)
+            deltam = deltam - NINT(deltam)
+            !  deltap is the difference vector, brought back in the first BZ
+            !  deltam is the same but with k => -k (for time reversal)
+            IF ( norm2(deltap) < eps .OR. ( time_reversal .AND. &
+              norm2(deltam) < eps ) ) THEN
+              !  equivalent irreducible k-point found
+              equiv(ik) = jk
+              if (first_point(jk) == 0) first_point(jk) = ik
+              GOTO 15
+            ENDIF
+            !
+          ENDDO
         ENDDO
+        !  equivalent irreducible k-point found - something wrong
+        CALL errore( 'opt_tetra_init', 'cannot locate  k point', ik )
+        !
+15      CONTINUE
+        !
       ENDDO
-      !  equivalent irreducible k-point found - something wrong
-      CALL errore( 'opt_tetra_init', 'cannot locate  k point', ik )
       !
-15    CONTINUE
-      !
-    ENDDO
-    !
-    DO jk = 1, grid%nqtot
-      DO ik = 1, product(nq)
-        IF (equiv(ik) == jk) GOTO 20
+      DO jk = 1, grid%nqtot
+        DO ik = 1, product(grid%n)
+          IF (equiv(ik) == jk) GOTO 20
+        ENDDO
+        !  this failure of the algorithm may indicate that the displaced grid
+        !  (with k1,k2,k3.ne.0) does not have the full symmetry of the lattice
+        print"(3F8.2)", grid%xq(:,jk)
+        print*, grid%nqtot
+        CALL errore( 'opt_tetra_init', 'cannot remap grid on k-point list', jk )
+        !
+20      CONTINUE
       ENDDO
-      !  this failure of the algorithm may indicate that the displaced grid
-      !  (with k1,k2,k3.ne.0) does not have the full symmetry of the lattice
-      print"(3F8.2)", grid%xq(:,jk)
-      print*, grid%nqtot
-      CALL errore( 'opt_tetra_init', 'cannot remap grid on k-point list', jk )
       !
-20    CONTINUE
-    ENDDO
+      !  bring irreducible k-points back to cartesian axis
+      !
+      CALL cryst_to_cart( grid%nqtot, grid%xq, S%bg, 1 )
+    endif
     !
-    !  bring irreducible k-points back to cartesian axis
-    !
-    CALL cryst_to_cart( grid%nqtot, grid%xq, S%bg, 1 )
-    !
-    itettot = 0
     itvalid = 0
+    itetra = 0
+    tetra = 0
     ! tetra_ik = 0
-    DO i1 = 1, nq(1)
-      DO i2 = 1, nq(2)
-        DO i3 = 1, nq(3)
-          !
-          DO itet = 1, 6
-            !
-            ! count = 0
-            ! do ii = 1, nntetra
-            !   ik = tetra(ii, itettot+1)
-            !   if (ik == equiv(ik)) then
-            !     count = count + 1
-            !     ii_tetra(count,itvalid+1) = ii
-            !   endif
-            ! enddo
-            ! if (count > 0) then
-            !   count_tetra(itettot) = count
-            ! endif
+    DO itettot = 1+my_id, ntetra, num_procs
+      itet = mod(itettot,6) + 1
+      rest = itettot / 6
+      i3 = mod(rest,grid%n(3)) + 1
+      rest = rest / grid%n(3)
+      i2 = mod(rest,grid%n(2)) + 1
+      rest = rest / grid%n(2)
+      i1 = mod(rest,grid%n(1)) + 1
 
-            itettot = itettot + 1
-            count = 0
-            ! DO ibnd = 1, nbnd
-            !
-            DO ii = 1, nntetra
-              !
-              ikv(1:3) = (/i1, i2, i3/) - 1
-              ikv(1:3) = ikv(1:3) + ivvec(1:3,ii,itet)
-              ikv(1:3) = MODULO(ikv(1:3), (/nq(1), nq(2), nq(3)/))
-              !
-              ik = ikv(3) + nq(3) * (ikv(2) + nq(2) * ikv(1)) + 1
-              !
-              iks(ii) = ik
-              if (any(ik == first_point)) then
-                count = count + 1
-                ii_tetra(count,itvalid+1) = ii
-              endif
-              !
-              ! tetra(ii, itettot) = equiv(ik)
-              ! !
-              ! ek_sort(:,ibnd,itettot) = ek_sort(:,ibnd,itettot) + wlsm(:,ii) * ek(ibnd,equiv(ik))
+      count = 0
+      ! DO ibnd = 1, nbnd
+      !
+      DO ii = 1, nntetra
+        !
+        ikv(1:3) = (/i1, i2, i3/) - 1
+        ikv(1:3) = ikv(1:3) + ivvec(1:3,ii,itet)
+        ikv(1:3) = MODULO(ikv(1:3), (/grid%n(1), grid%n(2), grid%n(3)/))
+        !
+        ik = ikv(3) + grid%n(3) * (ikv(2) + grid%n(2) * ikv(1)) + 1
+        !
+        iks(ii) = ik
+        if (any(ik == first_point)) then
+          count = count + 1
+          ii_tetra(count,itvalid+1) = ii
+        endif
+        !
+        ! tetra(ii, itettot) = equiv(ik)
+        ! !
+        ! ek_sort(:,ibnd,itettot) = ek_sort(:,ibnd,itettot) + wlsm(:,ii) * ek(ibnd,equiv(ik))
 
-            END DO ! ii
-            !
+      END DO ! ii
+      !
 
-            ! ENDDO ! ibnd
-            !
-            if (count > 0) then
-              itvalid = itvalid + 1
-              nt_tetra(itvalid) = itettot
-              iisize_tetra(itvalid) = count
-              do ibnd = 1, nbnd
-                do ii = 1, nntetra
-                  ik = iks(ii)
-                  tetra(ii, itvalid) = equiv(ik)
-                  ek_sort(:,ibnd,itvalid) = ek_sort(:,ibnd,itvalid) + &
-                    wlsm(:,ii) * ek(ibnd,equiv(ik))
-                enddo
-                itetra(1,ibnd,itvalid) = 0 ! needed to initialize index inside hpsort
-                CALL hpsort( 4, ek_sort(:,ibnd,itvalid), itetra(:,ibnd,itvalid))
-              enddo
-            endif
-          ENDDO ! itet
-          !
-        ENDDO ! i3
-      ENDDO ! i2
-    ENDDO ! i1
+      ! ENDDO ! ibnd
+      !
+      if (count > 0) then
+        itvalid = itvalid + 1
+        nt_tetra(itvalid) = itettot
+        iisize_tetra(itvalid) = count
+        do ibnd = 1, nbnd
+          do ii = 1, nntetra
+            ik = iks(ii)
+            tetra(ii, itvalid) = equiv(ik)
+            ek_sort(:,ibnd,itvalid) = ek_sort(:,ibnd,itvalid) + &
+              wlsm(:,ii) * ek(ibnd,equiv(ik))
+          enddo
+          itetra(1,ibnd,itvalid) = 0 ! needed to initialize index inside hpsort
+          CALL hpsort( 4, ek_sort(:,ibnd,itvalid), itetra(:,ibnd,itvalid))
+        enddo
+      endif
+    ENDDO ! itettot
     !
     nvalid = itvalid
-    print*, "number of tetra to be used", nvalid
+    print*, "number of tetra to be used", nvalid, "out of", ntetra
   END SUBROUTINE
   !
-  SUBROUTINE tetra_init(nq, bg, ek)
+  SUBROUTINE tetra_init(nq, bg, ek, opt)
     !-----------------------------------------------------------------------------
     !! This rouotine sets the corners and additional points for each tetrahedron.
     !
@@ -393,6 +386,7 @@ CONTAINS
     ! type(q_grid), intent(in) :: grid
     real(dp) :: bg(3,3)
     !! accepts symmetrized grids
+    logical, intent(in), optional :: opt
 
     ! LOGICAL, INTENT(IN) :: is_mpi
     !! if .true., the grid is scattered
@@ -431,6 +425,7 @@ CONTAINS
     ! ALLOCATE(which_tetra (2,nqs,24))
     !
     opt_flag = .true.
+    if (present(opt)) opt_flag = opt
     ! if(PRESENT(opt)) opt_flag = opt
     !
     ! Take the shortest diagonal line as the "shaft" of tetrahedral devision
@@ -552,58 +547,6 @@ CONTAINS
       wlsm(4,4) = 1.0_dp
       !
     ENDIF
-    ! itettot = 0
-    ! itvalid = 0
-    ! ! tetra_ik = 0
-    ! DO i1 = 1, nq(1)
-    !   DO i2 = 1, nq(2)
-    !     DO i3 = 1, nq(3)
-    !       !
-    !       DO itet = 1, 6
-    !         !
-    !         ! count = 0
-    !         ! do ii = 1, nntetra
-    !         !   ik = tetra(ii, itettot+1)
-    !         !   if (ik == equiv(ik)) then
-    !         !     count = count + 1
-    !         !     ii_tetra(count,itvalid+1) = ii
-    !         !   endif
-    !         ! enddo
-    !         ! if (count > 0) then
-    !         !   count_tetra(itettot) = count
-    !         ! endif
-
-    !         itettot = itettot + 1
-    !         DO ibnd = 1, nbnd
-    !           !
-    !           count = 0
-    !           DO ii = 1, nntetra
-    !             !
-    !             ikv(1:3) = (/i1, i2, i3/) - 1
-    !             ikv(1:3) = ikv(1:3) + ivvec(1:3,ii,itet)
-    !             ikv(1:3) = MODULO(ikv(1:3), (/nq(1), nq(2), nq(3)/))
-    !             !
-    !             ik = ikv(3) + nq(3) * (ikv(2) + nq(2) * ikv(1)) + 1
-    !             !
-    !             tetra(ii, itettot) = ik
-    !             !
-    !             ek_sort(:,ibnd,itettot) = ek_sort(:,ibnd,itettot) + wlsm(:,ii) * ek(ibnd,ik)
-    !             ! ELSE
-    !             !    ek_sort(ii,ibnd,itettot) = ek(ibnd,ik)
-    !             ! ENDIF
-
-    !           END DO ! ii
-    !           !
-    !           itetra(1,ibnd,itettot) = 0 ! needed to initialize index inside hpsort
-    !           CALL hpsort( 4, ek_sort(:,ibnd,itettot), itetra(:,ibnd,itettot))
-    !         ENDDO ! ibnd
-    !         !
-    !       ENDDO ! itet
-    !       !
-    !     ENDDO ! i3
-    !   ENDDO ! i2
-    ! ENDDO ! i1
-
     ek_sort = 0._dp
     itetra = 0
     tetra = 0
@@ -976,7 +919,7 @@ CONTAINS
       !
     ENDDO ! nt
     ! wg = wg / REAL(ntetra, dp)
-    wg = CMPLX(wR, -pi*wI, kind=DP) / (6.0_dp * nqs)
+    wg = CMPLX(wR, -pi*wI, kind=DP) / 6.0_dp
     !
     ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
     CALL mpi_bsum(nbnd, nqs, wg)

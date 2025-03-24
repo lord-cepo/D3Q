@@ -116,68 +116,131 @@ contains
     enddo
     !
     ALLOCATE(fc%xR2(3,n_R,n_R), fc%xR1(3,n_R))
-    call fc%cart(S)
+    call fc%cart(S, 1)
+    call fc%cart(S, 2)
     ALLOCATE(fc%FC(S%nat3,S%nat3,n_R,n_R))
     fc%nq = grid
     fc%stage = -1
     !
   END SUBROUTINE
   !
-  subroutine construct_cart(fc, S)
+  subroutine construct_cart(fc, S, which)
     class(forceconst2_sc), intent(inout) :: fc
     type(ph_system_info), intent(in) :: S
+    integer, intent(in) :: which
     !
     real(dp), allocatable :: R(:,:)
     integer :: i
     !
-    do i = 1, fc%n_R1
-      allocate(R(3,fc%n_R2(i)))
-      R = REAL(fc%yR2(:,:,i), DP)
-      call cryst_to_cart(fc%n_R2(i), R, S%at, 1)
-      fc%xR2(:,:,i) = R
+    if(which == 2) then
+      do i = 1, fc%n_R1
+        allocate(R(3,fc%n_R2(i)))
+        R = REAL(fc%yR2(:,:,i), DP)
+        call cryst_to_cart(fc%n_R2(i), R, S%at, 1)
+        fc%xR2(:,:,i) = R
+        deallocate(R)
+      enddo
+      !
+    elseif(which == 1) then
+      allocate(R(3,fc%n_R1))
+      R = REAL(fc%yR1, DP)
+      call cryst_to_cart(fc%n_R1, R, S%at, 1)
+      fc%xR1 = R
       deallocate(R)
-    enddo
-    !
-    allocate(R(3,fc%n_R1))
-    R = REAL(fc%yR1, DP)
-    call cryst_to_cart(fc%n_R1, R, S%at, 1)
-    fc%xR1 = R
-    !
+    else
+      call errore("construct_cart", "which is not 1 or 2", 1)
+      !
+    endif
   end subroutine
   !
-  subroutine construct_cryst(fc, S)
+  subroutine construct_cryst(fc, S, which)
     class(forceconst2_sc), intent(inout) :: fc
     type(ph_system_info), intent(in) :: S
+    integer, intent(in) :: which
     !
     real(dp), allocatable :: R(:,:)
     integer :: i
     !
-    do i = 1, fc%n_R1
-      allocate(R(3,fc%n_R2(i)))
-      R = fc%xR2(:,:,i)
-      call cryst_to_cart(fc%n_R2(i), R, S%bg, -1)
+    if (which == 2) then
+      do i = 1, fc%n_R1
+        allocate(R(3,fc%n_R2(i)))
+        R = fc%xR2(:,:,i)
+        call cryst_to_cart(fc%n_R2(i), R, S%bg, -1)
+        if (ALL(ABS(R - NINT(R)) < 1e-6)) then
+          fc%yR2(:,:,i) = NINT(R)
+        else
+          call errore("construct_cryst", "R is not integer", 1)
+        endif
+        deallocate(R)
+      enddo
+      !
+    elseif(which == 1) then
+      allocate(R(3,fc%n_R1))
+      R = fc%xR1
+      call cryst_to_cart(fc%n_R1, R, S%bg, -1)
       if (ALL(ABS(R - NINT(R)) < 1e-6)) then
-        fc%yR2(:,:,i) = NINT(R)
+        fc%yR1 = NINT(R)
       else
         call errore("construct_cryst", "R is not integer", 1)
       endif
       deallocate(R)
-    enddo
-    !
-    allocate(R(3,fc%n_R1))
-    R = fc%xR1
-    call cryst_to_cart(fc%n_R1, R, S%bg, -1)
-    if (ALL(ABS(R - NINT(R)) < 1e-6)) then
-      fc%yR1 = NINT(R)
     else
-      call errore("construct_cryst", "R is not integer", 1)
+      call errore("construct_cryst", "which is not 1 or 2", 1)
     endif
   end subroutine
   !
-  subroutine center_sc(fc, grid, S, S_sc)
+  subroutine S_uc2sc(S, grid, S_sc)
+    use thutils, only : grid_vec
+    use ph_system, only : aux_system
+    type(ph_system_info), intent(in) :: S
+    integer, intent(in) :: grid(3)
+    type(ph_system_info), intent(out) :: S_sc
+    !
+    integer :: nR, iR, i, t
+    integer, allocatable :: sc_grid(:,:)
+    real(dp) :: tau(3,S%nat)
+    !
+    nR = PRODUCT(grid)
+    S_sc%ntyp = S%ntyp
+    S_sc%amass = S%amass
+    S_sc%amass_variance = S%amass_variance
+    S_sc%atm = S%atm
+    S_sc%nat = S%nat * nR
+    allocate(S_sc%ityp(S_sc%ntyp))
+    S_sc%ityp = reshape(spread(S%ityp, dim=1, ncopies=nR), [S_sc%nat])
+    S_sc%ibrav = S%ibrav
+    S_sc%symm_type = S%symm_type
+    S_sc%celldm = S%celldm
+    S_sc%celldm(1) = S%celldm(1) * grid(1) ! bad coding here
+    S_sc%at = S%at
+    S_sc%bg = S%bg
+    S_sc%omega = S%omega * nR
+    S_sc%alat = S%alat * grid(1) ! also here
+    S_sc%tpiba = S%tpiba / grid(1)
+    S_sc%epsil = S%epsil
+    S_sc%lrigid = S%lrigid
+    allocate(S_sc%tau(3, S_sc%nat))
+    tau = S%tau
+    call cryst_to_cart(S%nat, tau, S%bg, -1)
+    sc_grid = grid_vec(grid)
+    do ir = 1, nR
+      do t = 1, S%nat
+        do i = 1, 3
+          S_sc%tau(i,t + (ir-1)*S%nat) = (tau(i,t) + sc_grid(i,ir) ) / grid(i)
+        enddo
+      enddo
+    enddo
+    call cryst_to_cart(S_sc%nat, S_sc%tau, S_sc%at, 1)
+    ! no zeu and dzeu !
+    call aux_system(S_sc)
+  end subroutine
+  !
+  subroutine center_sc(fc, grid, S, S_sc, distance)
+    use functions, only : refold_bz
     class(forceconst2_sc), intent(inout) :: fc
     integer, intent(in) :: grid(3)
     type(ph_system_info), intent(in) :: S, S_sc
+    real(dp), allocatable, optional, intent(out) :: distance(:,:,:,:)
     !
     ! type(forceconst2_grid) :: fsc
     real(dp) :: dist(3), Rbig(3), wg_tot
@@ -210,6 +273,7 @@ contains
     allocate(new_yR_list(3, nR*nRbig,nR))
     allocate(new_fc(S%nat3, S%nat3, nR*nRbig, nR))
     !
+    if(present(distance)) allocate(distance, source=new_fc)
     map_sc = map_uc2sc(S, S_sc, grid)
     !
     nxR = 0
@@ -237,7 +301,7 @@ contains
               wg = wsweight(dist,rws,nrws)
               wg_tot = wg_tot + wg
               ! if (nfar == 0) wg = 1._dp
-              if (wg > 1e-6) then
+              if (wg /= 0) then
                 !> R2 is in the unit cell, so we multiply Rbig by grid to transform it in a
                 !> supercell vector of the unit cell
                 R_vec = - index2v(R2, grid) - grid * Rbig_shift
@@ -259,6 +323,8 @@ contains
                   do j2 = 1, 3
                     new_fc(j1+3*(na1-1), j2+3*(na2-1), ixR, R1) = &
                       fc%FC(j1+(na1-1)*3, j2+(na2-1)*3, R2, R1) * wg
+                    if (present(distance)) &
+                      distance(j1+3*(na1-1), j2+3*(na2-1), ixR, R1) = norm2(dist)
                   enddo
                 enddo
               endif
@@ -281,9 +347,129 @@ contains
     fc%n_R2 = nxR
     fc%nq = grid
     do R1 = 1, nR
+      ! fc%xr1(:,R1) = refold_bz(fc%xR1(:,R1), S%at)
       fc%yR2(:,:nxR(R1),R1) = new_yR_list(:,:nxR(R1),R1)
     enddo
-    call fc%cart(S_sc)
+    call fc%cart(S_sc, 2)
+    ! call fc%cryst(S_sc, 1)
+    fc%FC = new_fc(:,:,:maxval(nxR),:)
+  end subroutine
+  !
+  subroutine center2(fc, grid, S, S_sc, distance)
+    use functions, only : refold_bz
+    class(forceconst2_sc), intent(inout) :: fc
+    integer, intent(in) :: grid(3)
+    type(ph_system_info), intent(in) :: S, S_sc
+    real(dp), allocatable, optional, intent(out) :: distance(:,:,:,:)
+    !
+    ! type(forceconst2_grid) :: fsc
+    real(dp) :: dist(3), Rbig(3), wg_tot
+    !
+    integer :: na1, na2, j1, j2, nR, jR_big, R1, R2
+    integer :: R_list(PRODUCT(grid)*(2*nfar+1)**3)
+    integer :: map_sc(S%nat, PRODUCT(grid))
+    integer :: nRbig, R_vec(3)
+    integer :: ind, ixR
+    integer :: nxR(PRODUCT(grid))
+    integer, dimension(3) :: far_grid, Rbig_from_0, Rbig_shift
+    !
+    integer, allocatable :: new_yR_list(:,:,:)
+    real(dp), allocatable :: new_fc(:,:,:,:)
+    !
+    ! Stuff used to compute Wigner-Seitz weights:
+    INTEGER, PARAMETER:: nrwsx=2000
+    INTEGER :: nrws
+    REAL(DP) :: wg, rws(0:3,nrwsx)
+    REAL(DP),EXTERNAL :: wsweight
+    ! initialize WS r-vectors
+    CALL wsinit(rws,nrwsx,nrws,S_sc%at)
+    !
+    fc%stage = 0
+    nR = PRODUCT(grid)
+    if (nfar == 0) return
+    far_grid = 2*nfar+1
+    nRbig = PRODUCT(far_grid)
+    allocate(new_yR_list(3, nR*nRbig,nR))
+    allocate(new_fc(S%nat3, S%nat3, nR*nRbig, nR))
+    !
+    if(present(distance)) allocate(distance, source=new_fc)
+    map_sc = map_uc2sc(S, S_sc, grid)
+    !
+    nxR = 0
+    new_fc = 0._dp
+    !
+    do R1 = 1, nR
+      R_list = -1
+      do R2 = 1, nR
+        do na1 = 1, S%nat
+          do na2 = 1, S%nat
+            wg_tot = 0._dp
+            do jR_big = 1, nRbig
+              !> I create a normal [0:N-1]^3 grid
+              Rbig_from_0 = index2v(jR_big, far_grid)
+              !> Then I shift it so that the center in [-N/2:N/2]
+              Rbig_shift = Rbig_from_0 - nfar
+              !> I work in S_sc%at alat units
+              Rbig = REAL(Rbig_shift, DP)
+              call cryst_to_cart(1, Rbig, S_sc%at, 1)
+              !> Rbig is the R vector in the supercell, so we don't need to multiply by grid,
+              !> cause tau is in [0,1] in crystal units
+              dist = S_sc%tau(:,map_sc(na1,R1)) - Rbig - S_sc%tau(:,map_sc(na2,R2))
+              !> Compute the Wigner-Seitz weight
+              wg = wsweight(dist,rws,nrws)
+              wg_tot = wg_tot + wg
+              ! if (nfar == 0) wg = 1._dp
+              if (wg /= 0) then
+                !> R2 is in the unit cell, so we multiply Rbig by grid to transform it in a
+                !> supercell vector of the unit cell
+                R_vec = - index2v(R2, grid) - grid * Rbig_shift
+                !> I use the 0-indexing to populate R_list at the correct non-negative integer
+                ind = v2index(index2v(R2, grid) + grid * Rbig_from_0, grid * far_grid)
+                !> R_list contains the ixR or -1. The nxR is refreshed at each step
+                if (R_list(ind) == -1) then
+                  nxR(R1) = nxR(R1) + 1
+                  ixR = nxR(R1)
+                  R_list(ind) = ixR
+                  new_yR_list(:,ixR,R1) = R_vec
+                else
+                  ixR = R_list(ind)
+                endif
+                !> I find Gamma Gamma
+                ! if(ALL(R_vec == 0)) fc%i_0 = ixR
+                !> and populate force constants with usual index wrapping
+                do j1 = 1, 3
+                  do j2 = 1, 3
+                    new_fc(j1+3*(na1-1), j2+3*(na2-1), ixR, R1) = &
+                      fc%FC(j1+(na1-1)*3, j2+(na2-1)*3, R2, R1) * wg
+                    if (present(distance)) &
+                      distance(j1+3*(na1-1), j2+3*(na2-1), ixR, R1) = norm2(dist)
+                  enddo
+                enddo
+              endif
+            enddo
+            if (ABS(wg_tot -1) > 1e-6) then
+              print"(A,F14.6)", "wg_tot is", wg_tot
+              CALL errore("center_sc", "sum of weights is not 1", 1)
+            endif
+          enddo
+        enddo
+      enddo
+    enddo
+    !
+    deallocate(fc%yR2, fc%xR2, fc%FC)
+    !> the yR list is populated until nxR(which), but the size can be larger.
+    !> the values after nxR(which) are not even initialized (they are garbage).
+    ALLOCATE(fc%yR2(3,maxval(nxR),fc%n_R1))
+    ALLOCATE(fc%xR2(3,maxval(nxR),fc%n_R1))
+    ALLOCATE(fc%FC(S%nat3,S%nat3,maxval(nxR),nR))
+    fc%n_R2 = nxR
+    fc%nq = grid
+    do R1 = 1, nR
+      ! fc%xr1(:,R1) = refold_bz(fc%xR1(:,R1), S%at)
+      fc%yR2(:,:nxR(R1),R1) = new_yR_list(:,:nxR(R1),R1)
+    enddo
+    call fc%cart(S_sc, 2)
+    ! call fc%cryst(S_sc, 1)
     fc%FC = new_fc(:,:,:maxval(nxR),:)
   end subroutine
   !
