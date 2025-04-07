@@ -242,6 +242,60 @@ contains
     end do
   end function
   !
+  function grid_vec_cryst(mesh, shift)
+    !! Generates a grid of wave vectors.
+    !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
+
+    integer, intent(in) :: mesh(3)
+    integer :: grid_vec_cryst(3,product(mesh))
+    integer, intent(in), optional :: shift
+    integer :: i, j, k, n
+    integer :: shift_
+
+    if(present(shift)) then
+      shift_ = shift
+    else
+      shift_ = 0
+    end if
+
+    n = product(mesh)
+
+    n = 0
+    do i = 0, mesh(1)-1
+      do j = 0, mesh(2)-1
+        do k = 0, mesh(3)-1
+          n = n + 1
+          grid_vec_cryst(:,n) = [i, j, k]
+        end do
+      end do
+    end do
+
+    grid_vec_cryst = grid_vec_cryst + shift_
+  end function
+  !
+  function grid_vec_cart(mesh, at, shift)
+    !! Generates a grid of wave vectors.
+    !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
+
+    integer, intent(in) :: mesh(3)
+    real(dp) :: at(3,3)
+    integer, intent(in), optional :: shift
+    real(dp) :: grid_vec_cart(3, product(mesh))
+    integer :: shift_
+    integer :: grid_vec_cryst_(3, product(mesh))
+    !
+    if(present(shift)) then
+      shift_ = shift
+    else
+      shift_ = 0
+    end if
+    !
+    grid_vec_cryst_ = grid_vec_cryst(mesh, shift_)
+    grid_vec_cart = REAL(grid_vec_cryst_, DP)
+    call cryst_to_cart(product(mesh), grid_vec_cart, at, 1)
+
+  end function
+  !
   function reshape_RR_cmplx(mat) result(mat_flat)
     complex(dp) :: mat(:,:,:,:)
     integer :: nat3i, nat3j, n3i, n3j

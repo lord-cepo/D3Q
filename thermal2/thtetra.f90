@@ -48,16 +48,18 @@ MODULE thtetra
   !! index of VALID tetrahedra
   integer :: nvalid
   !! number of VALID tetrahedra
+  real(dp) :: MIN_DISTANCE
 
   ! INTEGER, allocatable :: which_tetra(:,:,:)
   !! inverse of tetra: given a q point, it gives all the tetrahedra that contain it
 
-  REAL(DP), PARAMETER :: tet_cutoff = 1.0E-4_DP
+  REAL(DP), PARAMETER :: tet_cutoff = 1.0E-6_DP
+  REAL(DP), PARAMETER :: min_relative_distance = 1.0E-9_DP
   LOGICAL :: opt_flag
   !
   PUBLIC :: nntetra, tetra_weights_green, tetra_init_sym
   PUBLIC :: tetra_init, deallocate_tetra, tetra_weights_delta
-  PUBLIC :: tetra_weights_delta_sym
+  PUBLIC :: tetra_weights_delta_sym, rm_degen_vertices
 
   EXTERNAL :: errore, hpsort
 
@@ -564,7 +566,7 @@ CONTAINS
           !
           ikv(1:3) = (/i1, i2, i3/) - 1
           ikv(1:3) = ikv(1:3) + ivvec(1:3,ii,itet)
-          ikv(1:3) = MODULO(ikv(1:3), (/nq(1), nq(2), nq(3)/))
+          ikv(1:3) = MODULO(ikv(1:3), nq)
           !
           ik = ikv(3) + nq(3) * (ikv(2) + nq(2) * ikv(1)) + 1
           !
@@ -581,6 +583,7 @@ CONTAINS
     call mpi_bsum(4, nbnd, ntetra, ek_sort)
     call mpi_bsum(4, nbnd, ntetra, itetra)
     !
+    MIN_DISTANCE = SUM(ek_in) / REAL(nbnd * nqs, dp)  * min_relative_distance
   END SUBROUTINE
   !
   subroutine tetra_weights_delta(ef, wI)
@@ -594,7 +597,7 @@ CONTAINS
     REAL(DP), INTENT(IN) :: ef
     !! The Fermi energy
     INTEGER :: ik, ibnd, ii_, ii, it, jbnd, kbnd
-    REAL(DP) :: e(4), wI0(4), wg1
+    REAL(DP) :: e(4), wI0(4), wg1, D(4)
     !
     wI = 0._dp
     !
@@ -606,6 +609,9 @@ CONTAINS
         !
         e = ek_sort(:,ibnd,it)
         ! print"(4E12.4)", e, ef
+        ! D = -e
+        ! call rm_degen_vertices(ef, e)
+        ! e = -D
         wI0 = delta_vertices(ef, e)
         ! if(ef < maxval(e) .and. ef > minval(e)) print*, "non va"
         ! if(any(wi0 > 0)) print"(4E12.4)", e, ef
@@ -632,28 +638,28 @@ CONTAINS
     ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
     CALL mpi_bsum(nbnd, nqs, wI)
     !
-    ! DO ik = 1, nqs
-    !   DO ibnd = 1, nbnd
-    !     !
-    !     wg1 = wI(ibnd,ik)
-    !     !
-    !     DO jbnd = ibnd + 1, nbnd
-    !       !
-    !       IF (ABS(ek_in(ibnd,ik) - ek_in(jbnd,ik)) < 1e-6_dp) THEN
-    !         wg1 = wg1 + wI(jbnd,ik)
-    !       ELSE
-    !         !
-    !         DO kbnd = ibnd, jbnd - 1
-    !           wI(kbnd,ik) = wg1 / REAL(jbnd - ibnd, dp)
-    !         ENDDO
-    !         !
-    !         EXIT
-    !       ENDIF
-    !       !
-    !     ENDDO
-    !     !
-    !   ENDDO
-    ! ENDDO
+    DO ik = 1, nqs
+      DO ibnd = 1, nbnd
+        !
+        wg1 = wI(ibnd,ik)
+        !
+        DO jbnd = ibnd + 1, nbnd
+          !
+          IF (ABS(ek_in(ibnd,ik) - ek_in(jbnd,ik)) < MIN_DISTANCE) THEN
+            wg1 = wg1 + wI(jbnd,ik)
+          ELSE
+            !
+            DO kbnd = ibnd, jbnd - 1
+              wI(kbnd,ik) = wg1 / REAL(jbnd - ibnd, dp)
+            ENDDO
+            !
+            EXIT
+          ENDIF
+          !
+        ENDDO
+        !
+      ENDDO
+    ENDDO
     !
   END subroutine
   !
@@ -783,13 +789,14 @@ CONTAINS
   FUNCTION delta_vertices(ef, e) result(wI0)
     !
     real(dp), INTENT(IN) :: ef
-    real(dp), INTENT(IN) :: e(4)
+    real(dp) :: e(4)
     !
     real(dp) :: wI0(4)
     !
     real(dp) :: C, a(4,4)
     !
     integer :: i, ii
+    logical :: near(4,4)
     !
     !
     !
@@ -800,23 +807,31 @@ CONTAINS
     !
     DO ii = 1, 4
       DO i = 1, 4
-        IF ( ABS(e(i)-e(ii)) < 1.d-12 ) THEN
+        near(ii,i) = ABS(e(i)-e(ii)) < MIN_DISTANCE
+        IF ( e(ii) == e(i) ) then
           a(ii,i) = 0.0_dp
-        ELSE
+        else
           a(ii,i) = ( ef - e(i) ) / (e(ii) - e(i) )
-        END IF
+        ENDIF
       ENDDO
     ENDDO
     !
-    IF( e(1) < ef .AND. ef < e(2) ) THEN
+    !
+    if((near(1,2) .and. near(3,4)) .or. &
+      (near(1,2) .and. near(2,3)) .or. &
+      (near(2,3) .and. near(3,4))) &
+      call rm_degen_vertices(ef, e)
+    !
+    IF( e(1) <= ef .AND. ef <= e(2) ) THEN
       !
-      C = a(2,1) * a(3,1) * a(4,1) / (ef - e(1))
+      C = a(2,1) * a(3,1)
       wI0(1) = a(1,2) + a(1,3) + a(1,4)
       wI0(2:4) = a(2:4,1)
 
       wI0 = wI0 * C
+      IF (near(1,2)) wI0 = 0.0_dp
       !
-    ELSEIF( e(2) <= ef .AND. ef < e(3)) THEN
+    ELSEIF( e(2) < ef .AND. ef <= e(3)) THEN
       !
       C = a(2,3) * a(3,1) + a(3,2) * a(2,4)
       !
@@ -824,19 +839,25 @@ CONTAINS
       wI0(2) = a(2,3) * C + a(2,4)**2 * a(3,2)
       wI0(3) = a(3,2) * C + a(3,1)**2 * a(2,3)
       wI0(4) = a(4,1) * C + a(4,2) * a(2,4) * a(3,2)
-
-      wI0 = wI0 / (e(4) - e(1))
       !
-    ELSEIF ( e(3) <= ef .AND. ef < e(4)) THEN
+      if (near(2,3)) then
+        wI0 = 0.0_dp
+        wI0(2:3) = 1._dp
+      endif
+    ELSEIF ( e(3) < ef .AND. ef <= e(4)) THEN
       !
-      C = a(1,4) * a(2,4) * a(3,4) / (e(4) - ef)
+      C = a(2,4) * a(3,4)
       !
       wI0(1:3) = a(1:3,4)
       wI0(4) = a(4,1) + a(4,2) + a(4,3)
       !
       wI0 = wI0 * C
+      IF (near(3,4)) wI0 = 0.0_dp
       !
     ENDIF
+
+    wI0 = wI0 / (e(4) - e(1))
+    !
   END FUNCTION
   !
   !
@@ -883,10 +904,10 @@ CONTAINS
       DO ibnd = 1, nbnd
         !
         e = ek_sort(:,ibnd,nt)
-        wI0 = delta_vertices(ef, e)
         !
         D = -e
         CALL rm_degen_vertices(ef, D)
+        wI0 = delta_vertices(ef, -D)
         wR0 = real_vertices(ef, D)
         !
         !

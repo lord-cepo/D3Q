@@ -13,6 +13,7 @@ module defect
   use functions, only: invzmat
   use constants, only: tpi
   use quter_defect
+  ! use tetra_raja
   !
   implicit none
   !
@@ -27,7 +28,7 @@ contains
     type(forceconst2_grid) :: fc2_centered
     type(ph_system_info) :: S_sc
     type(forceconst2_sc) :: fc2_sc
-    complex(dp), dimension(S%nat3, S%nat3) :: Vqq, T_Us
+    complex(dp), dimension(S%nat3, S%nat3) :: Vqq, T_Us, temp
     real(dp) :: freqs(S%nat3, grid%nqtot)
     ! real(dp) :: weights_flat(S%nat3*grid%nqtot)
     real(dp), dimension(S%nat3, out_grid%nqtot) :: out_freqs
@@ -38,21 +39,29 @@ contains
     complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
     complex(dp) :: out_Us(S%nat3, S%nat3, out_grid%nqtot)
     complex(dp) :: tetra_weights(S%nat3, grid%nqtot, 0:input%n_omega)
+    complex(dp) :: interp(S%nat3, grid%nqtot)
     complex(dp), allocatable, dimension(:,:,:,:) :: V
     complex(dp), allocatable, dimension(:,:) :: V_flat, Id_flat, R_flat, &
-      VG_flat, VG2_flat, VG3_flat, VG4_flat
+      VG_flat, VG2_flat, VG3_flat, VG4_flat, PP
     logical, parameter :: full_born = .false.
     real(dp) :: max_freq, omega, omegaq, R_def(3), mass_def
-    real(dp) :: mass_matrix(S%nat3, S%nat3)
-    integer :: iq, iqp, iw, ibnd, nR, jq, Nin, Nout, comp
-    integer :: iR_def, na_def, j, compj, jbnd, ir, jr
+    real(dp) :: mass_matrix(S%nat3, S%nat3), mean, max_diff_fc2d, max_diff_rel
+    integer :: iq, iqp, iw, ibnd, nR, jq, Nin, Nout, comp, R1, R2
+    integer :: iR_def, na_def, j, compj, jbnd, ir, jr, jqp ! , jn1, jn2
     complex(dp) :: phase_def
+    real(dp), dimension(3) :: xq1, xq2
+    real(dp) :: fc2_transp(S%nat3, S%nat3, product(fc2%nq), product(fc2%nq))
+    real(dp) :: mean_fc2d(Sd%nat3, Sd%nat3)
+    ! !> elphbolt tetra
+    ! INTEGER, ALLOCATABLE :: tetra(:,:), tetracount(:), tetramap(:,:,:)
+    ! REAL(DP), ALLOCATABLE :: evals(:,:), tetraevals(:,:,:)
     !
     nR   = product(fc2%nq)
     Nin  = S%nat3*grid%nqtot
     Nout = S%nat3*out_grid%nqtot
-    allocate(V(S%nat3,S%nat3,grid%nqtot,out_grid%nqtot))
-    allocate(V_flat(Nin,Nout))
+    ! allocate(V(S%nat3,S%nat3,grid%nqtot,out_grid%nqtot))
+    ! allocate(V_flat(Nin,Nout))
+    allocate(PP(S%nat3,grid%nqtot))
     ! allocate(V_flat, source=V_flat)
     if(full_born) allocate(R_flat, VG_flat, VG2_flat, VG3_flat, VG4_flat, source=V_flat)
     !
@@ -70,13 +79,41 @@ contains
     !> input files are periodic, it can be changed
     CALL fc2_recenter(S, fc2, fc2_centered, 2)
     !
+    ! max_diff_fc2d = 0._dp
+    ! do ibnd = 1, Sd%nat3
+    !   do jbnd = ibnd+1, Sd%nat3
+    !     mean = (fc2d%fc(ibnd,jbnd,1) + fc2d%fc(jbnd,ibnd,1)) / 2.0_dp
+    !     if (ABS(fc2d%fc(ibnd,jbnd,1) - fc2d%fc(jbnd,ibnd,1)) > max_diff_fc2d) then
+    !       max_diff_fc2d = ABS(fc2d%fc(ibnd,jbnd,1) - fc2d%fc(jbnd,ibnd,1))
+    !       max_diff_rel = max_diff_fc2d / ABS(mean)
+    !     endif
+    !     mean_fc2d(ibnd,jbnd) = mean
+    !     mean_fc2d(jbnd,ibnd) = mean
+    !   enddo
+    ! enddo
+    ! print*, "max_diff_fc2d", max_diff_fc2d
+    ! print*, "max_diff_rel", max_diff_rel
     !> SC: grid type   (big_nat3,big_nat3,1)
     !> UC: grid type   (nat3,nat3,nR)
     !> RR: new SC type (nat3,nat3,nR,nR)
     CALL fc2_sc%allocate(S, fc2%nq)
-    fc2_sc%fc = fc_sc2RR(fc2%nq, S, Sd, fc2d%fc(:,:,1)) - &
-      fc_uc2RR(fc2%nq, S, fc2%fc)
+    fc2_sc%fc = fc_sc2RR(fc2%nq, S, Sd, fc2d%fc) - fc_uc2RR(fc2%nq, S, fc2%fc)
 
+    ! print*, fc2_sc%fc(1,3,2,2), fc2%fc(1,3,1), fc2_sc%xR1(:,2)
+
+    ! do R1 = 1, 2
+    !   do R2 = 1, nR
+    !     do ibnd = 1, 6
+    !       do jbnd = 1, 6
+    !         if (fc2_sc%fc(ibnd, jbnd, R2, R1) - fc2_sc%fc(jbnd, ibnd, R1, R2) > 1e-10_dp) then
+    !           print*, "R1", R1, "R2", R2, "ibnd", ibnd, "jbnd", jbnd
+    !           print*, fc2_sc%fc(ibnd, jbnd, R2, R1), fc2_sc%fc(jbnd, ibnd, R1, R2)
+    !         endif
+    !       enddo
+    !     enddo
+    !   enddo
+    ! enddo
+    ! print*, ABS(fc2_transp - fc2_sc%fc) < 1e-10_dp
     ! do ir = 1, nR
     !   do jr = 1, nR
     !     if (ir > 2 .or. jr > 2) fc2_sc%fc(:,:,ir,jr) = 0.0_dp
@@ -93,10 +130,11 @@ contains
 
     !> centering procedure gives different output
     call S_uc2sc(S, fc2%nq, S_sc)
-    call fc2_sc%center(fc2%nq, S, S_sc)
+    S_sc%ityp(1) = 2
+    ! call center3(fc2_sc, fc2%nq, S, Sd)
     !
-    call freq_in_grid(S, fc2_centered, grid, freqs, Us)
     call freq_in_grid(S, fc2_centered, out_grid, out_freqs, out_Us)
+    call freq_in_grid(S, fc2_centered, grid, freqs, Us)
     !
     !> max_freq is slightly larger than the maximum frequency, to be sure that
     !> maxval(out_freqs) <= max_freq
@@ -107,11 +145,17 @@ contains
     if (grid%symmetrized) then
       call tetra_init_sym(grid, S, freqs**2)
     else
-      call tetra_init(grid%n, S%bg, freqs**2)
+      call tetra_init(grid%n, S%bg, freqs**2, .true.)
     endif
     !
     call print_message("end of tetra initialization")
     !
+    ! ALLOCATE(tetra(6*grid%nqtot, 4), tetracount(grid%nqtot), tetramap(2, grid%nqtot, 24))
+    ! ALLOCATE(evals(grid%nqtot,S%nat3), tetraevals(6*grid%nqtot,S%nat3, 4))
+    ! evals = TRANSPOSE(freqs)
+    ! CALL form_tetrahedra_3d(grid%nqtot, grid%n, tetra, tetracount, tetramap)
+    ! CALL fill_tetrahedra_3d(grid%nqtot, S%nat3, tetra, freqs**2, tetraevals)
+    ! !
     !> serially calculate tetras for an equally spaced omega
     !> interval, after we will interpolate them (even at more than 1st order).
     !> The cycle is serial cause the tetra_weights_green is already parallelized
@@ -123,86 +167,105 @@ contains
     !
     call print_message("end of tetra weights calculation")
     !
-    V = 0.0_dp
-    do iq = 1, grid%nq
-      iqp = iq + grid%iq0
-      call fc2_sc%interpolate( grid%xq(:,iq), S)
-      T_Us = CONJG(TRANSPOSE(Us(:,:,iqp)))
-      do jq = 1, out_grid%nqtot
-        call fc2_sc%interpolate( out_grid%xq(:,jq), S, Vqq)
-        V(:,:,iqp,jq) = matmul(T_Us, &
-          matmul(Vqq, out_Us(:,:,jq)))
-      enddo
-    enddo
-    call mpi_bsum(S%nat3, S%nat3, grid%nqtot, out_grid%nqtot, V)
-    WRITE(0,*) sum(V)
+    ! V = 0.0_dp
+    ! do iq = 1, grid%nq
+    !   iqp = iq + grid%iq0
+    !   call fc2_sc%interpolate( grid%xq(:,iq), S)
+    !   T_Us = CONJG(TRANSPOSE(Us(:,:,iqp)))
+    !   do jq = 1, out_grid%nqtot
+    !     call fc2_sc%interpolate( out_grid%xq(:,jq), S, Vqq)
+    !     ! call zgemm('N', 'N', S%nat3, S%nat3, S%nat3, 1._dp, Vqq, &
+    !     !   S%nat3, out_Us(:,:,jq), S%nat3, 0._dp, temp, S%nat3)
+    !     ! call zgemm('C', 'N', S%nat3, S%nat3, S%nat3, 1._dp, Us(:,:,iqp), &
+    !     !   S%nat3, temp, S%nat3, 0._dp, V(:,:,iqp,jq), S%nat3)
+    !     V(:,:,iqp,jq) = matmul(T_Us, matmul(Vqq, out_Us(:,:,jq)))
+    !   enddo
+    ! enddo
+    ! call mpi_bsum(S%nat3, S%nat3, grid%nqtot, out_grid%nqtot, V)
+    ! !
+    ! V_flat = reshape_RR_cmplx(V)
     !
-    V_flat = reshape_RR_cmplx(V)
-    !
-    call print_message("end of braket calculation")
-    !
-    lws_full = 0._dp
-    lws_full_iw = 0._dp
-    if(full_born) then
-      if (out_grid%nqtot /= grid%nqtot) &
-        call errore("defect", "out_grid%nqtot /= grid%nqtot", 1)
-      !
-      Id_flat = id_mat(S%nat3*out_grid%nqtot)
-      do iw = my_id, input%n_omega, num_procs
-        omega = max_freq*iw/input%n_omega
-        !
-        ! V_flat = V_flat
-        do comp = 1, out_grid%nqtot * S%nat3
-          VG_flat(:,comp) = V_flat(:,comp) * tetra_flat(:,iw)
-        enddo
+    ! call print_message("end of braket calculation")
+    ! !
+    ! lws_full = 0._dp
+    ! lws_full_iw = 0._dp
+    ! if(full_born) then
+    !   if (out_grid%nqtot /= grid%nqtot) &
+    !     call errore("defect", "out_grid%nqtot /= grid%nqtot", 1)
+    !   !
+    !   Id_flat = id_mat(S%nat3*out_grid%nqtot)
+    !   do iw = my_id, input%n_omega, num_procs
+    !     omega = max_freq*iw/input%n_omega
+    !     !
+    !     ! V_flat = V_flat
+    !     do comp = 1, out_grid%nqtot * S%nat3
+    !       VG_flat(:,comp) = V_flat(:,comp) * tetra_flat(:,iw)
+    !     enddo
 
-        !
-        !> These are the only two lines that enable Full Born
-        ! M_flat = Id_flat - M_flat
-        ! call invzmat(S%nat3*out_grid%nqtot, M_flat)
-        ! M_flat = M_flat + matmul(M_flat, M_flat)
-        ! M_flat = matmul(V_flat, M_flat)
-        !
-        call zgemm('N', 'N', Nin, Nin, Nin, 1._dp, VG_flat, &
-          Nin, VG_flat, Nin, 0._dp, VG2_flat, Nin)
-        call zgemm('N', 'N', Nin, Nin, Nin, 1._dp, VG2_flat, &
-          Nin, V_flat, Nin, 0._dp, VG3_flat, Nin)
-        call zgemm('N', 'N', Nin, Nin, Nin, 1._dp, VG3_flat, &
-          Nin, V_flat, Nin, 0._dp, VG4_flat, Nin)
-        R_flat = VG_flat + VG2_flat + VG3_flat + VG4_flat
-        call zgemm('N', 'N', Nin, Nin, Nin, 1._dp, V_flat, &
-          Nin, R_flat, Nin, 0._dp, VG_flat, Nin)
-        !
-        do iqp = 1, out_grid%nqtot
-          do ibnd = 1, S%nat3
-            comp = ibnd + (iqp-1)*S%nat3
-            lws_full_iw(ibnd,iqp,iw) = VG_flat(comp,comp)
-          enddo
-        enddo
-      enddo
-      call mpi_bsum(S%nat3, out_grid%nqtot, input%n_omega+1, lws_full_iw)
-      !
-      call print_message("end of born calculation")
-      !
-    endif
-    !
+    !     !
+    !     !> These are the only two lines that enable Full Born
+    !     ! M_flat = Id_flat - M_flat
+    !     ! call invzmat(S%nat3*out_grid%nqtot, M_flat)
+    !     ! M_flat = M_flat + matmul(M_flat, M_flat)
+    !     ! M_flat = matmul(V_flat, M_flat)
+    !     !
+    !     call zgemm('N', 'N', Nin, Nin, Nin, 1._dp, VG_flat, &
+    !       Nin, VG_flat, Nin, 0._dp, VG2_flat, Nin)
+    !     call zgemm('N', 'N', Nin, Nin, Nin, 1._dp, VG2_flat, &
+    !       Nin, V_flat, Nin, 0._dp, VG3_flat, Nin)
+    !     call zgemm('N', 'N', Nin, Nin, Nin, 1._dp, VG3_flat, &
+    !       Nin, V_flat, Nin, 0._dp, VG4_flat, Nin)
+    !     R_flat = VG_flat + VG2_flat + VG3_flat + VG4_flat
+    !     call zgemm('N', 'N', Nin, Nin, Nin, 1._dp, V_flat, &
+    !       Nin, R_flat, Nin, 0._dp, VG_flat, Nin)
+    !     !
+    !     do iqp = 1, out_grid%nqtot
+    !       do ibnd = 1, S%nat3
+    !         comp = ibnd + (iqp-1)*S%nat3
+    !         lws_full_iw(ibnd,iqp,iw) = VG_flat(comp,comp)
+    !       enddo
+    !     enddo
+    !   enddo
+    !   call mpi_bsum(S%nat3, out_grid%nqtot, input%n_omega+1, lws_full_iw)
+    !   !
+    !   call print_message("end of born calculation")
+    !   !
+    ! endif
+    ! !
     lws = 0._dp
     lws_full = 0._dp
 
     ! weights = reshape(spread(grid%w, 1, S%nat3), [S%nat3*grid%nqtot])
     do iq = 1, out_grid%nq
-      iqp = iq ! + out_grid%iq0
+      iqp = iq !+ out_grid%iq0
+      call fc2_sc%interpolate(-out_grid%xq(:,iq), S)
       do ibnd = 1, S%nat3
-        comp = ibnd + (iqp-1)*S%nat3
+        ! comp = ibnd + (iqp-1)*S%nat3
         omegaq = out_freqs(ibnd,iqp)
 
-        lws_full(ibnd,iqp) = interp1_scl(lws_full_iw(ibnd,iqp,:), omegaq*input%n_omega/max_freq) / omegaq
-
-        interp_flat = interp1_vector(tetra_flat, omegaq*input%n_omega/max_freq)
-        lws(ibnd,iqp) = SUM(ABS(V_flat(:,comp))**2 * interp_flat ) / omegaq /grid%nqtot
+        ! lws_full(ibnd,iqp) = interp1_scl(lws_full_iw(ibnd,iqp,:), omegaq*input%n_omega/max_freq) / omegaq
+        do jq = 1, grid%nq
+          jqp = jq + grid%iq0
+          call fc2_sc%interpolate(-grid%xq(:,jq), S, Vqq)
+          ! call interp_at_once(fc2_sc, out_grid%xq(:,iq), grid%xq(:,jq), S, Vqq)
+          do jbnd = 1, S%nat3
+            PP(jbnd,jqp) = braket(out_Us(:,ibnd,iq), Vqq, Us(:,jbnd,jqp))
+          enddo
+        enddo
+        ! do jq = 1, grid%nq
+        !   do jbnd = 1, S%nat3
+        !     interp_flat(jbnd + (jq-1)*S%nat3) = &
+        !       delta_fn_tetra(out_freqs(ibnd,iqp)**2, jq, jbnd, grid%n, tetramap, tetracount, tetraevals)
+        !   enddo
+        ! enddo
+        ! lws_full(ibnd,iqp) = SUM(ABS(V_flat(:,comp))**2 * interp_flat) / omegaq
+        interp = interp1_matrix(tetra_weights, omegaq*input%n_omega/max_freq)
+        ! interp_flat = interp1_vector(tetra_flat, omegaq*input%n_omega/max_freq)
+        lws(ibnd,iqp) = SUM( ABS(PP)**2 * AIMAG(interp) ) / omegaq /grid%nqtot
+        ! lws_full(ibnd,iqp) = SUM(ABS(V_flat(:,comp))**2 * AIMAG(interp_flat) ) / omegaq /grid%nqtot
       enddo
     enddo
-    ! call mpi_bsum(S%nat3, out_grid%nqtot, lws)
+    call mpi_bsum(S%nat3, out_grid%nqtot, lws)
     ! call mpi_bsum(S%nat3, out_grid%nqtot, lws_full)
     !
     call print_message("writing defect linewidths to file")
@@ -218,8 +281,8 @@ contains
       close(10)
     endif
     !
-    if(ionode .and. full_born) then
-      open(10, file='defect_FB.dat', status='unknown')
+    if(ionode) then
+      open(10, file='defect_raja.dat', status='unknown')
       do iq = 1, out_grid%nqtot
         do ibnd = 1, S%nat3
           write(10, "(3e14.5,I3)") out_freqs(ibnd,iq), lws_full(ibnd,iq), ibnd
@@ -229,7 +292,7 @@ contains
     endif
     !
     if (full_born) deallocate(R_flat, VG_flat, VG2_flat, VG3_flat, VG4_flat)
-    deallocate(V, V_flat)
+    ! deallocate(V, V_flat)
   end subroutine
   !
 end module
