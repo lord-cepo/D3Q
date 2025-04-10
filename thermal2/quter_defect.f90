@@ -961,15 +961,15 @@ contains
     !
   END SUBROUTINE
   !
-  SUBROUTINE interp_at_once(fc, xq1, xq2, S, D)
+  SUBROUTINE interp_at_once(fc, xq1, xq2, nat3, D)
     USE input_fc, ONLY : ph_system_info, forceconst2_grid
     USE constants, ONLY : tpi
     IMPLICIT NONE
     !
     CLASS(forceconst2_sc), INTENT(in) :: fc
     REAL(DP),INTENT(in) :: xq1(3), xq2(3)
-    TYPE(ph_system_info), INTENT(in) :: S
-    complex(dp), intent(out) :: D(S%nat3, S%nat3)
+    integer, intent(in) :: nat3
+    complex(dp), intent(out) :: D(nat3, nat3)
     !
     INTEGER :: i, j
     REAL(DP), dimension(fc%n_R1,fc%n_R2(1)) :: varg, vcos, vsin

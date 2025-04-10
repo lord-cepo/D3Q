@@ -5,10 +5,10 @@
 !  and under the GPLv2 licence and following, see
 !  <http://www.gnu.org/copyleft/gpl.txt>
 !
-! This program applies acousting sum rules to 3rd order dynamical matrices. 
+! This program applies acousting sum rules to 3rd order dynamical matrices.
 ! It is currently quite sketchy, but it works. It reads a force constant file in grid format
 ! (no sparse) and applies ASR iteratively.
-! This file also contains tentative subroutines that applies asr in one go, but 
+! This file also contains tentative subroutines that applies asr in one go, but
 ! they are not working properly.
 !
 !
@@ -29,16 +29,16 @@ MODULE asr3_module
     INTEGER,ALLOCATABLE :: idR(:,:)  ! for each of the nR distinct R, the index
                                      ! of its nRi-th occurence in the global list
                                      ! yR(:, idR(1:nRi(1:nR2), 1:nR2) (padded with zeroes)
-    INTEGER :: iRe0                  ! index of R = (0,0,0)                                    
+    INTEGER :: iRe0                  ! index of R = (0,0,0)
     INTEGER,ALLOCATABLE :: idmR(:)   ! for each R, the index of -R
     INTEGER,ALLOCATABLE :: idRmR(:,:)! for each couple i,j=1,..nR
                                      ! index of R_i-R_j
   END TYPE
-  
+
   INTEGER,SAVE :: iter = 1
   REAL(DP),PARAMETER :: eps  = 1.e-12_dp, eps2 = 1.e-24_dp
   REAL(DP),PARAMETER :: eps0 = 1.e-12_dp
-  
+
   CONTAINS
   ! \/o\________\\\_________________________________________/^>
   ! In the original form (as written by Q2R3) you have a matrix of 3rd order
@@ -46,7 +46,7 @@ MODULE asr3_module
   ! repeats many times R2 and R3 in no specific order.
   ! This subroutine takes the long list of R2 *or* R3 and make a list of the used ones.
   ! The ordering is stable as long as the limits are the same.
-  ! Furthermore, it finds the posion of -R for each R 
+  ! Furthermore, it finds the posion of -R for each R
   ! and of R-R' for each R and R' (if it is in the list)
   SUBROUTINE stable_index_R(nR0, R0, nR,nRx, nRi, R, idR, iRe0, idmR, idRmR, nq, use_modulo)
     USE input_fc, ONLY : ph_system_info
@@ -63,7 +63,7 @@ MODULE asr3_module
     INTEGER,ALLOCATABLE,INTENT(out) :: idmR(:)   ! for each of the nR, index of -R
     INTEGER,ALLOCATABLE,INTENT(out) :: idRmR(:,:)! for each couple i,j=1,..nR
                                                  ! index of R_i-R_j
-    INTEGER,INTENT(out) :: iRe0                  ! index of R = (0,0,0)      
+    INTEGER,INTENT(out) :: iRe0                  ! index of R = (0,0,0)
     INTEGER,INTENT(in)  :: nq(3)      ! size of the initial grid, only used for use_modulo
     LOGICAL,INTENT(in)  :: use_modulo ! use periodic boundary conditions to find R -> -R correspondences
     !
@@ -106,7 +106,7 @@ MODULE asr3_module
     R(:,1:nR) = R_(:,1:nR)
     nRi(1:nR) = nRi_(1:nR)
     DEALLOCATE(R_, nRi_)
-    
+
     nRx = MAXVAL(nRi)
     ALLOCATE(idR(nRx,nR))
     idR = 0
@@ -166,25 +166,25 @@ MODULE asr3_module
     !DO i = 1, nR
     !  WRITE(*,'(2i4,2x,3i3,2x,i3,2x,1000i5)') i,idmR(i), R(:,i), nRi(i)!, idR(1:nRi(i),i)
     !ENDDO
-    
+
   END SUBROUTINE stable_index_R
   !
   ! \/o\________\\\_________________________________________/^>
   SUBROUTINE index_2R(idx2,idx3,fc,idR23)
-  ! Find the correspondence between two lists of R vectors (list2 and list3) 
-  ! a single list of couples (R2,R3) 
+  ! Find the correspondence between two lists of R vectors (list2 and list3)
+  ! a single list of couples (R2,R3)
   ! i.e. for each R_2 in list2 and R3 in list3 it find the index of (R2,R3) in the big list
     USE fc3_interpolate,       ONLY : grid
     IMPLICIT NONE
     !
     TYPE(index_r_type),INTENT(in) :: idx2, idx3
-    TYPE(grid),INTENT(inout) :: fc
+    TYPE(grid),INTENT(in) :: fc
     INTEGER,INTENT(out),ALLOCATABLE :: idR23(:,:)
     INTEGER :: i2,i3, j
-    
+
     ALLOCATE(idR23(idx2%nR,idx3%nR))
     idR23 = -1
-    
+
     DO i2 = 1,idx2%nR
     DO i3 = 1,idx3%nR
       DO j = 1,fc%n_R
@@ -197,7 +197,7 @@ MODULE asr3_module
       !WRITE(333,'(2i4,2x,2i4,2x,i4)') i2,i3, idR23(i2,i3)
     ENDDO
     ENDDO
-    
+
   END SUBROUTINE index_2R
   ! \/o\________\\\_________________________________________/^>
   ! Find the position of an R in a list of Rs
@@ -211,17 +211,25 @@ MODULE asr3_module
   END FUNCTION
   ! \/o\________\\\_________________________________________/^>
   ! Reshape 3rd order force constant matrix from 3 to 6 indexes (dir>0), or back (dir<0)
-  SUBROUTINE fc_3idx_2_6idx(nat, fc3, fc6, dir)
+  SUBROUTINE fc_3idx_2_6idx(nat, fc3, fc6, dir, def)
     USE kinds, ONLY : DP
     IMPLICIT NONE
-    REAL(DP),INTENT(inout) :: fc3(3*nat, 3*nat, 3*nat)   ! d3 in cartesian basis
-    REAL(DP),INTENT(inout) :: fc6(3,3,3, nat,nat,nat)    ! d3 in pattern basis
+    REAL(DP),INTENT(inout) :: fc3(:,:,:)   ! d3 in cartesian basis
+    REAL(DP),INTENT(inout) :: fc6(:,:,:,:,:,:)    ! d3 in pattern basis
     INTEGER,INTENT(in) :: nat
     INTEGER,INTENT(in) :: dir
+    logical, INTENT(in), OPTIONAL :: def
+    integer :: natd3
     !
     INTEGER :: i, j, k
     INTEGER :: at_i, at_j, at_k
     INTEGER :: pol_i, pol_j, pol_k
+    !
+    if(present(def) .and. def) then
+      natd3 = 1
+    else
+      natd3 = nat*3
+    endif
     !
     DO k = 1, 3*nat
       at_k  = 1 + (k-1)/3
@@ -231,7 +239,7 @@ MODULE asr3_module
         at_j  = 1 + (j-1)/3
         pol_j = j - 3*(at_j-1)
         !
-        DO i = 1, 3*nat
+        DO i = 1, natd3
           at_i  = 1 + (i-1)/3
           pol_i = i - 3*(at_i-1)
           !
@@ -254,8 +262,8 @@ MODULE asr3_module
   ! \/o\________\\\_________________________________________/^>
   ! Initially the force constants are indexed on coupe of (R2,R3)
   ! this subroutine reshuffle the elements and assign them to two different
-  ! indexes: one for R2 and one for R3. 
-  SUBROUTINE reindex_fc3(nat,fc,idR23,idx2,idx3,fx,dir)
+  ! indexes: one for R2 and one for R3.
+  SUBROUTINE reindex_fc3(nat,fc,idR23,idx2,idx3,fx,dir,def)
     USE fc3_interpolate,       ONLY : grid
     IMPLICIT NONE
     !
@@ -264,20 +272,29 @@ MODULE asr3_module
     TYPE(index_r_type) :: idx2, idx3
     INTEGER,INTENT(in) :: idR23(idx2%nR,idx3%nR)
     TYPE(forceconst3_ofRR),INTENT(inout) :: fx(idx2%nR,idx3%nR)
+    logical,INTENT(in),OPTIONAL :: def
+    integer :: natd, pold
     !
     INTEGER :: iR2,iR3
 
+    if(present(def) .and. def) then
+      natd = 1
+      pold = 1
+    else
+      natd = nat
+      pold = 3
+    endif
     IF(dir>0) THEN
         DO iR2 = 1,idx2%nR
         DO iR3 = 1,idx3%nR
           IF(.not.ALLOCATED(fx(iR2,iR3)%F)) &
-            ALLOCATE(fx(iR2,iR3)%F(3,3,3,nat,nat,nat))
+            ALLOCATE(fx(iR2,iR3)%F(pold,3,3,natd,nat,nat))
           fx(iR2,iR3)%F = 0._dp
         ENDDO
         ENDDO
     ELSE IF(dir<0) THEN
       IF(.not.ALLOCATED(fc%fc)) &
-        ALLOCATE(fc%fc(3*nat,3*nat,3*nat, fc%n_R))
+        ALLOCATE(fc%fc(pold*natd,3*nat,3*nat, fc%n_R))
       fc%fc = 0._dp
     ELSE
           CALL errore("reindex_fc3","bad direction (+1/-1)",1)
@@ -288,8 +305,8 @@ MODULE asr3_module
       IF(idR23(iR2,iR3)>0) THEN
         CALL fc_3idx_2_6idx(nat, &
                             fc%fc(:,:,:,  idR23(iR2,iR3)), &
-                            fx(iR2,iR3)%F, dir )
-      
+                            fx(iR2,iR3)%F, dir, def=def)
+
       ENDIF
     ENDDO
     ENDDO
@@ -306,7 +323,7 @@ MODULE asr3_module
     !
     INTEGER :: iR2,iR3, a,b,c,i,j,k, ii,jj,kk, iR,iRp,iRpp
     INTEGER :: natR
-    
+
     natR = nat*idx%nR
     ALLOCATE(up(3,3,3, natR,natR,natR))
     !
@@ -335,7 +352,7 @@ MODULE asr3_module
     ENDDO
     ENDDO
     ENDDO
-    
+
     CALL upsum_fcx(natR, up)
     !
   END SUBROUTINE upindex_fcx
@@ -371,7 +388,7 @@ MODULE asr3_module
       ENDDO
     ENDDO
     ENDDO
-    
+
     DO k = 1, natR
       DO j = 1, natR
         DO i = 1, natR
@@ -382,7 +399,7 @@ MODULE asr3_module
         ENDDO
       ENDDO
     ENDDO
-    
+
   END SUBROUTINE upsum_fcx
   !
   ! \/o\________\\\_________________________________________/^>
@@ -390,7 +407,7 @@ MODULE asr3_module
   ! Note that the first R of the FC is always zero, hence we have to
   ! use translational symmetry, i.e.:
   ! F^3(R2,0,R3| b,a,c | j,i,k )  --> F^3(0,-R2,R3-R2| b,a,c | j,i,k )
-  FUNCTION perm_symmetrize_fc3(nat,idx,fx) RESULT(delta)
+  FUNCTION perm_symmetrize_fc3(nat,idx,fx, def) RESULT(delta)
     USE timers, ONLY : t_asr3s
     IMPLICIT NONE
     !
@@ -399,6 +416,9 @@ MODULE asr3_module
     TYPE(forceconst3_ofRR),INTENT(inout) :: fx(idx%nR,idx%nR)
     !TYPE(forceconst3_ofRR),ALLOCATABLE,SAVE :: fsym(:,:)
     TYPE(todo3_ofRR),ALLOCATABLE,SAVE       :: todo(:,:)
+    logical,INTENT(in),OPTIONAL :: def
+    integer :: natd, pold
+    real(dp) :: norm
     !
     INTEGER :: iR2,iR3, a,b,c, i,j,k
     INTEGER :: mR2, mR3, iR2mR3, iR3mR2
@@ -407,13 +427,22 @@ MODULE asr3_module
 
     CALL t_asr3s%start()
     delta = 0._dp
+    if(present(def) .and. def) then
+      natd = 1
+      pold = 1
+      norm = 0.5_dp
+    else
+      natd = nat
+      pold = 3
+      norm = onesixth
+    endif
 
     IF(.not.allocated(todo)) THEN
       !ALLOCATE(fsym(idx%nR,idx%nR))
       ALLOCATE(todo(idx%nR,idx%nR))
       DO iR2 = 1,idx%nR
       DO iR3 = 1,idx%nR
-        ALLOCATE(todo(iR2,iR3)%F(3,3,3, nat,nat,nat))
+        ALLOCATE(todo(iR2,iR3)%F(pold,3,3, natd,nat,nat))
         todo(iR2,iR3)%F = .true.
       ENDDO
       ENDDO
@@ -434,29 +463,33 @@ MODULE asr3_module
       iR2mR3 = idx%idRmR(iR2,iR3)
       iR3mR2 = idx%idRmR(iR3,iR2)
       !
-      IF(iR2mR3<0 .or. iR3mR2<0.or.mR3<0 .or. mR2<0) THEN
-        IF( ANY(ABS(fx(iR2,iR3)%F) > eps0) ) THEN
-           print*, ">>", MAXVAL(ABS(fx(iR2,iR3)%F)), iR2, iR3, mR2, mR3, iR2mR3, iR3mR2
-           CALL errore('impose_asr3', "A matrix element that should be zero isn't. Increase the image distance search in qq2rr"&
-                                    //" with '-f' option, or if using non-center mat3R use asr3 with option '-m' ", 1)
+      if(.not. def) then
+        IF(iR2mR3<0 .or. iR3mR2<0.or.mR3<0 .or. mR2<0) THEN
+          IF( ANY(ABS(fx(iR2,iR3)%F) > eps0) ) THEN
+            print*, ">>", MAXVAL(ABS(fx(iR2,iR3)%F)), iR2, iR3, mR2, mR3, iR2mR3, iR3mR2
+            CALL errore('impose_asr3', "A matrix element that should be zero isn't. Increase the image distance search in qq2rr"&
+                                      //" with '-f' option, or if using non-center mat3R use asr3 with option '-m' ", 1)
+          ENDIF
+          fx(iR2,iR3)%F = 0._dp
+          CYCLE R3_LOOP
         ENDIF
-        fx(iR2,iR3)%F = 0._dp
-        CYCLE R3_LOOP
-      ENDIF
+      endif
       !
 !$OMP PARALLEL DO DEFAULT(shared) PRIVATE(a,b,c,i,j,k,avg)  &
-!$OMP REDUCTION(+:delta) COLLAPSE(6) 
-      DO a = 1,3
+!$OMP REDUCTION(+:delta) COLLAPSE(6)
+      DO a = 1,pold
       DO b = 1,3
       DO c = 1,3
-        DO i = 1,nat
+        DO i = 1,natd
         DO j = 1,nat
         DO k = 1,nat
-        
+
           IF( todo(iR2,iR3)%F(a,b,c, i,j,k) ) THEN
-            avg = onesixth * ( &
+            avg = norm * ( &
                       fx(iR2,   iR3   )%F(a,b,c, i,j,k) &
-                    + fx(iR3,   iR2   )%F(a,c,b, i,k,j) &
+                    + fx(iR3,   iR2   )%F(a,c,b, i,k,j))
+            if(.not. present(def)) &
+              avg = avg + norm * ( &
                     + fx(mR2,   iR3mR2)%F(b,a,c, j,i,k) &
                     + fx(iR3mR2,mR2   )%F(b,c,a, j,k,i) &
                     + fx(mR3,   iR2mR3)%F(c,a,b, k,i,j) &
@@ -465,21 +498,25 @@ MODULE asr3_module
 
             delta = delta + (fx(iR2,iR3)%F(a,b,c, i,j,k) - avg)**2
 
-            fx(iR2,iR3)%F(a,b,c, i,j,k) = avg
+            fx(iR2,   iR3   )%F(a,b,c, i,j,k) = avg
             fx(iR3,   iR2   )%F(a,c,b, i,k,j) = avg
-            fx(mR2,   iR3mR2)%F(b,a,c, j,i,k) = avg
-            fx(iR3mR2,mR2   )%F(b,c,a, j,k,i) = avg
-            fx(mR3,   iR2mR3)%F(c,a,b, k,i,j) = avg
-            fx(iR2mR3,mR3   )%F(c,b,a, k,j,i) = avg
+            if(.not. present(def)) then
+              fx(mR2,   iR3mR2)%F(b,a,c, j,i,k) = avg
+              fx(iR3mR2,mR2   )%F(b,c,a, j,k,i) = avg
+              fx(mR3,   iR2mR3)%F(c,a,b, k,i,j) = avg
+              fx(iR2mR3,mR3   )%F(c,b,a, k,j,i) = avg
+            endif
 
             todo(iR2,   iR3   )%F(a,b,c, i,j,k) = .false.
             todo(iR3,   iR2   )%F(a,c,b, i,k,j) = .false.
-            todo(mR2,   iR3mR2)%F(b,a,c, j,i,k) = .false.
-            todo(iR3mR2,mR2   )%F(b,c,a, j,k,i) = .false.
-            todo(mR3,   iR2mR3)%F(c,a,b, k,i,j) = .false.
-            todo(iR2mR3,mR3   )%F(c,b,a, k,j,i) = .false.
+            IF(.not. present(def)) THEN
+              todo(mR2,   iR3mR2)%F(b,a,c, j,i,k) = .false.
+              todo(iR3mR2,mR2   )%F(b,c,a, j,k,i) = .false.
+              todo(mR3,   iR2mR3)%F(c,a,b, k,i,j) = .false.
+              todo(iR2mR3,mR3   )%F(c,b,a, k,j,i) = .false.
+            endif
           ENDIF
-        
+
         ENDDO
         ENDDO
         ENDDO
@@ -498,7 +535,7 @@ MODULE asr3_module
   !
   ! \/o\________\\\_________________________________________/^>
   ! Imposes sum rule on the first index of the FCs
-  REAL(DP) FUNCTION impose_asr3_1idx(nat,idx,fx,pow) RESULT(delta)
+  REAL(DP) FUNCTION impose_asr3_1idx(nat,idx,fx,pow, def) RESULT(delta)
     USE timers, ONLY : t_asr3a
     IMPLICIT NONE
     !
@@ -506,6 +543,8 @@ MODULE asr3_module
     TYPE(index_r_type) :: idx
     TYPE(forceconst3_ofRR),INTENT(inout) :: fx(idx%nR,idx%nR)
     REAL(DP),INTENT(in) :: pow
+    LOGICAL,INTENT(in),OPTIONAL :: def
+    integer :: natd, pold
     !
     INTEGER :: iR2,iR3, a,b,c, i,j,k
     REAL(DP):: deltot, delsig, delperm
@@ -514,6 +553,14 @@ MODULE asr3_module
     !
     CALL t_asr3a%start()
     !
+    if(present(def) .and. def) then
+      natd = 1
+      pold = 1
+    else
+      natd = nat
+      pold = 3
+    endif
+    !
     invpow = 1._dp/pow
 
     deltot = 0._dp
@@ -521,10 +568,10 @@ MODULE asr3_module
     DO iR2 = 1,idx%nR
       !
       DO j = 1,nat
-      DO i = 1,nat
+      DO i = 1,natd
         DO c = 1,3
         DO b = 1,3
-        DO a = 1,3
+        DO a = 1,pold
           !
           ! The sum is on one R (it does not matter which)
           ! and the first atom index
@@ -568,7 +615,7 @@ MODULE asr3_module
     CALL t_asr3a%stop()
     !
     ! Re-symmetrize the matrix
-    delperm = perm_symmetrize_fc3(nat,idx,fx)
+    delperm = perm_symmetrize_fc3(nat,idx,fx, def=def)
     !
     IF(iter==1) THEN
     WRITE(*,'(2x,a)') "Minimization started: create a file named 'STOP' to stop."
@@ -624,21 +671,21 @@ MODULE asr3_module
 !     DO iRpp = 1,idx%nR
 !     DO iRp = 1,idx%nR
 !     DO iR = 1,idx%nR
-! 
-!     
+!
+!
 !     iR2 = idx%idRmR(iRp,iR)   ! R2 = R'-R
 !     iR3 = idx%idRmR(iRpp,iR)  ! R3 = R''-R
 !     ROUTER_IF : IF(iR2>0 .and. iR3>0 .and. todo(iR2,iR3))THEN
 !     todo(iR2,iR3) = .false.
-    
+
       todo_ = .true.
       DO iRpp_ = 1,idx%nR
       DO iRp_  = 1,idx%nR
       DO iR_   = 1,idx%nR
-      
+
       iR2_ = idx%idRmR(iRp_,iR_)   ! R2 = R'-R
       iR3_ = idx%idRmR(iRpp_,iR_)  ! R3 = R''-R
-      
+
       RINNER_IF : IF(iR2_>0 .and. iR3_>0 .and. todo_(iR2_,iR3_))THEN
 !       todo_(iR2_,iR3_) = .false.
 !       DO iR2_ = 1,idx%nR
@@ -690,7 +737,7 @@ MODULE asr3_module
     !print*, "-->", delperm
     delta = 0._dp
     !
-  END FUNCTION impose_asr3_mauri  
+  END FUNCTION impose_asr3_mauri
   ! \/o\________\\\_________________________________________/^>
   !
   INTEGER PURE FUNCTION d(i,j)
@@ -702,8 +749,8 @@ MODULE asr3_module
       d=0
     ENDIF
   END FUNCTION
-  
-  
+
+
 END MODULE asr3_module
 
 
@@ -730,10 +777,11 @@ PROGRAM asr3
   !
   INTEGER :: j, ios
   REAL(DP) :: delta, threshold
-  ! 
+  !
   CHARACTER(len=256) :: self, filein, fileout, aux
   INTEGER :: niter_max
   REAL(DP) :: pow
+  logical :: def
   !
   TYPE(grid) :: fcb
   INTEGER :: nq(3), nq_trip
@@ -745,6 +793,7 @@ PROGRAM asr3
   threshold    = cmdline_param_dble("t", 1.d-12)
   niter_max   = cmdline_param_int("n", 1000)
   pow         = cmdline_param_dble("p", 2._dp)
+  def         = cmdline_param_logical("d")
   use_modulo  = cmdline_param_logical("m")
   IF (cmdline_param_logical('h')) THEN
       WRITE(*,*) "Syntax: d3_asr3.x [-i FILEIN] [-o FILEOUT] [-t THR] [-n NITER] [-p POWER] [-m]"
@@ -761,7 +810,7 @@ PROGRAM asr3
       WRITE(*,'(a)') "      only use for non-centered mat3R files (wrong results in any other case)"
       STOP 1
   ENDIF
-  
+
   CALL cmdline_check_exausted()
   !
   WRITE(*,*) "Note: create a file called 'STOP' to stop the code at next iteration and write out the result."
@@ -776,12 +825,12 @@ PROGRAM asr3
   WRITE(*,*) " --- ------------ ---"
   ! ----------------------------------------------------------------------------
     CALL t_asr3io%start()
-  CALL fc%read(filein, S)
+  CALL fc%read(filein, S, def=def)
   CALL aux_system(s)
     CALL t_asr3io%stop()
   !
   CALL memstat(kb)
-  WRITE(*,*) " grid size", fc%nq 
+  WRITE(*,*) " grid size", fc%nq
   WRITE(*,*) "Reading : done. //  Mem used:", DBLE(kb)/1000._dp, "Mb"
   !
   ! ----------------------------------------------------------------------------
@@ -795,7 +844,7 @@ PROGRAM asr3
 !   CALL stable_index_R(fc%n_R, fc%yR3, idx_wrap%nR, idx_wrap%nRx, idx_wrap%nRi, &
 !           idx_wrap%yR, idx_wrap%idR, idx_wrap%iRe0, idx_wrap%idmR, idx_wrap%idRmR, .true.)
   !
-  ! Check that indexes are identical, this is not strictly necessary, 
+  ! Check that indexes are identical, this is not strictly necessary,
   ! but it makes the rest easier
   IF(idx2%nR/=idx3%nR .or. ANY(idx2%yR/=idx3%yR) )&
     CALL errore("asr3", "problem with R",1)
@@ -806,46 +855,46 @@ PROGRAM asr3
   !
   ! Map couple of in
   CALL index_2R(idx2,idx3, fc, idR23)
-  
+
   CALL memstat(kb)
   WRITE(*,*) "R indexing : done. //  Mem used:", kb/1000, "Mb"
   ! ----------------------------------------------------------------------------
   !
   ALLOCATE(fx(idx2%nR, idx3%nR))
 
-  CALL reindex_fc3(S%nat,fc,idR23,idx2,idx3,fx,+1)
+  CALL reindex_fc3(S%nat,fc,idR23,idx2,idx3,fx,+1, def=def)
     CALL t_asr3idx%stop()
   CALL memstat(kb)
   WRITE(*,*) "FC3 reindex : done. //  Mem used:", kb/1000, "Mb"
 
 !   CALL upindex_fcx(S%nat, idx_wrap, fx, up)
 !   WRITE(*,*) "Upscale reindex : done. //  Mem used:", kb/1000, "Mb"
-! 
+!
 !!  threshold = impose_asr3_mauri(S%nat,idx2,fx)
+  print*, "prova"
 
-
-     WRITE(*,*) "Pre-symmetrization:", perm_symmetrize_fc3(S%nat,idx2,fx)
+    !  delta = perm_symmetrize_fc3(S%nat,idx2,fx, def=def)
      !
      APPLY_ASR : &
      DO j = 1,niter_max
-       IF( impose_asr3_1idx(S%nat,idx2,fx,pow) < threshold) EXIT
+       IF( impose_asr3_1idx(S%nat,idx2,fx,pow, def=def) < threshold) EXIT
        OPEN(unit=100, file="STOP", status='OLD', iostat=ios)
        IF(ios==0) THEN
          CLOSE(100,status="DELETE")
-         EXIT APPLY_ASR 
+         EXIT APPLY_ASR
        ENDIF
-     ENDDO APPLY_ASR 
+     ENDDO APPLY_ASR
      !
    CALL memstat(kb)
    WRITE(*,*) "Impose asr3 : done. //  Mem used:", kb/1000, "Mb"
   ! ----------------------------------------------------------------------------
   !
     CALL t_asr3idx%start()
-  CALL reindex_fc3(S%nat,fc,idR23,idx2,idx3,fx,-1)
+  CALL reindex_fc3(S%nat,fc,idR23,idx2,idx3,fx,-1, def=def)
     CALL t_asr3idx%stop()
 
     CALL t_asr3io%start()
-  CALL fc%write(fileout, S)
+  CALL fc%write(fileout, S, def=def)
     CALL t_asr3io%stop()
   !
   CALL print_citations_linewidth()

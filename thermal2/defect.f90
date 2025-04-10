@@ -13,6 +13,8 @@ module defect
   use functions, only: invzmat
   use constants, only: tpi
   use quter_defect
+  use functions, only: f_gauss
+  use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
   ! use tetra_raja
   !
   implicit none
@@ -25,8 +27,10 @@ contains
     type(q_grid), intent(in) :: grid, out_grid
     type(code_input_type), intent(in) :: input
     !
+    type(sparse) :: fc3
     type(forceconst2_grid) :: fc2_centered
-    type(ph_system_info) :: S_sc
+    type(d3_mixed) :: Dqr
+    type(ph_system_info) :: S_sc, S3
     type(forceconst2_sc) :: fc2_sc
     complex(dp), dimension(S%nat3, S%nat3) :: Vqq, T_Us, temp
     real(dp) :: freqs(S%nat3, grid%nqtot)
@@ -42,7 +46,7 @@ contains
     complex(dp) :: interp(S%nat3, grid%nqtot)
     complex(dp), allocatable, dimension(:,:,:,:) :: V
     complex(dp), allocatable, dimension(:,:) :: V_flat, Id_flat, R_flat, &
-      VG_flat, VG2_flat, VG3_flat, VG4_flat, PP
+      VG_flat, VG2_flat, VG3_flat, VG4_flat, PP, PP2
     logical, parameter :: full_born = .false.
     real(dp) :: max_freq, omega, omegaq, R_def(3), mass_def
     real(dp) :: mass_matrix(S%nat3, S%nat3), mean, max_diff_fc2d, max_diff_rel
@@ -61,7 +65,7 @@ contains
     Nout = S%nat3*out_grid%nqtot
     ! allocate(V(S%nat3,S%nat3,grid%nqtot,out_grid%nqtot))
     ! allocate(V_flat(Nin,Nout))
-    allocate(PP(S%nat3,grid%nqtot))
+    allocate(PP(S%nat3,grid%nqtot), PP2(S%nat3,grid%nqtot))
     ! allocate(V_flat, source=V_flat)
     if(full_born) allocate(R_flat, VG_flat, VG2_flat, VG3_flat, VG4_flat, source=V_flat)
     !
@@ -78,6 +82,7 @@ contains
     !
     !> input files are periodic, it can be changed
     CALL fc2_recenter(S, fc2, fc2_centered, 2)
+    call fc3%read(input%file_mat3, S3, .true.)
     !
     ! max_diff_fc2d = 0._dp
     ! do ibnd = 1, Sd%nat3
@@ -131,7 +136,7 @@ contains
     !> centering procedure gives different output
     call S_uc2sc(S, fc2%nq, S_sc)
     S_sc%ityp(1) = 2
-    ! call center3(fc2_sc, fc2%nq, S, Sd)
+    call center3(fc2_sc, fc2%nq, S, Sd)
     !
     call freq_in_grid(S, fc2_centered, out_grid, out_freqs, out_Us)
     call freq_in_grid(S, fc2_centered, grid, freqs, Us)
@@ -235,10 +240,13 @@ contains
     lws = 0._dp
     lws_full = 0._dp
 
+
+
     ! weights = reshape(spread(grid%w, 1, S%nat3), [S%nat3*grid%nqtot])
     do iq = 1, out_grid%nq
       iqp = iq !+ out_grid%iq0
-      call fc2_sc%interpolate(-out_grid%xq(:,iq), S)
+      call fc3%sum_R2(out_grid%xq(:,iq), S%nat3, Dqr, .true.)
+      ! call fc2_sc%interpolate(out_grid%xq(:,iq), S)
       do ibnd = 1, S%nat3
         ! comp = ibnd + (iqp-1)*S%nat3
         omegaq = out_freqs(ibnd,iqp)
@@ -246,10 +254,13 @@ contains
         ! lws_full(ibnd,iqp) = interp1_scl(lws_full_iw(ibnd,iqp,:), omegaq*input%n_omega/max_freq) / omegaq
         do jq = 1, grid%nq
           jqp = jq + grid%iq0
-          call fc2_sc%interpolate(-grid%xq(:,jq), S, Vqq)
+          ! call fc2_sc%interpolate(grid%xq(:,jq), S, temp)
+          call sum_R3(S, grid%xq(:,jq), Dqr, Vqq)
           ! call interp_at_once(fc2_sc, out_grid%xq(:,iq), grid%xq(:,jq), S, Vqq)
           do jbnd = 1, S%nat3
-            PP(jbnd,jqp) = braket(out_Us(:,ibnd,iq), Vqq, Us(:,jbnd,jqp))
+            ! print*, omegaq-freqs(ibnd,jqp)
+            PP(jbnd,jqp) = braket(out_Us(:,ibnd,iq), Vqq, Us(:,jbnd,jqp)) !* f_gauss(omegaq-freqs(ibnd,jqp), 1e-4_dp)
+            ! PP2(jbnd,jqp) = braket(out_Us(:,ibnd,iq), temp, Us(:,jbnd,jqp))
           enddo
         enddo
         ! do jq = 1, grid%nq
@@ -261,11 +272,14 @@ contains
         ! lws_full(ibnd,iqp) = SUM(ABS(V_flat(:,comp))**2 * interp_flat) / omegaq
         interp = interp1_matrix(tetra_weights, omegaq*input%n_omega/max_freq)
         ! interp_flat = interp1_vector(tetra_flat, omegaq*input%n_omega/max_freq)
-        lws(ibnd,iqp) = SUM( ABS(PP)**2 * AIMAG(interp) ) / omegaq /grid%nqtot
-        ! lws_full(ibnd,iqp) = SUM(ABS(V_flat(:,comp))**2 * AIMAG(interp_flat) ) / omegaq /grid%nqtot
+        lws(ibnd,iqp) = SUM( ABS(PP)**2 * interp) / omegaq /grid%nqtot
+        ! lws_full(ibnd,iqp) = SUM(ABS(PP2)**2 * interp) / omegaq /grid%nqtot
       enddo
     enddo
     call mpi_bsum(S%nat3, out_grid%nqtot, lws)
+    where (abs(lws) < 1e-20_dp)
+      lws = 0._dp
+    endwhere
     ! call mpi_bsum(S%nat3, out_grid%nqtot, lws_full)
     !
     call print_message("writing defect linewidths to file")
@@ -281,15 +295,15 @@ contains
       close(10)
     endif
     !
-    if(ionode) then
-      open(10, file='defect_raja.dat', status='unknown')
-      do iq = 1, out_grid%nqtot
-        do ibnd = 1, S%nat3
-          write(10, "(3e14.5,I3)") out_freqs(ibnd,iq), lws_full(ibnd,iq), ibnd
-        enddo
-      enddo
-      close(10)
-    endif
+    ! if(ionode) then
+    !   open(10, file='defect_symm.dat', status='unknown')
+    !   do iq = 1, out_grid%nqtot
+    !     do ibnd = 1, S%nat3
+    !       write(10, "(3e14.5,I3)") out_freqs(ibnd,iq), lws_full(ibnd,iq), ibnd
+    !     enddo
+    !   enddo
+    !   close(10)
+    ! endif
     !
     if (full_born) deallocate(R_flat, VG_flat, VG2_flat, VG3_flat, VG4_flat)
     ! deallocate(V, V_flat)

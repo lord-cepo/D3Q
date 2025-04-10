@@ -197,7 +197,7 @@ END SUBROUTINE d3_3idx_2_6idx
 pure SUBROUTINE d3_6idx_2_3idx(nat, phi, d3)
   !-----------------------------------------------------------------------
   !
-  !   Changes the index from 3^3 times nat^3 to (3*nat)^3 
+  !   Changes the index from 3^3 times nat^3 to (3*nat)^3
   !
   USE kinds, ONLY : DP
   IMPLICIT NONE
@@ -231,6 +231,78 @@ pure SUBROUTINE d3_6idx_2_3idx(nat, phi, d3)
   RETURN
   !-----------------------------------------------------------------------
 END SUBROUTINE d3_6idx_2_3idx
+!-----------------------------------------------------------------------
+!
+!-----------------------------------------------------------------------
+pure SUBROUTINE d3_4idx_2_2idx(nat, phi, d3)
+  !-----------------------------------------------------------------------
+  !
+  !   Changes the index from 3^3 times nat^3 to (3*nat)^3
+  !
+  USE kinds, ONLY : DP
+  IMPLICIT NONE
+  COMPLEX(DP),INTENT(out)  :: d3(1, 3*nat, 3*nat)   ! d3 in cartesian basis
+  COMPLEX(DP),INTENT(in) :: phi(1,3,3,1,nat,nat) ! d3 in pattern basis
+  INTEGER,INTENT(in) :: nat
+  !
+  INTEGER :: j, k
+  INTEGER :: at_j, at_k
+  INTEGER :: pol_j, pol_k
+  !
+  !
+  DO k = 1, 3*nat
+    at_k  = 1 + (k-1)/3
+    pol_k = k - 3*(at_k-1)
+    !
+    DO j = 1, 3*nat
+      at_j  = 1 + (j-1)/3
+      pol_j = j - 3*(at_j-1)
+      !
+        d3(1,j,k) &
+          = phi(1, pol_j, pol_k, 1, at_j, at_k)
+        !
+    ENDDO
+  ENDDO
+  !
+  RETURN
+  !-----------------------------------------------------------------------
+END SUBROUTINE
+!-----------------------------------------------------------------------
+!
+!-----------------------------------------------------------------------
+pure SUBROUTINE d3_2idx_2_4idx(nat, phi, d3)
+  !-----------------------------------------------------------------------
+  !
+  !   Changes the index from 3^3 times nat^3 to (3*nat)^3
+  !
+  USE kinds, ONLY : DP
+  IMPLICIT NONE
+  COMPLEX(DP),INTENT(in)  :: d3(1, 3*nat, 3*nat)   ! d3 in cartesian basis
+  COMPLEX(DP),INTENT(out) :: phi(1,3,3,1,nat,nat) ! d3 in pattern basis
+  INTEGER,INTENT(in) :: nat
+  !
+  INTEGER :: j, k
+  INTEGER :: at_j, at_k
+  INTEGER :: pol_j, pol_k
+  !
+  !
+  DO k = 1, 3*nat
+    at_k  = 1 + (k-1)/3
+    pol_k = k - 3*(at_k-1)
+    !
+    DO j = 1, 3*nat
+      at_j  = 1 + (j-1)/3
+      pol_j = j - 3*(at_j-1)
+      !
+      phi(1, pol_j, pol_k, 1, at_j, at_k) = &
+        d3(1,j,k)
+        !
+    ENDDO
+  ENDDO
+  !
+  RETURN
+  !-----------------------------------------------------------------------
+END SUBROUTINE
 !-----------------------------------------------------------------------
 !
 !-----------------------------------------------------------------------
