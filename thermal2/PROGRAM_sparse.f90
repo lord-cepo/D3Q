@@ -8,7 +8,7 @@
 ! \/o\________\\\________________\\/\_________________________/^>
 MODULE gen_sparse_program
   USE kinds, ONLY : DP
-  
+
   CONTAINS
   !
   SUBROUTINE test_classes(fc)
@@ -52,10 +52,10 @@ PROGRAM gen_sparse
     INTEGER      :: kb
     COMPLEX(DP),ALLOCATABLE :: D1(:,:,:), D2(:,:,:)
     !
-    REAL(DP) :: xq1(3), xq2(3),x 
-    
+    REAL(DP) :: xq1(3), xq2(3),x
+
     CLASS(forceconst3),POINTER :: afc
-    
+
     INTEGER :: i
     !
     TYPE(nanotimer) :: t_fc  = nanotimer("Full matrix form")
@@ -64,6 +64,7 @@ PROGRAM gen_sparse
     CHARACTER(len=256) :: filein, fileout
     INTEGER ::  ntest
     REAL(DP) :: thr, delta, deltasum, deltamax
+    logical :: def
     !
     !
     CHARACTER(len=:),ALLOCATABLE :: cmdline
@@ -72,7 +73,8 @@ PROGRAM gen_sparse
     fileout  = cmdline_param_char("o", TRIM(filein)//".sparse")
     thr      = cmdline_param_dble("t", 0.d0)
     ntest    = cmdline_param_int("n", -1)
-    
+    def      = cmdline_param_logical("d")
+
     IF (cmdline_param_logical('h')) THEN
         WRITE(*,*) "Syntax: d3_sparse.x [-i FILEIN] [-o FILEOUT] [-t THRESH] [-n NTESTS]"
         WRITE(*,*) ""
@@ -90,20 +92,20 @@ PROGRAM gen_sparse
     IF(TRIM(fileout)==TRIM(filein)) &
       CALL errore("gen_sparse","filein and fileout are the same, I refuse to do that",1)
 
-    CALL fc%read(filein, S)
+    CALL fc%read(filein, S, def)
     CALL aux_system(S)
     CALL memstat(kb)
     WRITE(stdout,*) "FC Memory used : ", kb/1000, "Mb"
 
     WRITE(stdout,*) "Cutting off FCs smaller than : ", thr, "Ry/bohr^3"
 
-    CALL fc3_grid_to_sparse(S%nat, fc, sfc, thr)
+    CALL fc3_grid_to_sparse(S%nat, fc, sfc, thr, def)
     WRITE(stdout,*) "FC+Sparse Memory used : ", kb/1000, "Mb"
     IF(fileout/="none") CALL sfc%write(fileout, S)
 
     IF(ntest>0)THEN
       WRITE(*,*) "Running", ntest, "test configurations"
-      
+
       ALLOCATE(D1(S%nat3, S%nat3, S%nat3))
       ALLOCATE(D2(S%nat3, S%nat3, S%nat3))
 
@@ -114,7 +116,7 @@ PROGRAM gen_sparse
       DO i = 1,ntest
         xq1 = (/ randy(), randy(), randy() /)
         xq2 = (/ randy(), randy(), randy() /)
-        
+
         CALL t_fc%start()
           CALL fc%interpolate(xq1,xq2,S%nat3,D1)
         CALL t_fc%stop()
@@ -142,10 +144,10 @@ PROGRAM gen_sparse
 
     CALL fc%destroy()
     WRITE(stdout,*) "Sparse Memory used : ", kb/1000, "Mb"
-    
+
     CALL sfc%destroy()
-    
+
     CALL print_citations_linewidth()
-    
+
 END PROGRAM gen_sparse
 ! \/o\________\\\________________\\/\_________________________/^>
