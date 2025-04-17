@@ -31,7 +31,9 @@ MODULE thtetra
   REAL(DP), ALLOCATABLE :: wlsm(:,:)
   !! Weights for the optimized tetrahedron method
   INTEGER :: nqs
-  !! number of q-points
+  !! number of q-points in IRREDUCIBLE BZ
+  INTEGER :: nqtot
+  !! number of q-points in the whole BZ
   INTEGER :: nbnd
   !! number of bands
   INTEGER, ALLOCATABLE :: itetra(:,:,:)
@@ -46,6 +48,8 @@ MODULE thtetra
   !! number of VALID neighbouring k points in each VALID tetrahedron
   integer, allocatable :: nt_tetra(:) ! (ntetra)
   !! index of VALID tetrahedra
+  integer, allocatable :: equiv(:)
+  !! equivalence points in symmetrized grid
   integer :: nvalid
   !! number of VALID tetrahedra
   real(dp) :: MIN_DISTANCE
@@ -53,7 +57,7 @@ MODULE thtetra
   ! INTEGER, allocatable :: which_tetra(:,:,:)
   !! inverse of tetra: given a q point, it gives all the tetrahedra that contain it
 
-  REAL(DP), PARAMETER :: tet_cutoff = 1.0E-6_DP
+  REAL(DP), PARAMETER :: tet_cutoff = 1.0E-4_DP
   REAL(DP), PARAMETER :: min_relative_distance = 1.0E-9_DP
   LOGICAL :: opt_flag
   !
@@ -94,7 +98,7 @@ CONTAINS
     !
     INTEGER :: i1, i2, i3, itet, itettot, ii, ik,  rest, &
       ivvec(3,20,6), divvec(4,4), ivvec0(4), ikv(3), ibnd, &
-      jk, isym, itvalid, count, equiv(product(grid%n)), iks(20)
+      jk, isym, itvalid, count, iks(20)
     ! integer :: tetra_ik(nq(1) * nq(2) * nq(3))
     !
     REAL(DP) :: l(4), bvec2(3,3), bvec3(3,4) !xkg(3, product(nq))
@@ -255,14 +259,16 @@ CONTAINS
     !
     !  bring irreducible k-points to crystal axis
     !
+    ! nqtot = nqs
     if(grid%symmetrized) then
       call setup_grid(grid%type, S%bg, grid%n(1), grid%n(2), grid%n(3), &
         full_grid, xq0=grid%xq0, scatter = .false., quiet = .true.)
-
+      nqtot = full_grid%nqtot
+      allocate(equiv(nqtot))
       CALL cryst_to_cart( grid%nqtot, grid%xq, S%at, -1 )
-      call cryst_to_cart( full_grid%nqtot, full_grid%xq, S%at, -1 )
+      call cryst_to_cart( nqtot, full_grid%xq, S%at, -1 )
 
-      DO ik = 1, product(grid%n)
+      DO ik = 1, nqtot
         ! if (ik == 11) print"(3F8.2)", full_grid%xq(:,ik)
         DO jk = 1, grid%nqtot
           DO isym = 1, nsym
@@ -369,6 +375,7 @@ CONTAINS
     !
     nvalid = itvalid
     print*, "number of tetra to be used", nvalid, "out of", ntetra
+    print*, "tetra", nqtot, nqs
   END SUBROUTINE
   !
   SUBROUTINE tetra_init(nq, bg, ek, opt)
@@ -410,6 +417,7 @@ CONTAINS
     !
     nbnd = SIZE(ek,1)
     nqs = product(nq)
+    nqtot = nqs
     !
     ! IF(nqs /= SIZE(ek,2)) then
     !   print*, "size of q grid in freq_", size(ek,2)
@@ -868,7 +876,7 @@ CONTAINS
     !! Calculate weights for an integral of the kind int(Ak delta(ef-ek))
     !! The resulting wg can be used as sum(Ak * wk)
     !-----------------------------------------------------------------------------------
-    COMPLEX(DP) :: wg(nbnd, nqs)
+    COMPLEX(DP) :: wg(nbnd, nqtot)
     !! COMPLEX Integration weight of each k
     REAL(DP), INTENT(IN) :: ef
     !! The Fermi energy
@@ -879,8 +887,9 @@ CONTAINS
     !! end wannier90 tetra
 
     REAL(DP) :: wI(nbnd,nqs), wR(nbnd, nqs)
+    complex(dp) :: wg_sym(nbnd, nqs)
 
-    INTEGER :: ik, nt, ibnd, ii, ntmax, iimax, ii_
+    INTEGER :: ik, nt, ibnd, ii, ntmax, iimax, ii_, iq
     REAL(DP) :: e(4), wI0(4), wR0(4)
     logical :: symmetry
 
@@ -888,7 +897,7 @@ CONTAINS
     ! REAL(DP) :: wR0(4), ef_e(4), log_ef_e(4), prod_a(4), sum_a(4), second_term(4)
     ! INTEGER :: i3, j3
     !
-    wg = 0._dp
+    wg_sym = 0._dp
     wI = 0._dp
     wR = 0._dp
     !
@@ -940,10 +949,19 @@ CONTAINS
       !
     ENDDO ! nt
     ! wg = wg / REAL(ntetra, dp)
-    wg = CMPLX(wR, -pi*wI, kind=DP) / 6.0_dp
+    wg_sym = CMPLX(wR, -pi*wI, kind=DP) / 6.0_dp
     !
     ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
-    CALL mpi_bsum(nbnd, nqs, wg)
+    CALL mpi_bsum(nbnd, nqs, wg_sym)
+    !
+    if(symmetry) then
+      do iq = 1, nqtot
+        wg(:,iq) = wg_sym(:,equiv(iq))
+      enddo
+    else
+      wg = wg_sym
+    endif
+    !
   END FUNCTION
 
   ! subroutine sort(list)
