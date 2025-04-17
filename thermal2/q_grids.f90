@@ -69,11 +69,13 @@ CONTAINS
 
   SUBROUTINE q_grid_copy(grid, copy)
     IMPLICIT NONE
-    CLASS(q_grid),INTENT(inout) :: grid, copy
+    CLASS(q_grid),INTENT(in) :: grid
+    type(q_grid),intent(out) :: copy
     IF(allocated(copy%xq)) DEALLOCATE(copy%xq)
     ALLOCATE(copy%xq(3,grid%nq))
     IF(allocated(copy%w)) DEALLOCATE(copy%w)
     ALLOCATE(copy%w(grid%nq))
+    copy%type = grid%type
     copy%n  = grid%n
     copy%scattered  = grid%scattered
     copy%shifted =   grid%shifted
@@ -81,18 +83,21 @@ CONTAINS
     copy%nqtot =  grid%nqtot
     copy%iq0 =  grid%iq0
     copy%xq0 =  grid%xq0
+    copy%xq = grid%xq
   END SUBROUTINE
 
   SUBROUTINE q_grid_symmetrize(grid, S)
     USE cell_base,        ONLY : at, bg
     USE symm_base,        ONLY : set_sym, nsym, s_symm_base => s, time_reversal, t_rev
     USE ph_system,        ONLY : ph_system_info
+    use constants,       ONLY : eps12
 
     IMPLICIT NONE
     CLASS(q_grid),INTENT(inout) :: grid
     TYPE(ph_system_info), INTENT(IN) :: S
     REAL(DP), ALLOCATABLE :: m_loc(:,:), xq(:,:), wq(:)
     INTEGER :: nxq
+    real(dp) :: xq0(3)
     EXTERNAL kpoint_grid
     ! at is needed as global variable by set_sym_bl
     at = S%at
@@ -106,8 +111,13 @@ CONTAINS
     IF(.not. allocated(wq)) ALLOCATE(wq(grid%nqtot))
 
     CALL set_sym(S%nat, S%tau, S%ityp, 1, m_loc) ! 1 = nspin I think
+    xq0 = grid%xq0
+    call cryst_to_cart(3, xq0, S%at, -1)
+    xq0 = xq0 * 2 * grid%n
+    if (any(ABS(NINT(xq0)-xq0) > eps12)) call errore("q_grid_symmetrize", &
+      "grid shift is not 0 or 1", 1)
     CALL kpoint_grid(nsym, time_reversal, .false., s_symm_base, t_rev, S%bg, grid%nqtot, &
-      0,0,0, grid%n(1),grid%n(2),grid%n(3), nxq, xq, wq)
+      NINT(xq0(1)),NINT(xq0(1)),NINT(xq0(1)), grid%n(1),grid%n(2),grid%n(3), nxq, xq, wq)
     grid%xq = xq(:,1:nxq)
     grid%w = wq(1:nxq)
     grid%nq = nxq

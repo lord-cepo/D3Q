@@ -374,4 +374,17 @@ contains
     !
   end subroutine
   !
+  function bz2simple(R, grid)
+    integer, intent(in) :: R(3), grid(3)
+    integer :: bz2simple(3)
+    integer :: i, j
+    !
+    bz2simple = mod(R, grid)
+    do i = 1, 3
+      if (bz2simple(i) < 0) &
+        bz2simple(i) = bz2simple(i) + grid(i)
+      if(bz2simple(i) < 0 .or. bz2simple(i) >= grid(i)) &
+        call errore('bz2simple', ': R out of range', 1)
+    end do
+  end function
 end module

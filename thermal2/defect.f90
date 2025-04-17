@@ -7,7 +7,7 @@ module defect
   ! only: outer_product, freq_in_grid, interp1_matrix, &
   ! id_mat, braket, index2v, v2index, e_iqr, interp1_tns4, grid_vec
   use input_fc, only: ph_system_info, allocate_fc2_grid
-  use q_grids, only: q_grid, setup_grid
+  use q_grids, only: q_grid, setup_grid, q_grid_copy
   use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
   use code_input, only: code_input_type
   use functions, only: invzmat
@@ -27,6 +27,7 @@ contains
     type(q_grid), intent(in) :: grid, out_grid
     type(code_input_type), intent(in) :: input
     !
+    type(q_grid) :: grid_sym
     type(sparse) :: fc3
     type(forceconst2_grid) :: fc2_centered
     type(d3_mixed) :: Dqr
@@ -53,9 +54,11 @@ contains
     integer :: iq, iqp, iw, ibnd, nR, jq, Nin, Nout, comp, R1, R2
     integer :: iR_def, na_def, j, compj, jbnd, ir, jr, jqp ! , jn1, jn2
     complex(dp) :: phase_def
+    real(dp), allocatable :: freqs_sym(:,:)
     real(dp), dimension(3) :: xq1, xq2
     real(dp) :: fc2_transp(S%nat3, S%nat3, product(fc2%nq), product(fc2%nq))
     real(dp) :: mean_fc2d(Sd%nat3, Sd%nat3)
+    integer, allocatable :: yR2_out(:,:), yR3_out(:,:,:), index2(:), index3(:,:)
     ! !> elphbolt tetra
     ! INTEGER, ALLOCATABLE :: tetra(:,:), tetracount(:), tetramap(:,:,:)
     ! REAL(DP), ALLOCATABLE :: evals(:,:), tetraevals(:,:,:)
@@ -84,26 +87,23 @@ contains
     CALL fc2_recenter(S, fc2, fc2_centered, 2)
     call fc3%read(input%file_mat3, S3, .true.)
     !
-    ! max_diff_fc2d = 0._dp
-    ! do ibnd = 1, Sd%nat3
-    !   do jbnd = ibnd+1, Sd%nat3
-    !     mean = (fc2d%fc(ibnd,jbnd,1) + fc2d%fc(jbnd,ibnd,1)) / 2.0_dp
-    !     if (ABS(fc2d%fc(ibnd,jbnd,1) - fc2d%fc(jbnd,ibnd,1)) > max_diff_fc2d) then
-    !       max_diff_fc2d = ABS(fc2d%fc(ibnd,jbnd,1) - fc2d%fc(jbnd,ibnd,1))
-    !       max_diff_rel = max_diff_fc2d / ABS(mean)
-    !     endif
-    !     mean_fc2d(ibnd,jbnd) = mean
-    !     mean_fc2d(jbnd,ibnd) = mean
-    !   enddo
-    ! enddo
-    ! print*, "max_diff_fc2d", max_diff_fc2d
-    ! print*, "max_diff_rel", max_diff_rel
+    max_diff_fc2d = 0._dp
+    do ibnd = 1, Sd%nat3
+      do jbnd = ibnd+1, Sd%nat3
+        mean = (fc2d%fc(ibnd,jbnd,1) + fc2d%fc(jbnd,ibnd,1)) / 2.0_dp
+        if (ABS(fc2d%fc(ibnd,jbnd,1) - fc2d%fc(jbnd,ibnd,1)) > max_diff_fc2d) then
+          max_diff_fc2d = ABS(fc2d%fc(ibnd,jbnd,1) - fc2d%fc(jbnd,ibnd,1))
+          max_diff_rel = max_diff_fc2d / ABS(mean)
+        endif
+        mean_fc2d(ibnd,jbnd) = mean
+        mean_fc2d(jbnd,ibnd) = mean
+      enddo
+    enddo
+    print*, "max_diff_fc2d", max_diff_fc2d
+    print*, "max_diff_rel", max_diff_rel
     !> SC: grid type   (big_nat3,big_nat3,1)
     !> UC: grid type   (nat3,nat3,nR)
     !> RR: new SC type (nat3,nat3,nR,nR)
-    CALL fc2_sc%allocate(S, fc2%nq)
-    fc2_sc%fc = fc_sc2RR(fc2%nq, S, Sd, fc2d%fc) - fc_uc2RR(fc2%nq, S, fc2%fc)
-
     ! print*, fc2_sc%fc(1,3,2,2), fc2%fc(1,3,1), fc2_sc%xR1(:,2)
 
     ! do R1 = 1, 2
@@ -136,7 +136,12 @@ contains
     !> centering procedure gives different output
     call S_uc2sc(S, fc2%nq, S_sc)
     S_sc%ityp(1) = 2
+    CALL fc2_sc%allocate(S, fc2%nq)
+    fc2_sc%fc = fc_sc2RR(fc2%nq, S, Sd, fc2d%fc) - &
+      fc_uc2RR(fc2%nq, S, fc2%fc)
     call center3(fc2_sc, fc2%nq, S, Sd)
+    ! call mtd2RR(fc3, S, fc2_sc)
+    ! call div_mass_fcsc(S, Sd, fc2_sc)
     !
     call freq_in_grid(S, fc2_centered, out_grid, out_freqs, out_Us)
     call freq_in_grid(S, fc2_centered, grid, freqs, Us)
@@ -147,11 +152,15 @@ contains
     !
     !> tetra have already the square of freq, it can be changed with
     !> the usual delta formula after some benchmarking
-    if (grid%symmetrized) then
-      call tetra_init_sym(grid, S, freqs**2)
-    else
-      call tetra_init(grid%n, S%bg, freqs**2, .true.)
-    endif
+    call q_grid_copy(grid, grid_sym)
+    ! if (grid%symmetrized) then
+    call grid_sym%symmetrize(S)
+    allocate(freqs_sym(S%nat3, grid_sym%nqtot))
+    call freq_in_grid(S, fc2_centered, grid_sym, freqs_sym)
+    call tetra_init_sym(grid_sym, S, freqs_sym**2, .true.)
+    ! else
+    !   call tetra_init(grid%n, S%bg, freqs**2, .true.)
+    ! endif
     !
     call print_message("end of tetra initialization")
     !
@@ -241,21 +250,19 @@ contains
     lws_full = 0._dp
 
 
-
     ! weights = reshape(spread(grid%w, 1, S%nat3), [S%nat3*grid%nqtot])
     do iq = 1, out_grid%nq
       iqp = iq !+ out_grid%iq0
-      call fc3%sum_R2(out_grid%xq(:,iq), S%nat3, Dqr, .true.)
-      ! call fc2_sc%interpolate(out_grid%xq(:,iq), S)
+      ! call fc3%sum_R2(out_grid%xq(:,iq), S%nat3, Dqr, .true.)
+      call fc2_sc%interpolate(out_grid%xq(:,iq), S)
       do ibnd = 1, S%nat3
         ! comp = ibnd + (iqp-1)*S%nat3
         omegaq = out_freqs(ibnd,iqp)
-
         ! lws_full(ibnd,iqp) = interp1_scl(lws_full_iw(ibnd,iqp,:), omegaq*input%n_omega/max_freq) / omegaq
         do jq = 1, grid%nq
           jqp = jq + grid%iq0
-          ! call fc2_sc%interpolate(grid%xq(:,jq), S, temp)
-          call sum_R3(S, grid%xq(:,jq), Dqr, Vqq)
+          call fc2_sc%interpolate(grid%xq(:,jq), S, vqq)
+          ! call sum_R3(S, grid%xq(:,jq), Dqr, Vqq)
           ! call interp_at_once(fc2_sc, out_grid%xq(:,iq), grid%xq(:,jq), S, Vqq)
           do jbnd = 1, S%nat3
             ! print*, omegaq-freqs(ibnd,jqp)

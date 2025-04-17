@@ -18,7 +18,8 @@ program defectp
   ! integer :: wait_for_debugger
   integer, allocatable :: atoms(:,:)
   integer :: na1, na2, j1, j2, na1_sc, na2_sc, jn1, jn2, R1, R2, nR
-  integer :: iq
+  integer :: iq, i, j
+  real(dp), allocatable :: dyn(:,:,:,:), zeu(:,:,:)
   !
   CALL start_mpi()
   !
@@ -39,10 +40,14 @@ program defectp
   CALL out_grid%destroy()
   CALL setup_grid(input%grid_type, S%bg, input%nk(1), &
     input%nk(2), input%nk(3),&
-    out_grid, scatter=.true., xq0=input%xk0)
-  ! call out_grid%symmetrize(S)
+    out_grid, scatter=.false., xq0=input%xk0)
+  ! do iq = 1, out_grid%nq
+  !   out_grid%xq(:,iq) = out_grid%xq(:,iq) / 40
+  ! enddo
+  call out_grid%symmetrize(S)
   ! call out_grid%scatter()
-
+  !
+  print*, "grid type is", input%grid_type_in
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&
     in_grid, scatter=.true., xq0=input%xk0_in)
@@ -52,31 +57,23 @@ program defectp
 
   CALL read_fc2(input%file_mat2_final, Sd, fc2d)
   CALL aux_system(Sd)
-  call impose_asr2(input%asr2, Sd%nat, fc2d)
-  call div_mass_fc2(Sd, fc2d)
+  call impose_asr2("diff", Sd%nat, fc2d)
+  ! call impose_asr2("simple", Sd%nat, fc2d)
 
-  ! nR = product(fc2%nq)
-  ! allocate(atoms(S%nat, nR))
-  ! atoms = map_uc2sc(S, Sd, fc2%nq)
-  ! do R1 = 1, nR
-  !   do R2 = 1, nR
-  !     do na1 = 1, S%nat
-  !       na1_sc = atoms(na1,R1)
-  !       do na2 = 1, S%nat
-  !         na2_sc = atoms(na2,R2)
-  !         do j1 = 1, 3
-  !           jn1 = j1 + 3*(na1_sc-1)
-  !           do j2 = 1, 3
-  !             jn2 = j2 + 3*(na2_sc-1)
-  !             fc2d%FC(jn1, jn2, 1) = &
-  !               fc2d%FC(jn1, jn2, 1) * &
-  !               S%sqrtmm1(j1 + 3*(na1-1)) * S%sqrtmm1(j2 + 3*(na2-1)) ! UC here
-  !           enddo
-  !         enddo
+  ! allocate(dyn(3,3,Sd%nat, Sd%nat), zeu(3,3,Sd%nat))
+  ! zeu = 0.0
+  ! do i = 1, 3
+  !   do j = 1, 3
+  !     do na1 = 1, Sd%nat
+  !       do na2 = 1, Sd%nat
+  !         dyn(i,j,na1,na2) = fc2d%FC(i+3*(na1-1),j+3*(na2-1),1)
   !       enddo
   !     enddo
   !   enddo
   ! enddo
+  ! call set_asr("crystal   ", 3, Sd%nat, Sd%tau, dyn, zeu)
+  call print_message("ASR applied to fc2d")
+  call div_mass_fc2(Sd, fc2d)
 
   CALL main_defect(S, Sd, fc2, fc2d, in_grid, out_grid, input)
   CALL stop_mpi()

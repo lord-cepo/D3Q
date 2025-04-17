@@ -1040,4 +1040,95 @@ contains
       CALL errore("build_mass_ratios", "there should be only one defect", ABS(tot_defects))
   end subroutine
   !
+  SUBROUTINE div_mass_fcsc(S, Sd,fc)
+    USE kinds, only : DP
+    use thutils, only: bz2simple
+    IMPLICIT NONE
+    TYPE(forceconst2_sc) :: fc
+    TYPE(ph_system_info)   :: S, Sd
+    !
+    INTEGER :: i, j, iR1, iR2, map(product(fc%nq),S%nat3), si, sj
+    !
+    IF(.not.ALLOCATED(Sd%sqrtmm1)) &
+      call errore('div_mass_fc2', 'missing sqrtmm1, call aux_system first', 1)
+
+    map = map_uc2sc(S, Sd, fc%nq)
+    DO iR1 = 1, fc%n_R1
+      si = v2index(bz2simple(fc%yR1(:,iR1), fc%nq), fc%nq)
+      do iR2 = 1, fc%n_R2(iR1)
+        sj = v2index(bz2simple(fc%yR2(:,iR2,iR1), fc%nq), fc%nq)
+        DO j = 1, S%nat3
+          DO i = 1, S%nat3
+            fc%FC(i, j, iR2, iR1) = fc%FC(i, j, iR2, iR1) * S%sqrtmm1(map(i,si))*S%sqrtmm1(map(j,sj))
+          ENDDO
+        ENDDO
+      ENDDO
+    ENDDO
+    !
+  END SUBROUTINE
+  !
+  subroutine matd2RR(fc3, S, fcsc)
+    use fc3_interpolate, only : sparse
+    type(sparse), intent(in) :: fc3
+    type(ph_system_info), intent(in) :: S
+    integer :: mesh_cube, len2_new, i2_new, i3_new, i, j
+    integer :: minimum, maximum, mesh(3)
+    integer, dimension(size(fc3%yR2, 2)) :: iR2, iR3
+    integer, allocatable :: ind2(:), ind3(:,:), len3_new(:)
+    type(forceconst2_sc), intent(out) :: fcsc
+    !
+    minimum = min(minval(fc3%yR2), minval(fc3%yR3))
+    maximum = max(maxval(fc3%yR2), maxval(fc3%yR3))
+    mesh = maximum - minimum + 1
+    mesh_cube = product(mesh)
+    !
+    do i = 1, fc3%n_R
+      iR2(i) = v2index(fc3%yR2(:,i) - minimum, mesh)
+      iR3(i) = v2index(fc3%yR3(:,i) - minimum, mesh)
+    end do
+    !
+    allocate(ind2(mesh_cube), ind3(mesh_cube, mesh_cube))
+    allocate(len3_new(mesh_cube))
+    !
+    ind2 = -1
+    ind3 = -1
+    len2_new = 0
+    len3_new = 0
+    do i = 1, fc3%n_R
+      call add_ind(ind2, iR2(i), len2_new, i2_new)
+      call add_ind(ind3(:,i2_new), iR3(i), len3_new(i2_new), i3_new)
+    enddo
+    !
+    allocate(fcsc%n_R2(len2_new))
+    fcsc%n_R2 = len3_new(:len2_new)
+    fcsc%n_R1 = len2_new
+    !
+    allocate(fcsc%yR1(3,len2_new))
+    allocate(fcsc%xR1(3,len2_new))
+    allocate(fcsc%yR2(3,maxval(len3_new),len2_new))
+    allocate(fcsc%xR2(3,maxval(len3_new),len2_new))
+    allocate(fcsc%fc(S%nat3,S%nat3,maxval(len3_new),len2_new))
+    !
+    ind2 = -1
+    ind3 = -1
+    len2_new = 0
+    len3_new = 0
+    do i = 1, fc3%n_R
+      call add_ind(ind2, iR2(i), len2_new, i2_new)
+      fcsc%yR1(:,i2_new) = fc3%yR2(:,i)
+      call add_ind(ind3(:,i2_new), iR3(i), len3_new(i2_new), i3_new)
+      fcsc%yR2(:,i3_new,i2_new) = fc3%yR3(:,i)
+      do j = 1, fc3%n_terms(i)
+        fcsc%fc(fc3%dat(i)%idx(2,j),fc3%dat(i)%idx(3,j),i3_new,i2_new) = &
+          fc3%dat(i)%fc(j)
+      enddo
+    enddo
+    !
+    call fcsc%cart(S, 1)
+    call fcsc%cart(S, 2)
+    fcsc%nq = fc3%nq
+    !
+    deallocate(ind2, ind3, len3_new)
+  end subroutine
+  !
 end module

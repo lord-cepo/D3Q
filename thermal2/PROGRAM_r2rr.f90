@@ -90,7 +90,7 @@ PROGRAM r2rr
   !
   CALL read_fc2(filein, Sd, fc2d)
   CALL aux_system(Sd)
-  call div_mass_fc2(Sd, fc2d)
+  ! call div_mass_fc2(Sd, fc2d)
   !
   call allocate_fc2_sc(fc2sc, S, fc2%nq)
   fc2sc%fc = fc_sc2RR(fc2%nq, S, Sd, fc2d%fc)
