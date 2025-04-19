@@ -10,11 +10,11 @@ program defectp
   use quter_defect, only : map_uc2sc
   IMPLICIT NONE
   !
-  type(ph_system_info) :: S, Sd
-  type(forceconst2_grid) :: fc2, fc2d
-  type(q_grid) :: in_grid, out_grid
-  type(code_input_type) :: input
-  class(forceconst3), pointer :: fc3
+  type(ph_system_info) :: S, Sd, S_
+  type(forceconst2_grid) :: fc2, fc2d, fc2_
+  type(q_grid) :: in_grid, out_grid, grid_
+  type(code_input_type) :: input, input_
+  class(forceconst3), pointer :: fc3, fc3_
   ! integer :: wait_for_debugger
   integer, allocatable :: atoms(:,:)
   integer :: na1, na2, j1, j2, na1_sc, na2_sc, jn1, jn2, R1, R2, nR
@@ -35,16 +35,20 @@ program defectp
   ! end if
   !
 
-  CALL READ_INPUT("TK", input, out_grid, S, fc2, fc3)
+  CALL READ_INPUT("LW", input_, out_grid, S_, fc2_, fc3_)
+  out_grid%nqtot = out_grid%nq
+  ! call out_grid%destroy()
+  CALL READ_INPUT("TK", input, grid_, S, fc2, fc3)
+  ! call in_grid%destroy()
 
-  CALL out_grid%destroy()
-  CALL setup_grid(input%grid_type, S%bg, input%nk(1), &
-    input%nk(2), input%nk(3),&
-    out_grid, scatter=.false., xq0=input%xk0)
+  ! CALL out_grid%destroy()
+  ! CALL setup_grid(input%grid_type, S%bg, input%nk(1), &
+  !   input%nk(2), input%nk(3),&
+  !   out_grid, scatter=.false., xq0=input%xk0)
   ! do iq = 1, out_grid%nq
   !   out_grid%xq(:,iq) = out_grid%xq(:,iq) / 40
   ! enddo
-  call out_grid%symmetrize(S)
+  ! call out_grid%symmetrize(S)
   ! call out_grid%scatter()
   !
   print*, "grid type is", input%grid_type_in

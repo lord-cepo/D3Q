@@ -387,4 +387,28 @@ contains
         call errore('bz2simple', ': R out of range', 1)
     end do
   end function
+  !
+  function near(val1, val2, thr)
+    use constants, only: eps6
+    real(dp), intent(in) :: val1
+    real(dp), intent(in), optional :: val2
+    real(dp), intent(in), optional :: thr
+    !
+    logical :: near
+    real(dp) :: threshold, val2_
+    !
+    if (PRESENT(thr)) then
+      threshold = thr
+    else
+      threshold = eps6
+    end if
+    !
+    if (present(val2)) then
+      val2_ = val2
+    else
+      val2_ = 0.0_dp
+    end if
+    !
+    near = 2*abs(val1 - val2_)/(val1 + val2_) < threshold
+  end function
 end module

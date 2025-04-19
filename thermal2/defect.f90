@@ -15,6 +15,7 @@ module defect
   use quter_defect
   use functions, only: f_gauss
   use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
+  use merge_degenerate, only: merge_degen
   ! use tetra_raja
   !
   implicit none
@@ -139,12 +140,18 @@ contains
     CALL fc2_sc%allocate(S, fc2%nq)
     fc2_sc%fc = fc_sc2RR(fc2%nq, S, Sd, fc2d%fc) - &
       fc_uc2RR(fc2%nq, S, fc2%fc)
-    call center3(fc2_sc, fc2%nq, S, Sd)
-    ! call mtd2RR(fc3, S, fc2_sc)
+    call center2(fc2_sc, fc2%nq, S, Sd)
+    ! call matd2RR(fc3, S, fc2_sc)
     ! call div_mass_fcsc(S, Sd, fc2_sc)
     !
-    call freq_in_grid(S, fc2_centered, out_grid, out_freqs, out_Us)
-    call freq_in_grid(S, fc2_centered, grid, freqs, Us)
+    call freq_in_grid_degen(S, fc2_centered, fc2_Sc, out_grid, out_freqs, out_Us)
+    do iq = 1, out_grid%nq
+      call merge_degen(S%nat3, out_freqs(:,iq), out_freqs(:,iq))
+    enddo
+    call freq_in_grid_degen(S, fc2_centered, fc2_sc, grid, freqs, Us)
+    do iq = 1, grid%nq
+      call merge_degen(S%nat3, freqs(:,iq), freqs(:,iq))
+    enddo
     !
     !> max_freq is slightly larger than the maximum frequency, to be sure that
     !> maxval(out_freqs) <= max_freq
@@ -249,6 +256,16 @@ contains
     lws = 0._dp
     lws_full = 0._dp
 
+    ibnd = 1
+    iq = 10
+    call fc2_sc%interpolate(out_grid%xq(:,iq), S)
+    call fc2_sc%interpolate(grid%xq(:,iq), S, Vqq)
+    print*, braket(out_Us(:,ibnd,iq), Vqq, Us(:,ibnd,iq))
+    call fc2_sc%interpolate(grid%xq(:,iq), S)
+    call fc2_sc%interpolate(out_grid%xq(:,iq), S, Vqq)
+    print*, braket(Us(:,ibnd,iq), Vqq, out_Us(:,ibnd,iq))
+
+
 
     ! weights = reshape(spread(grid%w, 1, S%nat3), [S%nat3*grid%nqtot])
     do iq = 1, out_grid%nq
@@ -259,13 +276,14 @@ contains
         ! comp = ibnd + (iqp-1)*S%nat3
         omegaq = out_freqs(ibnd,iqp)
         ! lws_full(ibnd,iqp) = interp1_scl(lws_full_iw(ibnd,iqp,:), omegaq*input%n_omega/max_freq) / omegaq
+        PP = 0._dp
         do jq = 1, grid%nq
           jqp = jq + grid%iq0
           call fc2_sc%interpolate(grid%xq(:,jq), S, vqq)
           ! call sum_R3(S, grid%xq(:,jq), Dqr, Vqq)
           ! call interp_at_once(fc2_sc, out_grid%xq(:,iq), grid%xq(:,jq), S, Vqq)
           do jbnd = 1, S%nat3
-            ! print*, omegaq-freqs(ibnd,jqp)
+            if(near(norm2(out_grid%xq(:,iq)-grid%xq(:,jq))) .and. near(omegaq, freqs(jbnd,jqp))) cycle
             PP(jbnd,jqp) = braket(out_Us(:,ibnd,iq), Vqq, Us(:,jbnd,jqp)) !* f_gauss(omegaq-freqs(ibnd,jqp), 1e-4_dp)
             ! PP2(jbnd,jqp) = braket(out_Us(:,ibnd,iq), temp, Us(:,jbnd,jqp))
           enddo
@@ -295,9 +313,9 @@ contains
     if(ionode) then
       open(10, file='defect.dat', status='unknown')
       do iq = 1, out_grid%nqtot
-        do ibnd = 1, S%nat3
-          write(10, "(3e14.5,I3)") out_freqs(ibnd,iq), lws(ibnd,iq), ibnd
-        enddo
+        ! do ibnd = 1, S%nat3
+          write(10, "(6e14.5)") AIMAG(lws(:,iq))
+        ! enddo
       enddo
       close(10)
     endif

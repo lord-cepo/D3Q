@@ -388,7 +388,7 @@ contains
     real(dp) :: far_grid_cart(3,(2*nfar+1)**3)
     integer :: nRbig, counter
     integer :: idef, iperi, nxR1, ixR1, ixR2
-    integer, allocatable :: R1_list(:), R2_list(:), yR1_list(:,:), yR2_list(:,:,:), nxR2(:)
+    integer, allocatable :: R1_list(:), R2_list(:,:), yR1_list(:,:), yR2_list(:,:,:), nxR2(:)
     integer, dimension(3) :: far_mesh
     integer :: farx_list(3,2,nperix), ind(2,nperix)
     !
@@ -414,7 +414,7 @@ contains
     SAFE_ALLOCATION = 10 * nR
     allocate(new_fc(S%nat3, S%nat3, SAFE_ALLOCATION, SAFE_ALLOCATION))
     allocate(R1_list(nR*nRbig))
-    allocate(R2_list(nR*nRbig))
+    allocate(R2_list(nR*nRbig,nR*nRbig))
     allocate(yR1_list(3, nR*nRbig))
     allocate(yR2_list(3, nR*nRbig, nR*nRbig))
     allocate(nxR2(nR*nRbig))
@@ -439,22 +439,22 @@ contains
               d1 = S_sc%tau(:,map_sc(na1,R1)) + far_grid_cart(:,R1_big)
               do R2_big = 1, nRbig
                 d2 = S_sc%tau(:,map_sc(na2,R2)) + far_grid_cart(:,R2_big)
-                perix = (norm2(d1 - taudef) + norm2(d2 - taudef))/1000 + norm2(d1 - d2)
+                perix = (norm2(d1 - taudef) + norm2(d2 - taudef)) + norm2(d1 - d2)
                 IF (perix < peri_min-eps_peri .or. nperi==0 ) THEN
                   nperi = 1
                   farx_list = 0
                   ind = 0
                   peri_min = perix
                   farx_list(:,1,nperi) = index2v(R1, grid) + grid * far_grid_cryst(:,R1_big)
-                  farx_list(:,2,nperi) = index2v(R2, grid) + grid * far_grid_cryst(:,R2_big)
+                  farx_list(:,2,nperi) = - index2v(R2, grid) - grid * far_grid_cryst(:,R2_big)
                   ind(1,nperi) = R1 + nR*(R1_big-1)
                   ind(2,nperi) = R2 + nR*(R2_big-1)
                 ELSE IF ( ABS(perix-peri_min) <= eps_peri ) THEN
                   nperi = nperi + 1
-                  IF(nperi > nperix) CALL errore("center2", "nperix is too small", 1)
+                  IF(nperi > nperix) CALL errore("center2", "nperix is too small", nperi)
                   peri_min = (peri_min*(nperi-1)+perix)/DBLE(nperi)
                   farx_list(:,1,nperi) = index2v(R1, grid) + grid * far_grid_cryst(:,R1_big)
-                  farx_list(:,2,nperi) = index2v(R2, grid) + grid * far_grid_cryst(:,R2_big)
+                  farx_list(:,2,nperi) = - index2v(R2, grid) - grid * far_grid_cryst(:,R2_big)
                   ind(1,nperi) = R1 + nR*(R1_big-1)
                   ind(2,nperi) = R2 + nR*(R2_big-1)
                 END IF
@@ -463,25 +463,11 @@ contains
             if (nperi > 1) counter = counter + 1
             !
             do iperi = 1, nperi
-              if (R1_list(ind(1,iperi)) == -1) then
-                nxR1 = nxR1 + 1
-                ixR1 = nxR1
-                R1_list(ind(1,iperi)) = ixR1
-                yR1_list(:,ixR1) = farx_list(:,1,iperi)
-              else
-                ixR1 = R1_list(ind(1,iperi))
-              endif
+              call add_ind(R1_list, ind(1,iperi), nxR1, ixR1)
+              yR1_list(:,ixR1) = farx_list(:,1,iperi)
               !
-              if (R2_list(ind(2,iperi)) == -1) then
-                nxR2(ixR1) = nxR2(ixR1) + 1
-                ixR2 = nxR2(ixR1)
-                R2_list(ind(2,iperi)) = ixR2
-                yR2_list(:,ixR2,ixR1) = farx_list(:,2,iperi)
-              else
-                ixR2 = R2_list(ind(2,iperi))
-              endif
-              !> I find Gamma Gamma
-              ! if(ALL(R_vec == 0)) fc%i_0 = ixR2
+              call add_ind(R2_list(:,ixR1), ind(2,iperi), nxR2(ixR1), ixR2)
+              yR2_list(:,ixR2,ixR1) = farx_list(:,2,iperi)
               !> and populate force constants with usual index wrapping
               do j1 = 1, 3
                 do j2 = 1, 3
@@ -522,6 +508,7 @@ contains
 
     print*, "------------------------"
     print*, "number of R1", nxR1
+    print*, "number of R1,R2", sum(nxR2)
     ! print*, "number of R2", nxR2(:nxR1)
     ! do R1 = 1, nxR1
     !   print"(3I4,3F10.3)", fc%yR1(:,R1), fc%xR1(:,R1)
@@ -1047,7 +1034,7 @@ contains
     TYPE(forceconst2_sc) :: fc
     TYPE(ph_system_info)   :: S, Sd
     !
-    INTEGER :: i, j, iR1, iR2, map(product(fc%nq),S%nat3), si, sj
+    INTEGER :: i, j, iR1, iR2, map(S%nat,product(fc%nq)), si, sj
     !
     IF(.not.ALLOCATED(Sd%sqrtmm1)) &
       call errore('div_mass_fc2', 'missing sqrtmm1, call aux_system first', 1)
@@ -1059,7 +1046,7 @@ contains
         sj = v2index(bz2simple(fc%yR2(:,iR2,iR1), fc%nq), fc%nq)
         DO j = 1, S%nat3
           DO i = 1, S%nat3
-            fc%FC(i, j, iR2, iR1) = fc%FC(i, j, iR2, iR1) * S%sqrtmm1(map(i,si))*S%sqrtmm1(map(j,sj))
+            fc%FC(i, j, iR2, iR1) = fc%FC(i, j, iR2, iR1) * Sd%sqrtmm1(map((i-1)/3+1,si))*Sd%sqrtmm1(map((j-1)/3+1,sj))
           ENDDO
         ENDDO
       ENDDO
@@ -1131,4 +1118,107 @@ contains
     deallocate(ind2, ind3, len3_new)
   end subroutine
   !
+  SUBROUTINE freq_phq_degen(xq, S, fc2, freq, V1, U)
+    use fc2_interpolate, only : mat2_diag, fftinterp_mat2
+    USE input_fc, ONLY : ph_system_info, forceconst2_grid
+    USE constants,          ONLY : RY_TO_CMM1
+    use thutils, only: near
+    IMPLICIT NONE
+    REAL(DP),INTENT(in)               :: xq(3)
+    TYPE(ph_system_info),INTENT(in)   :: S
+    TYPE(forceconst2_grid),INTENT(in) :: fc2
+    REAL(DP),INTENT(out)              :: freq(S%nat3)
+    complex(dp), intent(in)           :: V1(S%nat3,S%nat3)
+    COMPLEX(DP),INTENT(out)           :: U(S%nat3,S%nat3)
+    REAL(DP),PARAMETER :: epsq = 1.e-8_dp
+    complex(dp), allocatable :: Udeg(:,:), Vdeg(:,:)
+    real(dp), allocatable :: dummy(:)
+    REAL(DP) :: cq(3), chk(3)
+    LOGICAL :: gamma
+    integer :: i,j, dim_deg
+    !
+    ! RAF
+    !U = CONJG(U)
+    CALL fftinterp_mat2(xq, S, fc2, U)
+    CALL mat2_diag(S%nat3, U, freq)
+    cq = xq
+    CALL cryst_to_cart(1,cq,S%at,-1)
+    gamma = ALL( ABS(cq-NINT(cq))<epsq)
+    IF( gamma )THEN
+      freq(1:3) = 0._dp
+      U(:,1:3) = (0._dp, 0._dp)
+    ENDIF
+
+    !> I lift the degeneracy by diagonalizing the perturbation
+    !> we obtain new kets and frequencies, needed for 2nd order (FGR)
+    do i = 1, S%nat3-1
+      do j = i+1, S%nat3
+        if (abs(freq(i)-freq(j)) > 1.d-8) exit
+      enddo
+      dim_deg = j-i
+      if(dim_deg > 1) then
+        allocate(Udeg(S%nat3,  dim_deg))
+        allocate(Vdeg(dim_deg, dim_deg))
+        allocate(dummy(dim_deg))
+        do j = 1, dim_deg
+          Udeg(:,j) = U(:,i+j-1)
+        enddo
+
+        Vdeg = matmul(TRANSPOSE(CONJG(Udeg)), matmul(V1, Udeg))
+        call mat2_diag(dim_deg, Vdeg, dummy) !freq(i:i+dim_deg-1))
+        U(:,i:i+dim_deg-1) = matmul(Udeg, Vdeg)
+        if(all(abs(dummy -dummy(1)) < 1e-6 * dummy(1))) then
+
+        endif
+        ! freq(i:i+dim_deg-1) = freq(i:i+dim_deg-1) + dummy
+        deallocate(Udeg, Vdeg, dummy)
+      endif
+    enddo
+
+
+    chk(:) = cq(:)*fc2%nq(:)
+    chk=chk-NINT(chk(:))
+    IF(fc2%periodic .AND. SUM(ABS(chk)) > 1.d-8) CALL errore("interp","cannot interpolate with periodic matrices",1 )
+
+    IF(ANY(freq<0._dp)) THEN
+      WRITE(*,*) gamma
+      WRITE(*,"(e12.5,e12.5,e12.5)") cq
+      WRITE(*,"(e12.5,e12.5,e12.5)") xq
+      WHERE    (freq >  0.0)
+        freq = DSQRT(freq)
+      ELSEWHERE(freq < 0.0)
+        freq = -DSQRT(-freq)
+      ENDWHERE
+      WRITE(*,"('negative freq = ',12e12.4)")freq*RY_TO_CMM1
+      CALL errore("freq_phq_safe", "cannot continue with negative frequencies",1)
+    ELSE
+      !
+      freq = DSQRT(freq)
+    END IF
+    !
+  END SUBROUTINE
+  !
+  subroutine freq_in_grid_degen(S, fc2, fc2sc, grid, freqs, Us)
+    use q_grids, only : q_grid
+    use mpi_thermal, only : mpi_bsum
+    type(ph_system_info), intent(in) :: S
+    type(q_grid), intent(in) :: grid
+    type(forceconst2_grid), intent(in) :: fc2
+    type(forceconst2_sc) :: fc2sc
+    !
+    complex(dp) :: V1(S%nat3,S%nat3)
+    real(dp), intent(out):: freqs(S%nat3, grid%nqtot)
+    complex(dp), intent(out), optional :: Us(S%nat3, S%nat3, grid%nqtot)
+    !
+    integer :: iq, iqp
+    !
+    freqs = 0.0_dp
+    DO iq = 1, grid%nq
+      iqp = iq + grid%iq0
+      call fc2sc%interpolate(grid%xq(:,iq), S)
+      call fc2sc%interpolate(grid%xq(:,iq), S, V1)
+      CALL freq_phq_degen(grid%xq(:,iq), S, fc2, freqs(:,iqp), V1, Us(:,:,iqp))
+    END DO
+    if (grid%scattered) CALL mpi_bsum(S%nat3, grid%nqtot, freqs)
+  end subroutine
 end module
