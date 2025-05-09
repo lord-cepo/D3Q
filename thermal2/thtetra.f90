@@ -53,6 +53,8 @@ MODULE thtetra
   integer :: nvalid
   !! number of VALID tetrahedra
   real(dp) :: MIN_DISTANCE
+  !! if symmetry is used
+  logical :: symmetry
 
   ! INTEGER, allocatable :: which_tetra(:,:,:)
   !! inverse of tetra: given a q point, it gives all the tetrahedra that contain it
@@ -260,7 +262,8 @@ CONTAINS
     !  bring irreducible k-points to crystal axis
     !
     ! nqtot = nqs
-    if(grid%symmetrized) then
+    symmetry = grid%symmetrized
+    if(symmetry) then
       call setup_grid(grid%type, S%bg, grid%n(1), grid%n(2), grid%n(3), &
         full_grid, xq0=grid%xq0, scatter = .false., quiet = .true.)
       nqtot = full_grid%nqtot
@@ -315,6 +318,13 @@ CONTAINS
       !  bring irreducible k-points back to cartesian axis
       !
       CALL cryst_to_cart( grid%nqtot, grid%xq, S%bg, 1 )
+    else
+      nqtot = grid%nqtot
+      allocate(equiv(grid%nqtot))
+      do jk = 1, grid%nqtot
+        equiv(jk) = jk
+        first_point(jk) = jk
+      enddo
     endif
     !
     itvalid = 0
@@ -891,7 +901,6 @@ CONTAINS
 
     INTEGER :: ik, nt, ibnd, ii, ntmax, iimax, ii_, iq
     REAL(DP) :: e(4), wI0(4), wR0(4)
-    logical :: symmetry
 
     ! for real part calc
     ! REAL(DP) :: wR0(4), ef_e(4), log_ef_e(4), prod_a(4), sum_a(4), second_term(4)
@@ -901,7 +910,6 @@ CONTAINS
     wI = 0._dp
     wR = 0._dp
     !
-    symmetry = allocated(ii_tetra)
     if (symmetry) then
       ntmax = nvalid
     else
