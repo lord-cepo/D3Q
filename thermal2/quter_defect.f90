@@ -1118,7 +1118,75 @@ contains
     deallocate(ind2, ind3, len3_new)
   end subroutine
   !
-  SUBROUTINE freq_phq_degen(xq, S, fc2, freq, V1, U)
+  subroutine diag_degen_cmplx(nat3, dim_deg, V1, Udeg, e1)
+    use fc2_interpolate, only : mat2_diag
+    !
+    integer, intent(in) :: nat3, dim_deg
+    complex(dp), intent(in) :: V1(nat3,nat3)
+    complex(dp), intent(inout) :: Udeg(nat3,dim_deg)
+    complex(dp), intent(out), optional :: e1(dim_deg)
+    !
+    complex(dp) :: Vdeg(dim_deg,dim_deg)
+    !
+    Vdeg = matmul(TRANSPOSE(CONJG(Udeg)), matmul(V1, Udeg))
+    call mat2_diag(dim_deg, Vdeg, e1) !freq(i:i+dim_deg-1))
+    Udeg = matmul(Udeg, Vdeg)
+  end subroutine
+  !
+  subroutine diag_degen_real(nat3, dim_deg, V1, Udeg, e1)
+    use fc2_interpolate, only : mat2_diag
+    !
+    integer, intent(in) :: nat3, dim_deg
+    complex(dp), intent(in) :: V1(nat3,nat3)
+    complex(dp), intent(inout) :: Udeg(nat3,dim_deg)
+    real(dp), intent(out), optional :: e1(dim_deg)
+    !
+    complex(dp) :: Vdeg(dim_deg,dim_deg)
+    !
+    Vdeg = matmul(TRANSPOSE(CONJG(Udeg)), matmul(V1, Udeg))
+    call mat2_diag(dim_deg, Vdeg, e1) !freq(i:i+dim_deg-1))
+    Udeg = matmul(Udeg, Vdeg)
+  end subroutine
+  !
+  subroutine lift_degen(nat3, freq, V1, U, e1)
+    use thutils, only: near, id_mat, outer_product, near, braket
+    use functions, only: quicksort_idx
+    use fc2_interpolate, only : mat2_diag
+    !
+    integer, intent(in) :: nat3
+    real(dp), intent(in) :: freq(nat3)
+    complex(dp), intent(in) :: V1(nat3,nat3)
+    complex(dp), intent(inout) :: U(nat3,nat3)
+    real(dp), intent(out), optional :: e1(nat3)
+    !
+    REAL(DP),PARAMETER :: epsq = 1.e-8_dp
+    complex(dp), allocatable :: Udeg(:,:), Vdeg(:,:)
+    REAL(DP) :: cq(3), chk(3)
+    LOGICAL :: gamma, still_deg
+    integer :: i,j, dim_deg, k
+    complex(dp), allocatable :: V1_lifter(:,:)
+    complex(dp) :: first(nat3)
+    complex(dp) :: phase(nat3,nat3), P(nat3,nat3)
+    real(dp) :: e1_(nat3)
+    !
+    i = 1
+    do ! i cycle
+      do j = i+1, nat3
+        if (.not. near(freq(i), freq(j))) exit
+      enddo
+      dim_deg = j-i
+      if(dim_deg > 1) then
+        call diag_degen_real(nat3, dim_deg, V1, U(:,i:i+dim_deg-1), e1_(i:i+dim_deg-1))
+      else
+        e1_(i) = REAL(braket(U(:,i), V1), DP)
+      endif
+      i = i + dim_deg
+      if(i > nat3) exit
+    enddo
+    if (present(e1)) e1 = e1_
+  end subroutine
+  !
+  SUBROUTINE freq_phq_degen(xq, S, fc2, freq, V1, U, e1)
     use fc2_interpolate, only : mat2_diag, fftinterp_mat2
     USE input_fc, ONLY : ph_system_info, forceconst2_grid
     USE constants,          ONLY : RY_TO_CMM1
@@ -1130,12 +1198,13 @@ contains
     REAL(DP),INTENT(out)              :: freq(S%nat3)
     complex(dp), intent(in)           :: V1(S%nat3,S%nat3)
     COMPLEX(DP),INTENT(out)           :: U(S%nat3,S%nat3)
+    real(dp), intent(out), optional   :: e1(S%nat3)
     REAL(DP),PARAMETER :: epsq = 1.e-8_dp
     complex(dp), allocatable :: Udeg(:,:), Vdeg(:,:)
     real(dp), allocatable :: dummy(:)
     REAL(DP) :: cq(3), chk(3)
-    LOGICAL :: gamma
-    integer :: i,j, dim_deg
+    LOGICAL :: gamma, still_deg
+    integer :: i,j, dim_deg, k
     !
     ! RAF
     !U = CONJG(U)
@@ -1151,30 +1220,11 @@ contains
 
     !> I lift the degeneracy by diagonalizing the perturbation
     !> we obtain new kets and frequencies, needed for 2nd order (FGR)
-    do i = 1, S%nat3-1
-      do j = i+1, S%nat3
-        if (abs(freq(i)-freq(j)) > 1.d-8) exit
-      enddo
-      dim_deg = j-i
-      if(dim_deg > 1) then
-        allocate(Udeg(S%nat3,  dim_deg))
-        allocate(Vdeg(dim_deg, dim_deg))
-        allocate(dummy(dim_deg))
-        do j = 1, dim_deg
-          Udeg(:,j) = U(:,i+j-1)
-        enddo
-
-        Vdeg = matmul(TRANSPOSE(CONJG(Udeg)), matmul(V1, Udeg))
-        call mat2_diag(dim_deg, Vdeg, dummy) !freq(i:i+dim_deg-1))
-        U(:,i:i+dim_deg-1) = matmul(Udeg, Vdeg)
-        if(all(abs(dummy -dummy(1)) < 1e-6 * dummy(1))) then
-
-        endif
-        ! freq(i:i+dim_deg-1) = freq(i:i+dim_deg-1) + dummy
-        deallocate(Udeg, Vdeg, dummy)
-      endif
-    enddo
-
+    if (present(e1)) then
+      call lift_degen(S%nat3, freq, V1, U, e1)
+    else
+      call lift_degen(S%nat3, freq, V1, U)
+    endif
 
     chk(:) = cq(:)*fc2%nq(:)
     chk=chk-NINT(chk(:))
@@ -1198,9 +1248,11 @@ contains
     !
   END SUBROUTINE
   !
-  subroutine freq_in_grid_degen(S, fc2, fc2sc, grid, freqs, Us)
+  subroutine freq_in_grid_degen(S, fc2, fc2sc, grid, freqs, Us, freqs1)
     use q_grids, only : q_grid
     use mpi_thermal, only : mpi_bsum
+    use merge_degenerate, only: merge_degen
+    !
     type(ph_system_info), intent(in) :: S
     type(q_grid), intent(in) :: grid
     type(forceconst2_grid), intent(in) :: fc2
@@ -1208,7 +1260,8 @@ contains
     !
     complex(dp) :: V1(S%nat3,S%nat3)
     real(dp), intent(out):: freqs(S%nat3, grid%nqtot)
-    complex(dp), intent(out), optional :: Us(S%nat3, S%nat3, grid%nqtot)
+    complex(dp), intent(out) :: Us(S%nat3, S%nat3, grid%nqtot)
+    real(dp), intent(out)    :: freqs1(S%nat3, grid%nqtot)
     !
     integer :: iq, iqp
     !
@@ -1217,7 +1270,8 @@ contains
       iqp = iq + grid%iq0
       call fc2sc%interpolate(grid%xq(:,iq), S)
       call fc2sc%interpolate(grid%xq(:,iq), S, V1)
-      CALL freq_phq_degen(grid%xq(:,iq), S, fc2, freqs(:,iqp), V1, Us(:,:,iqp))
+      CALL freq_phq_degen(grid%xq(:,iq), S, fc2, freqs(:,iqp), V1, Us(:,:,iqp), freqs1(:,iqp))
+      call merge_degen(S%nat3, freqs(:,iqp), freqs(:,iqp))
     END DO
     if (grid%scattered) CALL mpi_bsum(S%nat3, grid%nqtot, freqs)
   end subroutine

@@ -8,6 +8,8 @@ module thutils
 contains
   !
   subroutine freq_in_grid(S, fc2, grid, freqs, Us)
+    use merge_degenerate, only: merge_degen
+    !
     type(ph_system_info), intent(in) :: S
     type(q_grid), intent(in) :: grid
     type(forceconst2_grid), intent(in) :: fc2
@@ -26,6 +28,7 @@ contains
       else
         CALL freq_phq_safe(grid%xq(:,iq), S, fc2, freqs(:,iqp))
       end if
+      call merge_degen(S%nat3, freqs(:,iq), freqs(:,iq))
     END DO
     if (grid%scattered) CALL mpi_bsum(S%nat3, grid%nqtot, freqs)
     IF (grid%scattered .and. PRESENT(Us)) CALL mpi_bsum(S%nat3, S%nat3, grid%nqtot, Us)
@@ -411,4 +414,145 @@ contains
     !
     near = 2*abs(val1 - val2_)/(val1 + val2_) < threshold
   end function
+  !
+  subroutine qr_gauge_fix(U)
+    implicit none
+    complex(dp), intent(inout) :: U(:,:)
+
+    integer :: M, N, INFO, i, LWORK
+    complex(dp), allocatable :: TAU(:), WORK(:)
+    complex(dp) :: R(size(U, 2)), WORK_TEST(1)
+
+    M = size(U, 1)
+    N = size(U, 2)
+    allocate(TAU(min(M,N)))
+
+    ! === QUERY optimal LWORK for ZGEQRF ===
+    LWORK = -1
+    call ZGEQRF(M, N, U, M, TAU, WORK_TEST, LWORK, INFO)
+    LWORK = int(real(WORK_TEST(1)))
+    allocate(WORK(LWORK))
+
+    ! === ACTUAL ZGEQRF ===
+    call ZGEQRF(M, N, U, M, TAU, WORK, LWORK, INFO)
+    if (INFO /= 0) call errore('qr_gauge_fix', ': ZGEQRF failed', INFO)
+
+    ! === Normalize R diagonals ===
+    do i = 1, N
+      R(i) = U(i,i) / ABS(U(i,i))
+    end do
+
+    ! === QUERY optimal LWORK for ZUNGQR ===
+    LWORK = -1
+    call ZUNGQR(M, N, N, U, M, TAU, WORK_TEST, LWORK, INFO)
+    LWORK = int(real(WORK_TEST(1)))
+    deallocate(WORK)
+    allocate(WORK(LWORK))
+
+    ! === ACTUAL ZUNGQR ===
+    call ZUNGQR(M, N, N, U, M, TAU, WORK, LWORK, INFO)
+    if (INFO /= 0) call errore('qr_gauge_fix', ': ZUNGQR failed', INFO)
+
+    ! === Gauge fix: absorb R phase into Q ===
+    do i = 1, N
+      U(:,i) = U(:,i) * R(i)
+    end do
+
+    deallocate(WORK, TAU)
+  end subroutine
+  !
+  subroutine polar_gauge_fix(U)
+    use test_print, only : allclose
+    use fc2_interpolate, only: mat2_diag
+    use iso_fortran_env, only: dp => real64
+    implicit none
+    complex(dp), intent(inout) :: U(:,:)
+    integer :: M, N, i
+    complex(dp), allocatable :: H(:,:)
+    real(dp), allocatable :: s(:)
+
+    M = size(U, 1)
+    N = size(U, 2)
+
+    ! Compute Gram matrix: H = U^† U
+    allocate(H(N,N))
+    H = matmul(transpose(conjg(U)), U)
+
+    ! Eigen-decomposition: H = V * diag(s) * V^†
+    allocate(s(N))
+    call mat2_diag(N, H, s)
+    ! H now contains eigenvectors (columns), s contains eigenvalues
+
+    ! Build H^{-1/2}
+    do i = 1, N
+      if (s(i) > 1.0e-12_dp) then
+        s(i) = 1.0_dp / sqrt(s(i))
+      else
+        s(i) = 0.0_dp
+      end if
+    end do
+
+    ! Reconstruct H^{-1/2}
+    ! H := V * diag(1/sqrt(s)) * V^†
+    ! call scale_columns(H, s) ! Scale columns of eigenvector matrix
+    H = matmul(H, matmul(diag(s), transpose(conjg(H))))
+
+    ! Now H is H^{-1/2}
+
+    ! Final orthonormalization: U := U * H^{-1}
+    U = matmul(U, H)
+
+    deallocate(H, s)
+  end subroutine polar_gauge_fix
+  !
+  function diag(s)
+    real(dp), intent(in) :: s(:)
+    real(dp) :: diag(size(s), size(s))
+    integer :: i
+    !
+    diag = 0._dp
+    do i = 1, size(s)
+      diag(i,i) = s(i)
+    enddo
+  end function
+  !
+  subroutine scale_columns(A, s)
+    use iso_fortran_env, only: dp => real64
+    implicit none
+    complex(dp), intent(inout) :: A(:,:)
+    real(dp), intent(in) :: s(:)
+    integer :: i, N, M
+
+    M = size(A, 1)
+    N = size(A, 2)
+
+    do i = 1, N
+      A(:,i) = A(:,i) * s(i)
+    end do
+  end subroutine scale_columns
+  !
+  subroutine proj_gauge_fix(U)
+    use fc2_interpolate, only: mat2_diag
+    use test_print, only : orthonormalize
+    !
+    complex(dp), intent(inout) :: U(:,:)
+    complex(dp) :: P(size(U, 1), size(U, 1))
+    real(dp) :: s(size(U, 1))
+    integer :: i, j
+    !
+    P = matmul(U, transpose(conjg(U)))
+    do i = 1, size(U, 2)
+      P = P + 1e-3_dp * outer_product(U(:,i))
+    end do
+    call mat2_diag(size(U, 1), P, s)
+    !
+    j = 1
+    do i = 1, size(U, 1)
+      if (s(i) > 1.0e-10_dp) then
+        U(:,j) = P(:,i)
+        j = j + 1
+      endif
+    end do
+  end subroutine
+  !
 end module

@@ -37,6 +37,7 @@ MODULE fc2_interpolate
   INTERFACE mat2_diag
 !     MODULE PROCEDURE mat2_diag_save     ! temporary space is reused (save)
     MODULE PROCEDURE mat2_diag_pure       ! temporary space is reallocated every time
+    module procedure mat2_diag_cmplx
 !     MODULE PROCEDURE mat2_diag_pure_dac ! same, using Divide & Conquer algorithm
   END INTERFACE
 
@@ -369,6 +370,40 @@ CONTAINS
     DEALLOCATE(work)
     !
   END SUBROUTINE mat2_diag_pure
+  !
+  SUBROUTINE mat2_diag_cmplx(n, D, w2)
+    IMPLICIT NONE
+    !
+    INTEGER, INTENT(in) :: n
+    COMPLEX(DP), INTENT(inout) :: D(n, n)
+    COMPLEX(DP), INTENT(out) :: w2(n)
+    !
+    INTEGER :: lwork, info
+    COMPLEX(DP), ALLOCATABLE :: work(:), vr(:,:)
+    real(dp) :: rwork(2*n)
+    COMPLEX(DP) :: vl(1,1)  ! Dummy left eigenvector array
+    !
+    ! Workspace size query
+    COMPLEX(DP) :: work_query(1)
+    !
+    ! Query optimal workspace size
+    lwork = -1
+    ALLOCATE(vr(n,n)) ! Right eigenvectors; you can remove if not needed
+    CALL ZGEEV('N', 'V', n, D, n, w2, vl, n, vr, n, work_query(1), lwork, rwork, info)
+    lwork = INT(REAL(work_query(1), DP))
+    ALLOCATE(work(lwork))
+    !
+    ! Compute eigenvalues and right eigenvectors
+    CALL ZGEEV('N', 'V', n, D, n, w2, vl, n, vr, n, work, lwork, rwork, info)
+    CALL errore ('mat2_diag','ZHEEV info =/= 0',ABS(info))
+    !
+    ! Eigenvalues are now in w2(:)
+    ! Right eigenvectors are in vr(:,i) if you need them
+    !
+    DEALLOCATE(work)
+    DEALLOCATE(vr)
+    !
+  END SUBROUTINE
   !
   ! IN PLACE diagonalization of D using divide and conquer,
   ! should be faster, but it'sactually slower for small number of atoms
@@ -820,8 +855,8 @@ CONTAINS
     INTEGER :: i,j,k, nqi, nqj, nqk, nq, na,nb,a,b, nua,nub, numax
     REAL(DP),ALLOCATABLE :: gridq(:,:), w2ref(:), w2mld(:), w2in(:), w2out(:)
     COMPLEX(DP),ALLOCATABLE :: matq(:,:,:,:,:), &
-                               Din(:,:), Dref(:,:), Dmld(:,:), Dout(:,:), Dout2(:,:), &
-                               U(:,:), Uref(:,:), Umld(:,:), Umld0(:,:), WWout(:,:)
+      Din(:,:), Dref(:,:), Dmld(:,:), Dout(:,:), Dout2(:,:), &
+      U(:,:), Uref(:,:), Umld(:,:), Umld0(:,:), WWout(:,:)
     REAL(DP) :: xq(3), xqh(3), olap, maxolap
     LOGICAL :: lrigid_save
     !
@@ -836,35 +871,35 @@ CONTAINS
 
     nq = 0
     DO i = 0,nqi-1
-    DO j = 0,nqj-1
-    DO k = 0,nqk-1
-      nq = nq+1
-      xq = s%bg(:,1)*i/DBLE(nqi) + s%bg(:,2)*j/DBLE(nqj) + s%bg(:,3)*k/DBLE(nqk)
-      gridq(:,nq) = xq
+      DO j = 0,nqj-1
+        DO k = 0,nqk-1
+          nq = nq+1
+          xq = s%bg(:,1)*i/DBLE(nqi) + s%bg(:,2)*j/DBLE(nqj) + s%bg(:,3)*k/DBLE(nqk)
+          gridq(:,nq) = xq
 
-      IF(nq==1) THEN
-         xq(1) = 1.d-8
-      ENDIF
+          IF(nq==1) THEN
+            xq(1) = 1.d-8
+          ENDIF
 
-      CALL fftinterp_mat2(xq, S, fcin, Din)
-      !Din = multiply_mass_dyn(S, Din)
+          CALL fftinterp_mat2(xq, S, fcin, Din)
+          !Din = multiply_mass_dyn(S, Din)
 
 
-      DO nb = 1,S%nat
-      DO na = 1,S%nat
-      DO b = 1,3
-       nub = (nb-1)*3+b
-       DO a = 1,3
-        nua = (na-1)*3+a
-        matq(a,b,na,nb, nq) = Din(nua,nub)
-       ENDDO
+          DO nb = 1,S%nat
+            DO na = 1,S%nat
+              DO b = 1,3
+                nub = (nb-1)*3+b
+                DO a = 1,3
+                  nua = (na-1)*3+a
+                  matq(a,b,na,nb, nq) = Din(nua,nub)
+                ENDDO
+              ENDDO
+            ENDDO
+          ENDDO
+          !CALL rgd_blk_d3 (nqi,nqj,nqk,S%nat,matq(:,:,:,:,nq),gridq(:,nq), &
+          !              S%tau,Smld%epsil,Smld%zeu,S%bg,S%omega,S%celldm(1), .false.,-1._dp)
+        ENDDO
       ENDDO
-      ENDDO
-      ENDDO
-      !CALL rgd_blk_d3 (nqi,nqj,nqk,S%nat,matq(:,:,:,:,nq),gridq(:,nq), &
-      !              S%tau,Smld%epsil,Smld%zeu,S%bg,S%omega,S%celldm(1), .false.,-1._dp)
-    ENDDO
-    ENDDO
     ENDDO
 
     !S%lrigid    = .false.
