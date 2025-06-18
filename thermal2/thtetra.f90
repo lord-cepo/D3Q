@@ -66,21 +66,107 @@ MODULE thtetra
   PUBLIC :: nntetra, tetra_weights_green, tetra_init_sym
   PUBLIC :: tetra_init, deallocate_tetra, tetra_weights_delta
   PUBLIC :: tetra_weights_delta_sym, rm_degen_vertices
+  PUBLIC :: equiv_grid
 
   EXTERNAL :: errore, hpsort
 
   !
 CONTAINS
   !
+  subroutine equiv_grid(grid, S, equiv_, first_point)
+    use symm_base, only : symms => s, nsym, time_reversal, t_rev
+    USE noncollin_module,   ONLY : colin_mag
+    use q_grids, only : q_grid, setup_grid
+    use ph_system, only : ph_system_info
+    !
+    type(q_grid), intent(in) :: grid
+    type(ph_system_info), intent(in) :: S
+    integer, allocatable, intent(out) :: equiv_(:)
+    integer, allocatable, optional, intent(out) :: first_point(:)
+    !
+    type(q_grid) :: full_grid
+    integer :: ik, jk, isym
+    real(dp), dimension(3) :: xkr, deltap, deltam
+    REAL(DP), PARAMETER :: eps = 1e-5_dp
+    !
+    if (present(first_point)) then
+      allocate(first_point(grid%nqtot))
+      first_point = 0
+    endif
+    !
+    if(grid%symmetrized) then
+      call setup_grid(grid%type, S%bg, grid%n(1), grid%n(2), grid%n(3), &
+        full_grid, xq0=grid%xq0, scatter = .false., quiet = .true.)
+      nqtot = full_grid%nqtot
+      allocate(equiv_(nqtot))
+      CALL cryst_to_cart( grid%nqtot, grid%xq, S%at, -1 )
+      call cryst_to_cart( nqtot, full_grid%xq, S%at, -1 )
+
+      DO ik = 1, nqtot
+        ! if (ik == 11) print"(3F8.2)", full_grid%xq(:,ik)
+        DO jk = 1, grid%nqtot
+          DO isym = 1, nsym
+            !
+            xkr(1:3) = MATMUL(REAL(symms(:,:,isym), dp), grid%xq(:,jk))
+            IF (t_rev(isym) == 1 .AND. colin_mag < 2) xkr(1:3) = - xkr(1:3)
+            !  xkr is the n-th irreducible k-point rotated wrt the ns-th symmetry
+            deltap = xkr - full_grid%xq(:,ik)
+            deltap = deltap - NINT(deltap)
+            deltam = xkr + full_grid%xq(:,ik)
+            deltam = deltam - NINT(deltam)
+            !  deltap is the difference vector, brought back in the first BZ
+            !  deltam is the same but with k => -k (for time reversal)
+            IF ( norm2(deltap) < eps .OR. ( time_reversal .AND. &
+              norm2(deltam) < eps ) ) THEN
+              !  equivalent irreducible k-point found
+              equiv_(ik) = jk
+              if (present(first_point)) then
+                if (first_point(jk) == 0) first_point(jk) = ik
+              endif
+              GOTO 15
+            ENDIF
+            !
+          ENDDO
+        ENDDO
+        !  equivalent irreducible k-point found - something wrong
+        CALL errore( 'opt_tetra_init', 'cannot locate  k point', ik )
+        !
+15      CONTINUE
+        !
+      ENDDO
+      !
+      DO jk = 1, grid%nqtot
+        DO ik = 1, product(grid%n)
+          IF (equiv_(ik) == jk) GOTO 20
+        ENDDO
+        !  this failure of the algorithm may indicate that the displaced grid
+        !  (with k1,k2,k3.ne.0) does not have the full symmetry of the lattice
+        print"(3F8.2)", grid%xq(:,jk)
+        print*, grid%nqtot
+        CALL errore( 'opt_tetra_init', 'cannot remap grid on k-point list', jk )
+        !
+20      CONTINUE
+      ENDDO
+      !
+      !  bring irreducible k-points back to cartesian axis
+      !
+      CALL cryst_to_cart( grid%nqtot, grid%xq, S%bg, 1 )
+    else
+      nqtot = grid%nqtot
+      allocate(equiv_(grid%nqtot))
+      do jk = 1, grid%nqtot
+        equiv_(jk) = jk
+        if (present(first_point)) first_point(jk) = jk
+      enddo
+    endif
+  end subroutine
   !--------------------------------------------------------------------------
   SUBROUTINE tetra_init_sym(grid, S, ek, opt)
     !-----------------------------------------------------------------------------
     !! This rouotine sets the corners and additional points for each tetrahedron.
     !
-    use symm_base, only : symms => s, nsym, time_reversal, t_rev
     use ph_system, only : ph_system_info
     use q_grids,   only : q_grid, setup_grid
-    USE noncollin_module,   ONLY : colin_mag
     IMPLICIT NONE
     !
     type(ph_system_info), intent(in) :: S
@@ -100,20 +186,16 @@ CONTAINS
     !
     INTEGER :: i1, i2, i3, itet, itettot, ii, ik,  rest, &
       ivvec(3,20,6), divvec(4,4), ivvec0(4), ikv(3), ibnd, &
-      jk, isym, itvalid, count, iks(20)
+      itvalid, count, iks(20)
     ! integer :: tetra_ik(nq(1) * nq(2) * nq(3))
     !
     REAL(DP) :: l(4), bvec2(3,3), bvec3(3,4) !xkg(3, product(nq))
-    real(dp), dimension(3) :: xkr, deltap, deltam
-    type(q_grid) :: full_grid
     integer, allocatable :: first_point(:)
     !
     IF(ntetra /= 0) CALL deallocate_tetra()
     !
     nbnd = SIZE(ek,1)
     nqs =  size(ek,2)
-    allocate(first_point(nqs))
-    first_point = 0
     !
     ! IF(nqs /= SIZE(ek,2)) then
     !   print*, "size of q grid in freq_", size(ek,2)
@@ -263,70 +345,7 @@ CONTAINS
     !
     ! nqtot = nqs
     symmetry = grid%symmetrized
-    if(symmetry) then
-      call setup_grid(grid%type, S%bg, grid%n(1), grid%n(2), grid%n(3), &
-        full_grid, xq0=grid%xq0, scatter = .false., quiet = .true.)
-      nqtot = full_grid%nqtot
-      allocate(equiv(nqtot))
-      CALL cryst_to_cart( grid%nqtot, grid%xq, S%at, -1 )
-      call cryst_to_cart( nqtot, full_grid%xq, S%at, -1 )
-
-      DO ik = 1, nqtot
-        ! if (ik == 11) print"(3F8.2)", full_grid%xq(:,ik)
-        DO jk = 1, grid%nqtot
-          DO isym = 1, nsym
-            !
-            xkr(1:3) = MATMUL(REAL(symms(:,:,isym), dp), grid%xq(:,jk))
-            IF (t_rev(isym) == 1 .AND. colin_mag < 2) xkr(1:3) = - xkr(1:3)
-            !  xkr is the n-th irreducible k-point rotated wrt the ns-th symmetry
-            deltap = xkr - full_grid%xq(:,ik)
-            deltap = deltap - NINT(deltap)
-            deltam = xkr + full_grid%xq(:,ik)
-            deltam = deltam - NINT(deltam)
-            !  deltap is the difference vector, brought back in the first BZ
-            !  deltam is the same but with k => -k (for time reversal)
-            IF ( norm2(deltap) < eps .OR. ( time_reversal .AND. &
-              norm2(deltam) < eps ) ) THEN
-              !  equivalent irreducible k-point found
-              equiv(ik) = jk
-              if (first_point(jk) == 0) first_point(jk) = ik
-              GOTO 15
-            ENDIF
-            !
-          ENDDO
-        ENDDO
-        !  equivalent irreducible k-point found - something wrong
-        CALL errore( 'opt_tetra_init', 'cannot locate  k point', ik )
-        !
-15      CONTINUE
-        !
-      ENDDO
-      !
-      DO jk = 1, grid%nqtot
-        DO ik = 1, product(grid%n)
-          IF (equiv(ik) == jk) GOTO 20
-        ENDDO
-        !  this failure of the algorithm may indicate that the displaced grid
-        !  (with k1,k2,k3.ne.0) does not have the full symmetry of the lattice
-        print"(3F8.2)", grid%xq(:,jk)
-        print*, grid%nqtot
-        CALL errore( 'opt_tetra_init', 'cannot remap grid on k-point list', jk )
-        !
-20      CONTINUE
-      ENDDO
-      !
-      !  bring irreducible k-points back to cartesian axis
-      !
-      CALL cryst_to_cart( grid%nqtot, grid%xq, S%bg, 1 )
-    else
-      nqtot = grid%nqtot
-      allocate(equiv(grid%nqtot))
-      do jk = 1, grid%nqtot
-        equiv(jk) = jk
-        first_point(jk) = jk
-      enddo
-    endif
-    !
+    call equiv_grid(grid, S, equiv, first_point)
     itvalid = 0
     itetra = 0
     tetra = 0
@@ -1012,6 +1031,7 @@ CONTAINS
     if (allocated(ek_in))        deallocate (ek_in   )
     if (allocated(nt_tetra))     deallocate (nt_tetra)
     if (allocated(iisize_tetra)) deallocate (iisize_tetra)
+    if (allocated(equiv))        deallocate (equiv)
     !
   END SUBROUTINE deallocate_tetra
   !
