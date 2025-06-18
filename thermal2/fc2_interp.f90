@@ -400,6 +400,7 @@ CONTAINS
     ! Eigenvalues are now in w2(:)
     ! Right eigenvectors are in vr(:,i) if you need them
     !
+    D = vr
     DEALLOCATE(work)
     DEALLOCATE(vr)
     !
