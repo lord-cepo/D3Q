@@ -65,6 +65,7 @@ CONTAINS
     grid%nqtot = 0
     grid%iq0 = 0
     grid%xq0 = 0._dp
+    grid%symmetrized = .false.
   END SUBROUTINE
 
   SUBROUTINE q_grid_copy(grid, copy)

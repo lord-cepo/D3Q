@@ -117,7 +117,7 @@ all : tldeps d3q-libs thermal2-libs $(EXEC)
 
 # Note to self: $^ expands to all dependencies, $< expands to the first dependency
 $(EXEC) : % : PROGRAM_%.o tldeps d3q-libs thermal2-libs $(MINPACK)
-	$(LD) $(LDFLAGS) -o d3_$@.x $< libthermal2.a \
+	$(LD) $(LDFLAGS) -o d3_$@.x $< libthermal2.a SimTet-2011/libsimtet.a \
 	    $(EXTOBJS) $(QEMODS) $(LIBOBJS) $(QELIBS)
 	$(STRIP)  d3_$@.x
 	- ( cd ../../bin && ln -fs ../D3Q/thermal2/d3_$@.x d3_$@.x )
@@ -137,6 +137,9 @@ libthermal2.a : $(OBJ)
 #$(THERMALK2_OBJS)
 	$(AR) $(ARFLAGS) $@ $?
 	$(RANLIB) $@
+
+simtet-libs :
+	( cd SimTet-2011/ && $(MAKE) $(MFLAGS) libsimtet.a)
 
 tldeps:
 	test -n "$(TLDEPS)" && ( cd ../.. ; $(MAKE) $(MFLAGS) $(TLDEPS) || exit 1) || :

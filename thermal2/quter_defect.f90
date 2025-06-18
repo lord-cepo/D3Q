@@ -11,23 +11,31 @@ module quter_defect
     INTEGER :: n_R1 = 0
     INTEGER, allocatable :: n_R2(:)
     ! INTEGER :: i_0(2) = 0
-    real(dp), allocatable :: FC(:,:,:,:) ! (jn1,jn2,iR,jR)
-    complex(dp), allocatable :: mix(:,:,:) ! (jn1,jn2,iR)
-    integer,  allocatable :: yR2(:,:,:)    ! (3,iR,which)
-    real(dp), allocatable :: xR2(:,:,:)    ! (3,iR,which)
-    integer,  allocatable :: yR1(:,:)    ! (3,iR)
-    real(dp), allocatable :: xR1(:,:)    ! (3,iR)
-    integer               :: nq(3)       ! sc size
-    integer :: stage = -1                ! centered or not
+    complex(dp), allocatable :: FC(:,:,:,:)      ! (jn1,jn2,iR,jR)
+    complex(dp), allocatable :: mix(:,:,:)    ! (jn1,jn2,iR)
+    integer,  allocatable :: yR2(:,:,:)       ! (3,iR,which)
+    real(dp), allocatable :: xR2(:,:,:)       ! (3,iR,which)
+    integer,  allocatable :: yR1(:,:)         ! (3,iR)
+    real(dp), allocatable :: xR1(:,:)         ! (3,iR)
+    integer               :: nq(3)            ! sc size
+    integer :: stage = -1                     ! centered or not
+    real(dp) :: taudef(3) = 0._dp             ! tau of the defect atom
+    integer :: iR1 = 0                        ! used for q2r
 
   contains
     procedure :: allocate => allocate_fc2_sc
-    procedure :: center => center_sc
+    procedure :: deallocate => deallocate_fc2_sc
+    ! procedure :: center => center_sc
     procedure :: cryst => construct_cryst
+    procedure :: center_full => center2
+    procedure :: center => center3
     procedure :: cart => construct_cart
-    generic   :: interpolate => interp_1st_step, interp_2nd_step
-    PROCEDURE, PASS :: interp_1st_step
-    PROCEDURE, PASS :: interp_2nd_step
+    generic   :: r2q => r2q_1st_step, r2q_2nd_step
+    generic   :: q2r => q2r_1st_step, q2r_2nd_step
+    PROCEDURE, PASS :: q2r_1st_step
+    PROCEDURE, PASS :: q2r_2nd_step
+    PROCEDURE, PASS :: r2q_1st_step
+    PROCEDURE, PASS :: r2q_2nd_step
   end type
   !
 contains
@@ -133,8 +141,25 @@ contains
     ALLOCATE(fc%FC(S%nat3,S%nat3,n_R,n_R))
     fc%nq = grid
     fc%stage = -1
+    fc%fc = 0._dp
     !
   END SUBROUTINE
+  !
+  subroutine deallocate_fc2_sc(fc)
+    class(forceconst2_sc), intent(inout) :: fc
+    !
+    if (allocated(fc%yR2)) deallocate(fc%yR2)
+    if (allocated(fc%xR2)) deallocate(fc%xR2)
+    if (allocated(fc%FC)) deallocate(fc%FC)
+    if (allocated(fc%mix)) deallocate(fc%mix)
+    if (allocated(fc%yR1)) deallocate(fc%yR1)
+    if (allocated(fc%xR1)) deallocate(fc%xR1)
+    if (allocated(fc%n_R2)) deallocate(fc%n_R2)
+    fc%n_R1 = 0
+    fc%taudef = 0._dp
+    fc%stage = -1
+    fc%nq = 0
+  end subroutine
   !
   subroutine construct_cart(fc, S, which)
     class(forceconst2_sc), intent(inout) :: fc
@@ -247,125 +272,125 @@ contains
     call aux_system(S_sc)
   end subroutine
   !
-  subroutine center_sc(fc, grid, S, S_sc, distance)
-    use functions, only : refold_bz
-    class(forceconst2_sc), intent(inout) :: fc
-    integer, intent(in) :: grid(3)
-    type(ph_system_info), intent(in) :: S, S_sc
-    real(dp), allocatable, optional, intent(out) :: distance(:,:,:,:)
-    !
-    ! type(forceconst2_grid) :: fsc
-    real(dp) :: dist(3), Rbig(3), wg_tot
-    !
-    integer :: na1, na2, j1, j2, nR, jR_big, R1, R2
-    integer :: R_list(PRODUCT(grid)*(2*nfar+1)**3)
-    integer :: map_sc(S%nat, PRODUCT(grid))
-    integer :: nRbig, R_vec(3)
-    integer :: ind, ixR
-    integer :: nxR(PRODUCT(grid))
-    integer, dimension(3) :: far_grid, Rbig_from_0, Rbig_shift
-    !
-    integer, allocatable :: new_yR_list(:,:,:)
-    real(dp), allocatable :: new_fc(:,:,:,:)
-    integer :: counter
-    !
-    ! Stuff used to compute Wigner-Seitz weights:
-    INTEGER, PARAMETER:: nrwsx=2000
-    INTEGER :: nrws
-    REAL(DP) :: wg, rws(0:3,nrwsx)
-    REAL(DP),EXTERNAL :: wsweight
-    ! initialize WS r-vectors
-    CALL wsinit(rws,nrwsx,nrws,S_sc%at)
-    !
-    fc%stage = 0
-    nR = PRODUCT(grid)
-    if (nfar == 0) return
-    far_grid = 2*nfar+1
-    nRbig = PRODUCT(far_grid)
-    allocate(new_yR_list(3, nR*nRbig,nR))
-    allocate(new_fc(S%nat3, S%nat3, nR*nRbig, nR))
-    !
-    if(present(distance)) allocate(distance, source=new_fc)
-    map_sc = map_uc2sc(S, S_sc, grid)
-    !
-    nxR = 0
-    new_fc = 0._dp
-    !
-    counter = 0
-    do R1 = 1, nR
-      R_list = -1
-      do R2 = 1, nR
-        do na1 = 1, S%nat
-          do na2 = 1, S%nat
-            wg_tot = 0._dp
-            do jR_big = 1, nRbig
-              !> I create a normal [0:N-1]^3 grid
-              Rbig_from_0 = index2v(jR_big, far_grid)
-              !> Then I shift it so that the center in [-N/2:N/2]
-              Rbig_shift = Rbig_from_0 - nfar
-              !> I work in S_sc%at alat units
-              Rbig = REAL(Rbig_shift, DP)
-              call cryst_to_cart(1, Rbig, S_sc%at, 1)
-              !> Rbig is the R vector in the supercell, so we don't need to multiply by grid,
-              !> cause tau is in [0,1] in crystal units
-              dist = S_sc%tau(:,map_sc(na1,R1)) - Rbig - S_sc%tau(:,map_sc(na2,R2))
-              !> Compute the Wigner-Seitz weight
-              wg = wsweight(dist,rws,nrws)
-              wg_tot = wg_tot + wg
-              ! if (nfar == 0) wg = 1._dp
-              if (wg /= 0) then
-                !> R2 is in the unit cell, so we multiply Rbig by grid to transform it in a
-                !> supercell vector of the unit cell
-                R_vec = - index2v(R2, grid) - grid * Rbig_shift
-                !> I use the 0-indexing to populate R_list at the correct non-negative integer
-                ind = v2index(index2v(R2, grid) + grid * Rbig_from_0, grid * far_grid)
-                !> R_list contains the ixR or -1. The nxR is refreshed at each step
-                if (R_list(ind) == -1) then
-                  nxR(R1) = nxR(R1) + 1
-                  ixR = nxR(R1)
-                  R_list(ind) = ixR
-                  new_yR_list(:,ixR,R1) = R_vec
-                else
-                  ixR = R_list(ind)
-                endif
-                !> I find Gamma Gamma
-                ! if(ALL(R_vec == 0)) fc%i_0 = ixR
-                !> and populate force constants with usual index wrapping
-                do j1 = 1, 3
-                  do j2 = 1, 3
-                    new_fc(j1+3*(na1-1), j2+3*(na2-1), ixR, R1) = &
-                      fc%FC(j1+(na1-1)*3, j2+(na2-1)*3, R2, R1) * wg
-                    if (present(distance)) &
-                      distance(j1+3*(na1-1), j2+3*(na2-1), ixR, R1) = norm2(dist)
-                  enddo
-                enddo
-              endif
-            enddo
-            if (ABS(wg_tot -1) > 1e-6) then
-              print"(A,F14.6)", "wg_tot is", wg_tot
-              CALL errore("center_sc", "sum of weights is not 1", 1)
-            endif
-          enddo
-        enddo
-      enddo
-    enddo
-    !
-    deallocate(fc%yR2, fc%xR2, fc%FC)
-    !> the yR list is populated until nxR(which), but the size can be larger.
-    !> the values after nxR(which) are not even initialized (they are garbage).
-    ALLOCATE(fc%yR2(3,maxval(nxR),fc%n_R1))
-    ALLOCATE(fc%xR2(3,maxval(nxR),fc%n_R1))
-    ALLOCATE(fc%FC(S%nat3,S%nat3,maxval(nxR),nR))
-    fc%n_R2 = nxR
-    fc%nq = grid
-    do R1 = 1, nR
-      ! fc%xr1(:,R1) = refold_bz(fc%xR1(:,R1), S%at)
-      fc%yR2(:,:nxR(R1),R1) = new_yR_list(:,:nxR(R1),R1)
-    enddo
-    call fc%cart(S_sc, 2)
-    ! call fc%cryst(S_sc, 1)
-    fc%FC = new_fc(:,:,:maxval(nxR),:)
-  end subroutine
+  ! subroutine center_sc(fc, grid, S, S_sc, distance)
+  !   use functions, only : refold_bz
+  !   class(forceconst2_sc), intent(inout) :: fc
+  !   integer, intent(in) :: grid(3)
+  !   type(ph_system_info), intent(in) :: S, S_sc
+  !   real(dp), allocatable, optional, intent(out) :: distance(:,:,:,:)
+  !   !
+  !   ! type(forceconst2_grid) :: fsc
+  !   real(dp) :: dist(3), Rbig(3), wg_tot
+  !   !
+  !   integer :: na1, na2, j1, j2, nR, jR_big, R1, R2
+  !   integer :: R_list(PRODUCT(grid)*(2*nfar+1)**3)
+  !   integer :: map_sc(S%nat, PRODUCT(grid))
+  !   integer :: nRbig, R_vec(3)
+  !   integer :: ind, ixR
+  !   integer :: nxR(PRODUCT(grid))
+  !   integer, dimension(3) :: far_grid, Rbig_from_0, Rbig_shift
+  !   !
+  !   integer, allocatable :: new_yR_list(:,:,:)
+  !   complex(dp), allocatable :: new_fc(:,:,:,:)
+  !   integer :: counter
+  !   !
+  !   ! Stuff used to compute Wigner-Seitz weights:
+  !   INTEGER, PARAMETER:: nrwsx=2000
+  !   INTEGER :: nrws
+  !   REAL(DP) :: wg, rws(0:3,nrwsx)
+  !   REAL(DP),EXTERNAL :: wsweight
+  !   ! initialize WS r-vectors
+  !   CALL wsinit(rws,nrwsx,nrws,S_sc%at)
+  !   !
+  !   fc%stage = 0
+  !   nR = PRODUCT(grid)
+  !   if (nfar == 0) return
+  !   far_grid = 2*nfar+1
+  !   nRbig = PRODUCT(far_grid)
+  !   allocate(new_yR_list(3, nR*nRbig,nR))
+  !   allocate(new_fc(S%nat3, S%nat3, nR*nRbig, nR))
+  !   !
+  !   ! if(present(distance)) allocate(distance, source=new_fc)
+  !   map_sc = map_uc2sc(S, S_sc, grid)
+  !   !
+  !   nxR = 0
+  !   new_fc = 0._dp
+  !   !
+  !   counter = 0
+  !   do R1 = 1, nR
+  !     R_list = -1
+  !     do R2 = 1, nR
+  !       do na1 = 1, S%nat
+  !         do na2 = 1, S%nat
+  !           wg_tot = 0._dp
+  !           do jR_big = 1, nRbig
+  !             !> I create a normal [0:N-1]^3 grid
+  !             Rbig_from_0 = index2v(jR_big, far_grid)
+  !             !> Then I shift it so that the center in [-N/2:N/2]
+  !             Rbig_shift = Rbig_from_0 - nfar
+  !             !> I work in S_sc%at alat units
+  !             Rbig = REAL(Rbig_shift, DP)
+  !             call cryst_to_cart(1, Rbig, S_sc%at, 1)
+  !             !> Rbig is the R vector in the supercell, so we don't need to multiply by grid,
+  !             !> cause tau is in [0,1] in crystal units
+  !             dist = S_sc%tau(:,map_sc(na1,R1)) - Rbig - S_sc%tau(:,map_sc(na2,R2))
+  !             !> Compute the Wigner-Seitz weight
+  !             wg = wsweight(dist,rws,nrws)
+  !             wg_tot = wg_tot + wg
+  !             ! if (nfar == 0) wg = 1._dp
+  !             if (wg /= 0) then
+  !               !> R2 is in the unit cell, so we multiply Rbig by grid to transform it in a
+  !               !> supercell vector of the unit cell
+  !               R_vec = - index2v(R2, grid) - grid * Rbig_shift
+  !               !> I use the 0-indexing to populate R_list at the correct non-negative integer
+  !               ind = v2index(index2v(R2, grid) + grid * Rbig_from_0, grid * far_grid)
+  !               !> R_list contains the ixR or -1. The nxR is refreshed at each step
+  !               if (R_list(ind) == -1) then
+  !                 nxR(R1) = nxR(R1) + 1
+  !                 ixR = nxR(R1)
+  !                 R_list(ind) = ixR
+  !                 new_yR_list(:,ixR,R1) = R_vec
+  !               else
+  !                 ixR = R_list(ind)
+  !               endif
+  !               !> I find Gamma Gamma
+  !               ! if(ALL(R_vec == 0)) fc%i_0 = ixR
+  !               !> and populate force constants with usual index wrapping
+  !               do j1 = 1, 3
+  !                 do j2 = 1, 3
+  !                   new_fc(j1+3*(na1-1), j2+3*(na2-1), ixR, R1) = &
+  !                     fc%FC(j1+(na1-1)*3, j2+(na2-1)*3, R2, R1) * wg
+  !                   ! if (present(distance)) &
+  !                   !   distance(j1+3*(na1-1), j2+3*(na2-1), ixR, R1) = norm2(dist)
+  !                 enddo
+  !               enddo
+  !             endif
+  !           enddo
+  !           if (ABS(wg_tot -1) > 1e-6) then
+  !             print"(A,F14.6)", "wg_tot is", wg_tot
+  !             CALL errore("center_sc", "sum of weights is not 1", 1)
+  !           endif
+  !         enddo
+  !       enddo
+  !     enddo
+  !   enddo
+  !   !
+  !   deallocate(fc%yR2, fc%xR2, fc%FC)
+  !   !> the yR list is populated until nxR(which), but the size can be larger.
+  !   !> the values after nxR(which) are not even initialized (they are garbage).
+  !   ALLOCATE(fc%yR2(3,maxval(nxR),fc%n_R1))
+  !   ALLOCATE(fc%xR2(3,maxval(nxR),fc%n_R1))
+  !   ALLOCATE(fc%FC(S%nat3,S%nat3,maxval(nxR),nR))
+  !   fc%n_R2 = nxR
+  !   fc%nq = grid
+  !   do R1 = 1, nR
+  !     ! fc%xr1(:,R1) = refold_bz(fc%xR1(:,R1), S%at)
+  !     fc%yR2(:,:nxR(R1),R1) = new_yR_list(:,:nxR(R1),R1)
+  !   enddo
+  !   call fc%cart(S_sc, 2)
+  !   ! call fc%cryst(S_sc, 1)
+  !   fc%FC = new_fc(:,:,:maxval(nxR),:)
+  ! end subroutine
   !
   subroutine center2(fc, grid, S, S_sc)
     use functions, only : refold_bz
@@ -392,7 +417,7 @@ contains
     integer, dimension(3) :: far_mesh
     integer :: farx_list(3,2,nperix), ind(2,nperix)
     !
-    real(dp), allocatable :: new_fc(:,:,:,:)
+    complex(dp), allocatable :: new_fc(:,:,:,:)
     !
     ! Stuff used to compute Wigner-Seitz weights:
     INTEGER, PARAMETER:: nrwsx=2000
@@ -446,7 +471,7 @@ contains
                   ind = 0
                   peri_min = perix
                   farx_list(:,1,nperi) = index2v(R1, grid) + grid * far_grid_cryst(:,R1_big)
-                  farx_list(:,2,nperi) = - index2v(R2, grid) - grid * far_grid_cryst(:,R2_big)
+                  farx_list(:,2,nperi) = index2v(R2, grid) + grid * far_grid_cryst(:,R2_big)
                   ind(1,nperi) = R1 + nR*(R1_big-1)
                   ind(2,nperi) = R2 + nR*(R2_big-1)
                 ELSE IF ( ABS(perix-peri_min) <= eps_peri ) THEN
@@ -454,7 +479,7 @@ contains
                   IF(nperi > nperix) CALL errore("center2", "nperix is too small", nperi)
                   peri_min = (peri_min*(nperi-1)+perix)/DBLE(nperi)
                   farx_list(:,1,nperi) = index2v(R1, grid) + grid * far_grid_cryst(:,R1_big)
-                  farx_list(:,2,nperi) = - index2v(R2, grid) - grid * far_grid_cryst(:,R2_big)
+                  farx_list(:,2,nperi) = index2v(R2, grid) + grid * far_grid_cryst(:,R2_big)
                   ind(1,nperi) = R1 + nR*(R1_big-1)
                   ind(2,nperi) = R2 + nR*(R2_big-1)
                 END IF
@@ -527,7 +552,7 @@ contains
     type(ph_system_info), intent(in) :: S, S_sc
     !
     ! type(forceconst2_grid) :: fsc
-    real(dp), dimension(3) :: taudef, d1, d2
+    real(dp), dimension(3) :: d1, d2
     real(dp), parameter :: eps_peri = 1e-3
     integer, parameter :: nperix = (2*nfar+1)**3
     integer :: SAFE_ALLOCATION
@@ -543,7 +568,7 @@ contains
     integer, allocatable :: inds1(:), inds2(:)
     integer, dimension(3) :: far_mesh
     !
-    real(dp), allocatable :: new_fc(:,:,:,:)
+    complex(dp), allocatable :: new_fc(:,:,:,:)
     !
     ! Stuff used to compute Wigner-Seitz weights:
     INTEGER, PARAMETER:: nrwsx=2000
@@ -571,7 +596,7 @@ contains
     allocate(nxR2(SAFE_ALLOCATION))
     !
     map_sc = map_uc2sc(S, S_sc, grid, idef)
-    taudef = S_sc%tau(:,idef)
+    fc%taudef = S_sc%tau(:,idef)
     !
     new_fc = 0._dp
     R1_list = -1
@@ -581,7 +606,7 @@ contains
     !
     do R1 = 1, nR
       do na1 = 1, S%nat
-        d1 = S_sc%tau(:,map_sc(na1,R1))-taudef
+        d1 = S_sc%tau(:,map_sc(na1,R1))-fc%taudef
         call inside_ws(far_grid_cart, d1, nrws, rws, weights1, inds1)
         do R1_big = 1, size(weights1)
           call add_ind(R1_list, R1 + nR*(inds1(R1_big)-1), nxR1, ixR1)
@@ -592,7 +617,7 @@ contains
               call inside_ws(far_grid_cart, d2, nrws, rws, weights2, inds2)
               do R2_big = 1, size(weights2)
                 call add_ind(R2_list(:,ixR1), R2 + nR*(inds2(R2_big)-1), nxR2(ixR1), ixR2)
-                yR2_list(:,ixR2,ixR1) = - index2v(R2, grid) - grid * far_grid_cryst(:,inds2(R2_big))
+                yR2_list(:,ixR2,ixR1) = index2v(R2, grid) + grid * far_grid_cryst(:,inds2(R2_big))
                 do j1 = 1, 3
                   do j2 = 1, 3
                     new_fc(j1+3*(na1-1), j2+3*(na2-1), ixR2, ixR1) = &
@@ -686,106 +711,106 @@ contains
     endif
   end subroutine
   !
-  subroutine center_grid_sc(fc, grid, S, S_sc)
-    class(forceconst2_grid), intent(inout) :: fc
-    integer, intent(in) :: grid(3)
-    type(ph_system_info), intent(in) :: S, S_sc
-    !
-    ! type(forceconst2_grid) :: fsc
-    integer :: nRbig, l1, l2, l3, big_grid(3), new_yR(6), small_Ri(3), small_Rj(3)
-    real(dp) :: Rbig(3, (2*nfar+1)**3), wg_tot, big_yR(3)
-    real(dp), allocatable :: new_fc(:,:,:)
-    real(dp) :: dist(3)
-    integer :: na1, na2, j1, j2, ixR, nR, jR_big
-    integer, dimension(S_sc%nat) ::  map_R, map_nat
-    integer :: R_list(PRODUCT(grid), PRODUCT(grid)*(2*nfar+1)**3)
-    integer :: index_i, index_j, nxR
-    integer, allocatable :: new_yR_list(:,:)
-    !
-    ! Stuff used to compute Wigner-Seitz weights:
-    INTEGER, PARAMETER:: nrwsx=2000
-    INTEGER :: nrws
-    REAL(DP) :: wg, rws(0:3,nrwsx)
-    REAL(DP),EXTERNAL :: wsweight
-    ! initialize WS r-vectors
-    CALL wsinit(rws,nrwsx,nrws,S_sc%at)
-    !
-    ! Construct a big enough lattice of Supercell **supercell** vectors
-    fc%centered = .true.
-    nR = PRODUCT(grid)
-    big_grid = grid * (2*nfar+1)
-    allocate(new_yR_list(6, nR**2*100))
-    allocate(new_fc(S%nat3, S%nat3, nR**2*100))
-    nRbig=0
-    DO l1=-nfar, nfar
-      DO l2=-nfar, nfar
-        DO l3=-nfar, nfar
-          nRbig=nRbig+1
-          Rbig(:, nRbig) = S_sc%at(:,1)*l1 +S_sc%at(:,2)*l2 +S_sc%at(:,3)*l3
-        END DO
-      END DO
-    END DO
-    IF(nRbig/=size(Rbig)/3) call errore('main','wrong nRbig',1)
-    !
-    map_R = map_sc2uc(S, S_sc, grid, "R")
-    map_nat = map_sc2uc(S, S_sc, grid, "nat")
-    !
-    nxR = 0
+  ! subroutine center_grid_sc(fc, grid, S, S_sc)
+  !   class(forceconst2_grid), intent(inout) :: fc
+  !   integer, intent(in) :: grid(3)
+  !   type(ph_system_info), intent(in) :: S, S_sc
+  !   !
+  !   ! type(forceconst2_grid) :: fsc
+  !   integer :: nRbig, l1, l2, l3, big_grid(3), new_yR(6), small_Ri(3), small_Rj(3)
+  !   real(dp) :: Rbig(3, (2*nfar+1)**3), wg_tot, big_yR(3)
+  !   real(dp), allocatable :: new_fc(:,:,:)
+  !   real(dp) :: dist(3)
+  !   integer :: na1, na2, j1, j2, ixR, nR, jR_big
+  !   integer, dimension(S_sc%nat) ::  map_R, map_nat
+  !   integer :: R_list(PRODUCT(grid), PRODUCT(grid)*(2*nfar+1)**3)
+  !   integer :: index_i, index_j, nxR
+  !   integer, allocatable :: new_yR_list(:,:)
+  !   !
+  !   ! Stuff used to compute Wigner-Seitz weights:
+  !   INTEGER, PARAMETER:: nrwsx=2000
+  !   INTEGER :: nrws
+  !   REAL(DP) :: wg, rws(0:3,nrwsx)
+  !   REAL(DP),EXTERNAL :: wsweight
+  !   ! initialize WS r-vectors
+  !   CALL wsinit(rws,nrwsx,nrws,S_sc%at)
+  !   !
+  !   ! Construct a big enough lattice of Supercell **supercell** vectors
+  !   fc%centered = .true.
+  !   nR = PRODUCT(grid)
+  !   big_grid = grid * (2*nfar+1)
+  !   allocate(new_yR_list(6, nR**2*100))
+  !   allocate(new_fc(S%nat3, S%nat3, nR**2*100))
+  !   nRbig=0
+  !   DO l1=-nfar, nfar
+  !     DO l2=-nfar, nfar
+  !       DO l3=-nfar, nfar
+  !         nRbig=nRbig+1
+  !         Rbig(:, nRbig) = S_sc%at(:,1)*l1 +S_sc%at(:,2)*l2 +S_sc%at(:,3)*l3
+  !       END DO
+  !     END DO
+  !   END DO
+  !   IF(nRbig/=size(Rbig)/3) call errore('main','wrong nRbig',1)
+  !   !
+  !   map_R = map_sc2uc(S, S_sc, grid, "R")
+  !   map_nat = map_sc2uc(S, S_sc, grid, "nat")
+  !   !
+  !   nxR = 0
 
-    R_list = -1
-    do na1 = 1, S_sc%nat
-      do na2 = 1, S_sc%nat
-        small_Ri = index2v(map_R(na1), grid)
-        ! call cryst_to_cart(1, small_Ri, S%at, 1)
-        small_Rj = index2v(map_R(na2), grid)
-        ! call cryst_to_cart(1, small_Rj, S%at, 1)
-        wg_tot = 0._dp
-        do jR_big = 1, nRbig
-          dist = S_sc%tau(:,na1) - Rbig(:,jR_big) - S_sc%tau(:,na2)
-          wg = wsweight(dist,rws,nrws)
-          wg_tot = wg_tot + wg
-          ! wg = wg/DFLOAT(nqt)
-          if (nfar == 0) wg = 1._dp
-          if (wg > 1e-6) then
-            new_yR(1:3) = small_Ri
-            big_yR = Rbig(:,jR_big)
-            call cryst_to_cart(1, big_yR, S_sc%bg, -1)
-            new_yR(4:6) = NINT(big_yR*grid + small_Rj)
-            index_i = v2index(new_yR(1:3), grid)
-            index_j = v2index(new_yR(4:6)+grid*nfar, big_grid)
-            if (R_list(index_i, index_j) == -1) then
-              nxR = nxR + 1
-              ixR = nxR
-              R_list(index_i, index_j) = ixR
-              new_yR_list(:, ixR) = new_yR
-            else
-              ixR = R_list(index_i, index_j)
-            endif
-            if(norm2(REAL(new_yR, DP))<1e-6*S%alat) fc%i_0 = ixR
-            do j1 = 1, 3
-              do j2 = 1, 3
-                new_fc(j1+3*(map_nat(na1)-1),j2+3*(map_nat(na2)-1),ixR) = &
-                  fc%FC(j1+(na1-1)*3, j2+(na2-1)*3, 1) * wg
-              enddo
-            enddo
-          endif
-        enddo
-        if (ABS(wg_tot -1)<1e-6) CALL errore("center_sc", "sum of weights is not 1", -1)
-      enddo
-    enddo
-    !
-    deallocate(fc%yR, fc%xR, fc%FC)
-    ALLOCATE(fc%yR(6,nxR))
-    ALLOCATE(fc%xR(6,nxR))
-    ALLOCATE(fc%FC(S%nat3,S%nat3,nxR))
-    fc%n_R = nxR
-    fc%nq = grid
-    fc%yR = new_yR_list(:,1:nxR)
-    fc%xR = REAL(new_yR_list(:,1:nxR), DP)
-    CALL cryst_to_cart(nxR, fc%xR(1:3,:), S%at, 1)
-    CALL cryst_to_cart(nxR, fc%xR(4:6,:), S%at, 1)
-    fc%FC = new_fc(:,:,1:nxR)
-  end subroutine
+  !   R_list = -1
+  !   do na1 = 1, S_sc%nat
+  !     do na2 = 1, S_sc%nat
+  !       small_Ri = index2v(map_R(na1), grid)
+  !       ! call cryst_to_cart(1, small_Ri, S%at, 1)
+  !       small_Rj = index2v(map_R(na2), grid)
+  !       ! call cryst_to_cart(1, small_Rj, S%at, 1)
+  !       wg_tot = 0._dp
+  !       do jR_big = 1, nRbig
+  !         dist = S_sc%tau(:,na1) - Rbig(:,jR_big) - S_sc%tau(:,na2)
+  !         wg = wsweight(dist,rws,nrws)
+  !         wg_tot = wg_tot + wg
+  !         ! wg = wg/DFLOAT(nqt)
+  !         if (nfar == 0) wg = 1._dp
+  !         if (wg > 1e-6) then
+  !           new_yR(1:3) = small_Ri
+  !           big_yR = Rbig(:,jR_big)
+  !           call cryst_to_cart(1, big_yR, S_sc%bg, -1)
+  !           new_yR(4:6) = NINT(big_yR*grid + small_Rj)
+  !           index_i = v2index(new_yR(1:3), grid)
+  !           index_j = v2index(new_yR(4:6)+grid*nfar, big_grid)
+  !           if (R_list(index_i, index_j) == -1) then
+  !             nxR = nxR + 1
+  !             ixR = nxR
+  !             R_list(index_i, index_j) = ixR
+  !             new_yR_list(:, ixR) = new_yR
+  !           else
+  !             ixR = R_list(index_i, index_j)
+  !           endif
+  !           if(norm2(REAL(new_yR, DP))<1e-6*S%alat) fc%i_0 = ixR
+  !           do j1 = 1, 3
+  !             do j2 = 1, 3
+  !               new_fc(j1+3*(map_nat(na1)-1),j2+3*(map_nat(na2)-1),ixR) = &
+  !                 fc%FC(j1+(na1-1)*3, j2+(na2-1)*3, 1) * wg
+  !             enddo
+  !           enddo
+  !         endif
+  !       enddo
+  !       if (ABS(wg_tot -1)<1e-6) CALL errore("center_sc", "sum of weights is not 1", -1)
+  !     enddo
+  !   enddo
+  !   !
+  !   deallocate(fc%yR, fc%xR, fc%FC)
+  !   ALLOCATE(fc%yR(6,nxR))
+  !   ALLOCATE(fc%xR(6,nxR))
+  !   ALLOCATE(fc%FC(S%nat3,S%nat3,nxR))
+  !   fc%n_R = nxR
+  !   fc%nq = grid
+  !   fc%yR = new_yR_list(:,1:nxR)
+  !   fc%xR = REAL(new_yR_list(:,1:nxR), DP)
+  !   CALL cryst_to_cart(nxR, fc%xR(1:3,:), S%at, 1)
+  !   CALL cryst_to_cart(nxR, fc%xR(4:6,:), S%at, 1)
+  !   fc%FC = new_fc(:,:,1:nxR)
+  ! end subroutine
   !
   function fc_sc2RR(grid, S, S_sc, fc)
     integer, intent(in) :: grid(3)
@@ -846,41 +871,123 @@ contains
     enddo
   end function
   !
-  function fc_uc2RR(sc_grid, S, fc)
-    TYPE(ph_system_info), intent(in) :: S
-    integer, intent(in) :: sc_grid(3)
-    real(dp), intent(in) :: fc(S%nat3,S%nat3,PRODUCT(sc_grid))
+  function fc_uc2RR(fc)
+    type(forceconst2_grid), intent(in) :: fc
     integer :: R1, R2, nR, j1, R(3)
-    real(dp) :: fc_uc2RR(S%nat3, S%nat3, product(sc_grid), product(sc_grid))
+    real(dp), allocatable :: fc_uc2RR(:,:,:,:)
+    integer :: nat3
     !
-    nR = product(sc_grid)
+    nR = product(fc%nq)
+    nat3 = size(fc%fc, 1)
+    allocate(fc_uc2RR(nat3, nat3, nR, nR))
     do R1 = 1, nR
       do R2 = 1, nR
-        R = index2v(R1, sc_grid) - index2v(R2, sc_grid)
+        R = index2v(R2, fc%nq) - index2v(R1, fc%nq)
         do j1 = 1, 3
-          if (R(j1) < 0) R(j1) = R(j1) + sc_grid(j1)
+          if (R(j1) < 0) R(j1) = R(j1) + fc%nq(j1)
         enddo
-        fc_uc2RR(:,:,R2,R1) = fc(:,:,v2index(R, sc_grid))
+        fc_uc2RR(:,:,R2,R1) = fc%fc(:,:,v2index(R, fc%nq))
       enddo
     enddo
   end function
   !
-  SUBROUTINE interp_1st_step(fc, xq, S)
+  subroutine q2r_1st_step(fc, iR1, grid, V)
+    use q_grids, only : q_grid
+    use constants, only : tpi
+    CLASS(forceconst2_sc),INTENT(inout) :: fc
+    INTEGER, INTENT(in) :: iR1
+    complex(DP),INTENT(in) :: V(:,:,:,:)
+    type(q_grid), intent(in) :: grid
+    !
+    INTEGER :: qj, Nq, qi, nat3
+    REAL(DP), allocatable :: varg(:), vcos(:), vsin(:)
+    COMPLEX(DP), allocatable :: vphase(:)
+    !
+    Nq = product(grid%n)
+    nat3 = size(fc%FC, 1)
+    if(allocated(fc%mix)) deallocate(fc%mix)
+    fc%iR1 = iR1
+    !
+    allocate(fc%mix(nat3, nat3, Nq))
+    fc%mix = 0._dp
+    !
+    allocate(varg(Nq), vcos(Nq), &
+      vsin(Nq), vphase(Nq))
+    do qi = 1, Nq
+      FORALL(qj=1:Nq) varg(qj) =  tpi * &
+        dot_product(fc%xR1(:,iR1), grid%xq(:,qj))
+      !
+      ! Pre-compute phase to use the vectorized MKL subroutines
+#if defined(__INTEL) && defined(__HASVTRIG)
+!dir$ message "Using MKL vectorized Sin and Cos implementation, if this does not compile, remove -D__HASVTRIG from Makefile"
+      CALL vdCos(Nq, varg, vcos)
+      CALL vdSin(Nq, varg, vsin)
+#else
+      vcos = DCOS(varg)
+      vsin = DSIN(varg)
+#endif
+      vphase =  CMPLX( vcos, -vsin, kind=DP  )
+      !
+      do qj = 1, Nq
+        fc%mix(:,:,qi) = fc%mix(:,:,qi) + vphase(qj) * V(:,:,qi,qj)
+      enddo
+      ! fc%mix(:,:,R1) = SUM(vphase * fc%FC(:,:,:,R1), dim=3)
+      !
+    enddo
+    deallocate(varg, vcos, vsin, vphase)
+  end subroutine
+  !
+  subroutine q2r_2nd_step(fc, iR2, grid)
+    use q_grids, only : q_grid
+    use constants, only : tpi
+    CLASS(forceconst2_sc),INTENT(inout) :: fc
+    integer, INTENT(in) :: iR2
+    type(q_grid), intent(in) :: grid
+    !
+    INTEGER :: qi, Nq
+    REAL(DP), allocatable, dimension(:) :: varg, vcos, vsin
+    COMPLEX(DP), allocatable :: vphase(:)
+    !
+    Nq = product(grid%n)
+    allocate(varg(Nq), vcos(Nq), vsin(Nq), vphase(Nq))
+    !
+    FORALL(qi=1:Nq) varg(qi) =  tpi * &
+      dot_product(fc%xR2(:,iR2, fc%iR1), grid%xq(:,qi))
+    !
+    ! Pre-compute phase to use the vectorized MKL subroutines
+#if defined(__INTEL) && defined(__HASVTRIG)
+!dir$ message "Using MKL vectorized Sin and Cos implementation, if this does not compile, remove -D__HASVTRIG from Makefile"
+    CALL vdCos(Nq, varg, vcos)
+    CALL vdSin(Nq, varg, vsin)
+#else
+    vcos = DCOS(varg)
+    vsin = DSIN(varg)
+#endif
+    vphase =  CMPLX( vcos, vsin, kind=DP  )
+    !
+    fc%fc(:,:,:,fc%iR1) = 0._dp
+    do qi = 1, Nq
+      fc%fc(:,:,iR2,fc%iR1) = fc%fc(:,:,iR2,fc%iR1) + vphase(qi) * fc%mix(:,:,qi)
+    enddo
+    !
+  END SUBROUTINE
+
+  SUBROUTINE r2q_1st_step(fc, xq)
     USE input_fc, ONLY : ph_system_info, forceconst2_grid
     USE constants, ONLY : tpi
     IMPLICIT NONE
     !
     CLASS(forceconst2_sc),INTENT(inout) :: fc
     REAL(DP),INTENT(in) :: xq(3)
-    TYPE(ph_system_info),INTENT(in) :: S
     !
-    INTEGER :: R1, R2
+    INTEGER :: R1, R2, nat3
     REAL(DP), allocatable :: varg(:), vcos(:), vsin(:)
     COMPLEX(DP), allocatable :: vphase(:)
     !
+    nat3 = size(fc%FC, 1)
     if(allocated(fc%mix)) deallocate(fc%mix)
     !
-    allocate(fc%mix(S%nat3, S%nat3, fc%n_R1))
+    allocate(fc%mix(nat3, nat3, fc%n_R1))
     fc%mix = 0._dp
     !
     do R1 = 1, fc%n_R1
@@ -910,15 +1017,14 @@ contains
     !
   END SUBROUTINE
   !
-  SUBROUTINE interp_2nd_step(fc, xq, S, D)
+  SUBROUTINE r2q_2nd_step(fc, xq, D)
     USE input_fc, ONLY : ph_system_info, forceconst2_grid
     USE constants, ONLY : tpi
     IMPLICIT NONE
     !
     CLASS(forceconst2_sc),INTENT(inout) :: fc
     REAL(DP),INTENT(in) :: xq(3)
-    TYPE(ph_system_info),INTENT(in) :: S
-    complex(dp), intent(out) :: D(S%nat3, S%nat3)
+    complex(dp), intent(out) :: D(size(fc%fc, 1), size(fc%fc, 1))
     !
     INTEGER :: i
     REAL(DP), dimension(fc%n_R1) :: varg, vcos, vsin
@@ -937,7 +1043,7 @@ contains
     vcos = DCOS(varg)
     vsin = DSIN(varg)
 #endif
-    vphase =  CMPLX( vcos, -vsin, kind=DP  )
+    vphase =  CMPLX( vcos, vsin, kind=DP  )
     !
     D = 0._dp
     do i = 1, fc%n_R1
@@ -948,7 +1054,7 @@ contains
     !
   END SUBROUTINE
   !
-  SUBROUTINE interp_at_once(fc, xq1, xq2, nat3, D)
+  SUBROUTINE r2q_at_once(fc, xq1, xq2, nat3, D)
     USE input_fc, ONLY : ph_system_info, forceconst2_grid
     USE constants, ONLY : tpi
     IMPLICIT NONE
@@ -963,12 +1069,12 @@ contains
     COMPLEX(DP) :: vphase(fc%n_R1,fc%n_R2(1))
     !
     FORALL(i=1:fc%n_R1, j=1:fc%n_R2(1)) varg(i,j) = &
-      tpi * (dot_product(xq1, fc%xR1(:,i)) + &
+      tpi * (-dot_product(xq1, fc%xR1(:,i)) + &
       dot_product(xq2, fc%xR2(:,j,1)))
     !
     vcos = DCOS(varg)
     vsin = DSIN(varg)
-    vphase =  CMPLX( vcos, -vsin, kind=DP  )
+    vphase =  CMPLX( vcos, vsin, kind=DP  )
     !
     D = 0._dp
     do j = 1, fc%n_R2(1)
@@ -978,6 +1084,106 @@ contains
     enddo
     !
   END SUBROUTINE
+  !
+  function flatten_RR_cmplx(mat) result(mat_flat)
+    complex(dp), intent(in) :: mat(:,:,:,:)
+    integer :: nat3i, nat3j, nqi, nqj
+    !
+    complex(dp), allocatable :: mat_flat(:,:)
+    integer :: i, j, na1, na2, n1, n2
+    !
+    nat3i = size(mat,1)
+    nat3j = size(mat,2)
+    nqj = size(mat,3)
+    nqi = size(mat,4)
+
+    allocate(mat_flat(nat3i*nqi, nat3j*nqj))
+    do n1 = 1, nqi
+      do n2 = 1, nqj
+        do na2 = 1, nat3j
+          j = na2 + (n2-1)*nat3j
+          do na1 = 1, nat3i
+            i = na1 + (n1-1)*nat3i
+            mat_flat(i,j) = mat(na1,na2,n2,n1)
+          enddo
+        enddo
+      enddo
+    enddo
+  end function
+  !
+  function flatten_RR_real(mat) result(mat_flat)
+    real(dp), intent(in) :: mat(:,:,:,:)
+    integer :: nat3i, nat3j, nqi, nqj
+    !
+    real(dp), allocatable :: mat_flat(:,:)
+    integer :: i, j, na1, na2, n1, n2
+    !
+    nat3i = size(mat,1)
+    nat3j = size(mat,2)
+    nqj = size(mat,3)
+    nqi = size(mat,4)
+
+    allocate(mat_flat(nat3i*nqi, nat3j*nqj))
+    do n1 = 1, nqi
+      do n2 = 1, nqj
+        do na2 = 1, nat3j
+          j = na2 + (n2-1)*nat3j
+          do na1 = 1, nat3i
+            i = na1 + (n1-1)*nat3i
+            mat_flat(i,j) = mat(na1,na2,n2,n1)
+          enddo
+        enddo
+      enddo
+    enddo
+  end function
+  !
+  function unflatten_RR_cmplx(mat_flat, nqi, nqj) result(mat)
+    complex(dp), intent(in) :: mat_flat(:,:)
+    integer,  intent(in) :: nqi, nqj
+    integer :: nat3i, nat3j
+    complex(dp), allocatable :: mat(:,:,:,:)
+    integer :: n1, n2, na1, na2, i, j
+
+    nat3i = size(mat_flat,1) / nqi
+    nat3j = size(mat_flat,2) / nqj
+    allocate(mat(nat3i, nat3j, nqi, nqj))
+
+    do n2 = 1, nqj
+      do na2 = 1, nat3j
+        j = na2 + (n2-1)*nat3j
+        do n1 = 1, nqi
+          do na1 = 1, nat3i
+            i = na1 + (n1-1)*nat3i
+            mat(na1,na2,n2,n1) = mat_flat(i,j)
+          end do
+        end do
+      end do
+    end do
+  end function
+
+  function unflatten_RR_real(mat_flat, nqi, nqj) result(mat)
+    real(dp), intent(in) :: mat_flat(:,:)
+    integer,  intent(in) :: nqi, nqj
+    integer :: nat3i, nat3j
+    real(dp), allocatable :: mat(:,:,:,:)
+    integer :: n1, n2, na1, na2, i, j
+
+    nat3i = size(mat_flat,1) / nqi
+    nat3j = size(mat_flat,2) / nqj
+    allocate(mat(nat3i, nat3j, nqi, nqj))
+
+    do n2 = 1, nqj
+      do na2 = 1, nat3j
+        j = na2 + (n2-1)*nat3j
+        do n1 = 1, nqi
+          do na1 = 1, nat3i
+            i = na1 + (n1-1)*nat3i
+            mat(na1,na2,n2,n1) = mat_flat(i,j)
+          end do
+        end do
+      end do
+    end do
+  end function
   !
   subroutine build_mass_ratios(S, Sd, grid, mass_def, iR_def, na_def)
     type(ph_system_info), intent(in):: S, Sd
@@ -1160,13 +1366,7 @@ contains
     real(dp), intent(out), optional :: e1(nat3)
     !
     REAL(DP),PARAMETER :: epsq = 1.e-8_dp
-    complex(dp), allocatable :: Udeg(:,:), Vdeg(:,:)
-    REAL(DP) :: cq(3), chk(3)
-    LOGICAL :: gamma, still_deg
-    integer :: i,j, dim_deg, k
-    complex(dp), allocatable :: V1_lifter(:,:)
-    complex(dp) :: first(nat3)
-    complex(dp) :: phase(nat3,nat3), P(nat3,nat3)
+    integer :: i,j, dim_deg
     real(dp) :: e1_(nat3)
     !
     i = 1
@@ -1200,11 +1400,8 @@ contains
     COMPLEX(DP),INTENT(out)           :: U(S%nat3,S%nat3)
     real(dp), intent(out), optional   :: e1(S%nat3)
     REAL(DP),PARAMETER :: epsq = 1.e-8_dp
-    complex(dp), allocatable :: Udeg(:,:), Vdeg(:,:)
-    real(dp), allocatable :: dummy(:)
     REAL(DP) :: cq(3), chk(3)
-    LOGICAL :: gamma, still_deg
-    integer :: i,j, dim_deg, k
+    LOGICAL :: gamma
     !
     ! RAF
     !U = CONJG(U)
@@ -1268,8 +1465,8 @@ contains
     freqs = 0.0_dp
     DO iq = 1, grid%nq
       iqp = iq + grid%iq0
-      call fc2sc%interpolate(grid%xq(:,iq), S)
-      call fc2sc%interpolate(grid%xq(:,iq), S, V1)
+      call fc2sc%r2q(grid%xq(:,iq))
+      call fc2sc%r2q(grid%xq(:,iq), V1)
       CALL freq_phq_degen(grid%xq(:,iq), S, fc2, freqs(:,iqp), V1, Us(:,:,iqp), freqs1(:,iqp))
       call merge_degen(S%nat3, freqs(:,iqp), freqs(:,iqp))
     END DO

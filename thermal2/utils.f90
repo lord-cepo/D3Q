@@ -296,59 +296,6 @@ contains
     grid_vec_cryst_ = grid_vec_cryst(mesh, shift_)
     grid_vec_cart = REAL(grid_vec_cryst_, DP)
     call cryst_to_cart(product(mesh), grid_vec_cart, at, 1)
-
-  end function
-  !
-  function reshape_RR_cmplx(mat) result(mat_flat)
-    complex(dp) :: mat(:,:,:,:)
-    integer :: nat3i, nat3j, n3i, n3j
-    !
-    complex(dp), allocatable :: mat_flat(:,:)
-    integer :: i, j, na1, na2, n1, n2
-    !
-    nat3i = size(mat,1)
-    nat3j = size(mat,2)
-    n3i = size(mat,3)
-    n3j = size(mat,4)
-
-    allocate(mat_flat(nat3i*n3i, nat3j*n3j))
-    do n1 = 1, n3i
-      do n2 = 1, n3j
-        do na1 = 1, nat3i
-          do na2 = 1, nat3j
-            i = na1 + (n1-1)*nat3i
-            j = na2 + (n2-1)*nat3j
-            mat_flat(i,j) = mat(na1,na2,n1,n2)
-          enddo
-        enddo
-      enddo
-    enddo
-  end function
-  !
-  function reshape_RR_real(mat) result(mat_flat)
-    real(dp) :: mat(:,:,:,:)
-    integer :: nat3i, nat3j, n3i, n3j
-    !
-    real(dp), allocatable :: mat_flat(:,:)
-    integer :: i, j, na1, na2, n1, n2
-    !
-    nat3i = size(mat,1)
-    nat3j = size(mat,2)
-    n3i = size(mat,3)
-    n3j = size(mat,4)
-
-    allocate(mat_flat(nat3i*n3i, nat3j*n3j))
-    do n1 = 1, n3i
-      do n2 = 1, n3j
-        do na1 = 1, nat3i
-          do na2 = 1, nat3j
-            i = na1 + (n1-1)*nat3i
-            j = na2 + (n2-1)*nat3j
-            mat_flat(i,j) = mat(na1,na2,n1,n2)
-          enddo
-        enddo
-      enddo
-    enddo
   end function
   !
   function minus_ind(q, mesh)
