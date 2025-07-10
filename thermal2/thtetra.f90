@@ -55,22 +55,37 @@ MODULE thtetra
   real(dp) :: MIN_DISTANCE
   !! if symmetry is used
   logical :: symmetry
+  !! it helps the convergence of the real part bringing everything close to the unity
+  real(dp) :: MULTIPLIER
 
   ! INTEGER, allocatable :: which_tetra(:,:,:)
   !! inverse of tetra: given a q point, it gives all the tetrahedra that contain it
 
-  REAL(DP), PARAMETER :: tet_cutoff = 1.0E-4_DP
+  REAL(DP), PARAMETER :: tet_cutoff = 1.0E-3_DP
   REAL(DP), PARAMETER :: min_relative_distance = 1.0E-9_DP
   LOGICAL :: opt_flag
   !
   PUBLIC :: nntetra, tetra_weights_green, tetra_init_sym
   PUBLIC :: tetra_init, deallocate_tetra, tetra_weights_delta
   PUBLIC :: tetra_weights_delta_sym, rm_degen_vertices
-  PUBLIC :: equiv_grid
+  PUBLIC :: equiv_grid, ek_sort, nqtot, tetra_output
 
   EXTERNAL :: errore, hpsort
 
   !
+  type tetra_output
+    complex(dp), allocatable :: w(:,:,:)
+    !! tetrahedron weights for each q-point (ibnd, iq)
+    integer :: ntot
+    !! number of q-points in the whole BZ
+    integer :: nsym
+    !! number of q-points in the IRREDUCIBLE BZ
+    integer, allocatable :: e(:)
+    !! equivalence points in symmetrized grid
+    real(dp), allocatable :: qw(:)
+    !! q point weight, copied from the symmetrized grid
+  end type tetra_output
+
 CONTAINS
   !
   subroutine equiv_grid(grid, S, equiv_, first_point)
@@ -161,7 +176,7 @@ CONTAINS
     endif
   end subroutine
   !--------------------------------------------------------------------------
-  SUBROUTINE tetra_init_sym(grid, S, ek, opt)
+  SUBROUTINE tetra_init_sym(grid, S, ek, opt, wg)
     !-----------------------------------------------------------------------------
     !! This rouotine sets the corners and additional points for each tetrahedron.
     !
@@ -176,12 +191,9 @@ CONTAINS
     type(q_grid), intent(in) :: grid
     !! accepts symmetrized grids
     logical, intent(in), optional :: opt
-
-    ! LOGICAL, INTENT(IN) :: is_mpi
-    !! if .true., the grid is scattered
-    ! LOGICAL, INTENT(IN), OPTIONAL :: opt
-    ! !! if .true., uses opt_tetra methods
-
+    !! if .true., uses opt_tetra methods
+    type(tetra_output), intent(out) :: wg
+    !! tetrahedron weights infos
     REAL(DP), PARAMETER :: eps = 1e-5_dp
     !
     INTEGER :: i1, i2, i3, itet, itettot, ii, ik,  rest, &
@@ -402,9 +414,19 @@ CONTAINS
       endif
     ENDDO ! itettot
     !
+    MULTIPLIER = SUM(ek_sort)/REAL(SIZE(ek_sort), dp)
+    ! print*, "multiplier", MULTIPLIER
+    ek_sort = ek_sort / MULTIPLIER
     nvalid = itvalid
-    print*, "number of tetra to be used", nvalid, "out of", ntetra
-    print*, "tetra", nqtot, nqs
+    ! print*, "number of tetra to be used", nvalid, "out of", ntetra
+    ! print*, "tetra", nqtot, nqs, symmetry
+    wg%ntot = nqtot
+    wg%nsym = nqs
+    allocate(wg%e(nqs))
+    wg%e = equiv
+    allocate(wg%qw(nqs))
+    wg%qw = grid%w
+    ! print"(A,I4.1,A)", "grid has ", nqs, " q-points in the IRREDUCIBLE BZ"
   END SUBROUTINE
   !
   SUBROUTINE tetra_init(nq, bg, ek, opt)
@@ -435,12 +457,10 @@ CONTAINS
     !
     INTEGER :: i1, i2, i3, itet, itettot, ii, ik,  &
       ivvec(3,20,6), divvec(4,4), ivvec0(4), ikv(3), ibnd, &
-      jk, isym, itvalid, count, rest, ind
+      rest
     ! integer :: tetra_ik(nq(1) * nq(2) * nq(3))
     !
     REAL(DP) :: l(4), bvec2(3,3), bvec3(3,4) !xkg(3, product(nq))
-    real(dp), dimension(3) :: xkr, deltap, deltam
-    type(q_grid) :: full_grid
     !
     IF(ntetra /= 0) CALL deallocate_tetra()
     !
@@ -633,8 +653,8 @@ CONTAINS
     !! COMPLEX Integration weight of each k
     REAL(DP), INTENT(IN) :: ef
     !! The Fermi energy
-    INTEGER :: ik, ibnd, ii_, ii, it, jbnd, kbnd
-    REAL(DP) :: e(4), wI0(4), wg1, D(4)
+    INTEGER :: ik, ibnd, ii, it, jbnd, kbnd
+    REAL(DP) :: e(4), wI0(4), wg1
     !
     wI = 0._dp
     !
@@ -710,8 +730,8 @@ CONTAINS
     !! COMPLEX Integration weight of each k
     REAL(DP), INTENT(IN) :: ef
     !! The Fermi energy
-    INTEGER :: ik, ibnd, ii_, ii, it, jbnd, kbnd
-    REAL(DP) :: e(4), wI0(4), wg1
+    INTEGER :: ik, ibnd, ii_, ii, it
+    REAL(DP) :: e(4), wI0(4)
     !
     wI = 0._dp
     !
@@ -856,8 +876,9 @@ CONTAINS
     !
     if((near(1,2) .and. near(3,4)) .or. &
       (near(1,2) .and. near(2,3)) .or. &
-      (near(2,3) .and. near(3,4))) &
+      (near(2,3) .and. near(3,4))) then
       call rm_degen_vertices(ef, e)
+    endif
     !
     IF( e(1) <= ef .AND. ef <= e(2) ) THEN
       !
@@ -899,13 +920,12 @@ CONTAINS
   !
   !
   !
-  FUNCTION tetra_weights_green(ef) RESULT(wg)
+  FUNCTION tetra_weights_green(ef) RESULT(wg_sym)
     USE constants, ONLY : pi
     !-----------------------------------------------------------------------------------
     !! Calculate weights for an integral of the kind int(Ak delta(ef-ek))
     !! The resulting wg can be used as sum(Ak * wk)
     !-----------------------------------------------------------------------------------
-    COMPLEX(DP) :: wg(nbnd, nqtot)
     !! COMPLEX Integration weight of each k
     REAL(DP), INTENT(IN) :: ef
     !! The Fermi energy
@@ -917,14 +937,16 @@ CONTAINS
 
     REAL(DP) :: wI(nbnd,nqs), wR(nbnd, nqs)
     complex(dp) :: wg_sym(nbnd, nqs)
+    real(dp) :: ef_mult
 
-    INTEGER :: ik, nt, ibnd, ii, ntmax, iimax, ii_, iq
+    INTEGER :: ik, nt, ibnd, ii, ntmax, iimax, ii_
     REAL(DP) :: e(4), wI0(4), wR0(4)
 
     ! for real part calc
     ! REAL(DP) :: wR0(4), ef_e(4), log_ef_e(4), prod_a(4), sum_a(4), second_term(4)
     ! INTEGER :: i3, j3
     !
+    ef_mult = ef / MULTIPLIER
     wg_sym = 0._dp
     wI = 0._dp
     wR = 0._dp
@@ -941,10 +963,10 @@ CONTAINS
         !
         e = ek_sort(:,ibnd,nt)
         !
-        D = -e
-        CALL rm_degen_vertices(ef, D)
-        wI0 = delta_vertices(ef, -D)
-        wR0 = real_vertices(ef, D)
+        D = e
+        CALL rm_degen_vertices(ef_mult, e)
+        wR0 = real_vertices(ef_mult, -e)
+        wI0 = delta_vertices(ef_mult, D)
         !
         !
         if(symmetry) then
@@ -976,18 +998,10 @@ CONTAINS
       !
     ENDDO ! nt
     ! wg = wg / REAL(ntetra, dp)
-    wg_sym = CMPLX(wR, -pi*wI, kind=DP) / 6.0_dp
+    wg_sym = CMPLX(wR, -pi*wI, kind=DP) / (ntetra * MULTIPLIER)
     !
     ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
     CALL mpi_bsum(nbnd, nqs, wg_sym)
-    !
-    if(symmetry) then
-      do iq = 1, nqtot
-        wg(:,iq) = wg_sym(:,equiv(iq))
-      enddo
-    else
-      wg = wg_sym
-    endif
     !
   END FUNCTION
 
@@ -1023,6 +1037,7 @@ CONTAINS
     nqs = 0
     nbnd = 0
     nvalid = 0
+    nqtot = 0
     IF (ALLOCATED(tetra  ))      DEALLOCATE (tetra  )
     IF (ALLOCATED(wlsm   ))      DEALLOCATE (wlsm   )
     IF (ALLOCATED(ek_sort))      DEALLOCATE (ek_sort)

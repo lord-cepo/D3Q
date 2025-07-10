@@ -21,13 +21,45 @@ CONTAINS
     !
     INTEGER :: iR, a,b, i,j, nu,mu,mu_, na
     REAL(DP):: delta, norm
-    real(dp), dimension(3,3,nat) :: delta1, delta2
+    real(dp), dimension(3,3,nat) :: delta1, delta2, delta_force(3,nat), delta_a(3)
     !
     IF(method=="no" .or. method=="none")RETURN
     !
     ! Simple Acoustic Sum Rule on force constants in real space
     !
-    IF(method=="diff") then
+    if(method=='second') then
+      delta_a = 0._dp
+      delta_force = 0._dp
+      do a = 1, 3
+        do i = 1, nat
+          do j = 1, nat
+            do b = 1, 3
+              delta_force(a,i) = delta_force(a,i) + fc%FC(3*(i-1)+a,3*(j-1)+b,fc%i_0)
+            enddo
+            delta_a(a) = delta_a(a) + fc%FC(3*(i-1)+a,3*(j-1)+a,fc%i_0)
+          enddo
+          fc%fc(3*(i-1)+a,3*(i-1)+a,fc%i_0) = fc%fc(3*(i-1)+a,3*(i-1)+a,fc%i_0) - delta_force(a,i)
+        enddo
+      enddo
+      !   enddo
+      ! enddo
+      !
+      ! do a = 1, 3
+      !   ! fc%fc(a,a,fc%i_0) = fc%fc(a,a,fc%i_0) - delta_a(a)
+      !   do i = 1, nat
+      !
+      delta_force = 0._dp
+      do a = 1, 3
+        do i = 1, nat
+          do b = 1, 3
+            do j = 1, nat
+              delta_force(a,i) = delta_force(a,i) + fc%FC(3*(i-1)+a,3*(j-1)+b,fc%i_0)
+            enddo
+          enddo
+        enddo
+      enddo
+      print*, "DEBUG impose_asr2, second method, delta_force=", SUM(delta_force)/nat/3
+    elseIF(method=="diff") then
       do i = 1, nat
         do b = 1, 3
           do a = 1, 3
@@ -36,33 +68,31 @@ CONTAINS
             do j = 1, nat
               do iR = 1, fc%n_R
                 delta1(a,b,i) = delta1(a,b,i) + fc%FC(3*(i-1)+a,3*(j-1)+b,iR)
-                delta2(a,b,i) = delta2(a,b,i) + fc%FC(3*(j-1)+b,3*(i-1)+a,iR)
+                delta2(a,b,i) = delta2(a,b,i) + fc%FC(3*(i-1)+b,3*(j-1)+a,iR)
               enddo
             enddo
           enddo
         enddo
       enddo
-      delta1 = delta1 / nat / fc%n_R / 2
-      delta2 = delta2 / nat / fc%n_R / 2
+      delta1 = delta1 / 2 / nat
+      delta2 = delta2 / 2 / nat
       do i = 1, nat
         do b = 1, 3
           do a = 1, 3
             do j = 1, nat
-              do iR = 1, fc%n_R
-                fc%FC(3*(i-1)+a,3*(j-1)+b,iR) = &
-                  fc%FC(3*(i-1)+a,3*(j-1)+b,iR) - delta1(a,b,i) - delta2(a,b,j)
-              enddo
+              fc%FC(3*(i-1)+a,3*(j-1)+b,fc%i_0) = &
+                fc%FC(3*(i-1)+a,3*(j-1)+b,fc%i_0) - delta1(a,b,i) - delta2(a,b,j)
             enddo
           enddo
         enddo
       enddo
     ELSEIF(method=="simple")THEN
       DO a = 1,3
-        DO b = 1,3
-          DO i = 1,nat
+        DO i = 1,nat
+          DO b = 1,3
+            delta = 0._dp
             nu = 3*(i-1)+a
             !
-            delta = 0._dp
             DO j = 1,nat
               mu = 3*(j-1)+b
               DO iR = 1,fc%n_R
@@ -70,8 +100,9 @@ CONTAINS
               ENDDO
             ENDDO
             !write(*,*) 'asr2', a,b,i, delta
-            mu_=  3*(i-1)+b
-            fc%FC(nu,mu_,fc%i_0)=fc%FC(nu,mu_,fc%i_0)-delta
+            ! mu_=  3*(i-1)+b
+            fc%FC(3*(i-1)+a,3*(i-1)+b,fc%i_0) = &
+              fc%FC(3*(i-1)+a,3*(i-1)+b,fc%i_0) - delta
           ENDDO
         ENDDO
       ENDDO
@@ -170,7 +201,7 @@ CONTAINS
   END SUBROUTINE impose_asr2
   ! \/o\________\\\_________________________________________/^>
 
-END MODULE asr2_module
+END MODULE
 
 
 

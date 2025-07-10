@@ -41,16 +41,18 @@ module quter_defect
 contains
   !
   !> map_atm_sc(inat, iR) = inat_sc
-  function map_uc2sc(S, S_sc, sc_grid, idef)
+  function map_uc2sc(S, S_sc, sc_grid, taudef)
     TYPE(ph_system_info), intent(in) :: S, S_sc
     integer, intent(in) :: sc_grid(3)
-    integer, intent(out), optional :: idef
+    real(dp), intent(out), optional :: taudef(3)
+    integer :: ndef
     !
+    logical :: idef(S_sc%nat)
     integer :: map_uc2sc(S%nat, PRODUCT(sc_grid))
     integer :: i, isc, iR
     real(dp) :: r_cryst(3)
     map_uc2sc = -1
-    if (present(idef)) idef = -1
+    idef = .false.
     do i = 1, S%nat
       do isc = 1, S_sc%nat
         r_cryst = S_sc%tau(:,isc)*sc_grid-S%tau(:,i)
@@ -60,19 +62,22 @@ contains
           if (map_uc2sc(i, iR) > -1) CALL errore("map_uc2sc", "found same atom in same R", 1)
           if (iR < 1 .or. iR > PRODUCT(sc_grid)) CALL errore("map_uc2sc", "R is out of bound", ABS(iR))
           map_uc2sc(i, iR) = isc
-          if(present(idef) .and. S%ityp(i) /= S_sc%ityp(isc)) then
-            if(idef == -1) then
-              idef = isc
-            else
-              call errore("map_uc2sc", "Found two defects", 1)
-            endif
-          endif
-          !
+          if(S%ityp(i) /= S_sc%ityp(isc)) idef(isc) = .true.
         endif
       enddo
     enddo
-    if(present(idef)) then
-      if(idef == -1) call errore("map_uc2sc", "defect not found", 1)
+    if(present(taudef)) then
+      taudef = 0._dp
+      ndef = 0
+      do isc = 1, S_sc%nat
+        if (idef(isc)) then
+          taudef = taudef + S_sc%tau(:,isc)
+          ndef = ndef + 1
+        endif
+      enddo
+      if (ndef == 0) call errore("map_uc2sc", "no defect atoms found", 1)
+      taudef = taudef / REAL(ndef, DP)
+      print"(A,I3.3,A)", "found ", ndef, " defect atoms in the supercell"
     endif
     if (ANY(map_uc2sc == -1)) CALL errore("map_uc2sc", "some atoms are not mapped", 1)
   end function
@@ -93,7 +98,7 @@ contains
         tau = S%tau(:,i)
         call cryst_to_cart(1, tau, S%bg, -1)
         r_cryst = tau_sc*sc_grid - tau
-        if (NORM2(r_cryst - NINT(r_cryst))<1e-2) then
+        if (NORM2(r_cryst - NINT(r_cryst))<3e-2) then
           iR = v2index(NINT(r_cryst), sc_grid)
           if (which == "R") then
             el = iR
@@ -108,7 +113,11 @@ contains
         !
       enddo
     enddo
-    if (ANY(map_sc2uc == -1)) CALL errore("map_sc_atm", "some atoms are not mapped", 1)
+    if (ANY(map_sc2uc == -1)) then
+      print*, "grid is", sc_grid
+      print"(100I5.2)", map_sc2uc
+      CALL errore("map_sc2uc", "some atoms are not mapped", 1)
+    endif
   end function
   !
   SUBROUTINE allocate_fc2_sc(fc, S, grid)
@@ -400,7 +409,7 @@ contains
     type(ph_system_info), intent(in) :: S, S_sc
     !
     ! type(forceconst2_grid) :: fsc
-    real(dp), dimension(3) :: taudef, d1, d2
+    real(dp), dimension(3) :: d1, d2
     real(dp) :: perix, peri_min
     real(dp), parameter :: eps_peri = 1e-3
     integer, parameter :: nperix = (2*nfar+1)**3
@@ -412,7 +421,7 @@ contains
     integer :: far_grid_cryst(3,(2*nfar+1)**3)
     real(dp) :: far_grid_cart(3,(2*nfar+1)**3)
     integer :: nRbig, counter
-    integer :: idef, iperi, nxR1, ixR1, ixR2
+    integer :: iperi, nxR1, ixR1, ixR2
     integer, allocatable :: R1_list(:), R2_list(:,:), yR1_list(:,:), yR2_list(:,:,:), nxR2(:)
     integer, dimension(3) :: far_mesh
     integer :: farx_list(3,2,nperix), ind(2,nperix)
@@ -444,8 +453,7 @@ contains
     allocate(yR2_list(3, nR*nRbig, nR*nRbig))
     allocate(nxR2(nR*nRbig))
     !
-    map_sc = map_uc2sc(S, S_sc, grid, idef)
-    taudef = S_sc%tau(:,idef)
+    map_sc = map_uc2sc(S, S_sc, grid, fc%taudef)
     !
     new_fc = 0._dp
     R1_list = -1
@@ -464,7 +472,7 @@ contains
               d1 = S_sc%tau(:,map_sc(na1,R1)) + far_grid_cart(:,R1_big)
               do R2_big = 1, nRbig
                 d2 = S_sc%tau(:,map_sc(na2,R2)) + far_grid_cart(:,R2_big)
-                perix = (norm2(d1 - taudef) + norm2(d2 - taudef)) + norm2(d1 - d2)
+                perix = (norm2(d1 - fc%taudef) + norm2(d2 - fc%taudef)) + norm2(d1 - d2)
                 IF (perix < peri_min-eps_peri .or. nperi==0 ) THEN
                   nperi = 1
                   farx_list = 0
@@ -561,8 +569,9 @@ contains
     integer :: map_sc(S%nat, PRODUCT(grid))
     integer :: far_grid_cryst(3,(2*nfar+1)**3)
     real(dp) :: far_grid_cart(3,(2*nfar+1)**3)
+    real(dp) :: grid_cart(3,PRODUCT(grid))
     integer :: nRbig
-    integer :: idef, nxR1, ixR1, ixR2
+    integer :: nxR1, ixR1, ixR2
     integer, allocatable :: R1_list(:), R2_list(:,:), yR1_list(:,:), yR2_list(:,:,:), nxR2(:)
     real(dp), allocatable :: weights1(:), weights2(:)
     integer, allocatable :: inds1(:), inds2(:)
@@ -586,6 +595,7 @@ contains
     !
     far_grid_cryst = grid_vec_cryst(far_mesh, -nfar)
     far_grid_cart = grid_vec_cart(far_mesh, S_sc%at, -nfar)
+    grid_cart = grid_vec_cart(grid, S_sc%at)
     !
     SAFE_ALLOCATION = 10 * nR
     allocate(new_fc(S%nat3, S%nat3, SAFE_ALLOCATION, SAFE_ALLOCATION))
@@ -595,8 +605,7 @@ contains
     allocate(yR2_list(3, SAFE_ALLOCATION, SAFE_ALLOCATION))
     allocate(nxR2(SAFE_ALLOCATION))
     !
-    map_sc = map_uc2sc(S, S_sc, grid, idef)
-    fc%taudef = S_sc%tau(:,idef)
+    map_sc = map_uc2sc(S, S_sc, grid, fc%taudef)
     !
     new_fc = 0._dp
     R1_list = -1
@@ -606,14 +615,14 @@ contains
     !
     do R1 = 1, nR
       do na1 = 1, S%nat
-        d1 = S_sc%tau(:,map_sc(na1,R1))-fc%taudef
+        d1 = S%tau(:,na1) + grid_cart(:,R1) - fc%taudef
         call inside_ws(far_grid_cart, d1, nrws, rws, weights1, inds1)
         do R1_big = 1, size(weights1)
           call add_ind(R1_list, R1 + nR*(inds1(R1_big)-1), nxR1, ixR1)
           yR1_list(:,ixR1) = index2v(R1, grid) + grid * far_grid_cryst(:,inds1(R1_big))
           do R2 = 1, nR
             do na2 = 1, S%nat
-              d2 = S_sc%tau(:,map_sc(na2,R2)) - S_sc%tau(:,map_sc(na1,R1)) - far_grid_cart(:,inds1(R1_big))
+              d2 = S%tau(:,na2) + grid_cart(:,R2) - S%tau(:,na1) - grid_cart(:,R1) - far_grid_cart(:,inds1(R1_big))
               call inside_ws(far_grid_cart, d2, nrws, rws, weights2, inds2)
               do R2_big = 1, size(weights2)
                 call add_ind(R2_list(:,ixR1), R2 + nR*(inds2(R2_big)-1), nxR2(ixR1), ixR2)
@@ -1468,7 +1477,7 @@ contains
       call fc2sc%r2q(grid%xq(:,iq))
       call fc2sc%r2q(grid%xq(:,iq), V1)
       CALL freq_phq_degen(grid%xq(:,iq), S, fc2, freqs(:,iqp), V1, Us(:,:,iqp), freqs1(:,iqp))
-      call merge_degen(S%nat3, freqs(:,iqp), freqs(:,iqp))
+      ! call merge_degen(S%nat3, freqs(:,iqp), freqs(:,iqp))
     END DO
     if (grid%scattered) CALL mpi_bsum(S%nat3, grid%nqtot, freqs)
   end subroutine

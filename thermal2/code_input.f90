@@ -41,6 +41,7 @@ MODULE code_input
     CHARACTER(256) :: file_mat2_minus
     CHARACTER(8)   :: asr2
     CHARACTER(256) :: file_dzeu
+    character(8)   :: asr3
 !
     INTEGER            :: skip_q
     INTEGER            :: nconf
@@ -55,7 +56,7 @@ MODULE code_input
     REAL(DP) :: q_initial(3)
     LOGICAL  :: q_resolved, q_summed
     REAL(DP) :: sigmaq
-    CHARACTER(len=5)   :: delta_approx
+    CHARACTER(10)   :: delta_approx
     integer :: n_omega
     !! can be "tetra" or "gauss"
 
@@ -81,6 +82,7 @@ MODULE code_input
     !! if .TRUE., calculates tk in IRR-BZ using constant weights, then symmetrizes it
 
     INTEGER :: nk(3), nk_in(3)
+    integer :: sc_grid(3)
     REAL(DP) :: xk0(3), xk0_in(3)
 !
 ! only for tk:
@@ -141,6 +143,7 @@ CONTAINS
     CHARACTER(256) :: file_mat2_minus  = INVALID ! default = file_mat2//'_m'
     CHARACTER(256) :: file_dzeu = INVALID
     CHARACTER(256) :: prefix     = INVALID ! default: calculation.mode
+    character(8)   :: asr3 = "diff"                ! apply sum rule to phonon defect force constants
     !
     CHARACTER(256) :: outdir = './'              ! where to write output files
     CHARACTER(8)   :: asr2 = "no"                ! apply sum rule to phonon force constants
@@ -153,6 +156,7 @@ CONTAINS
     REAL(DP)           :: xk0(3) = 0._dp             ! grid shift as fraction of half grid step
     REAL(DP)           :: xk0_in(3) = (/ DHUGE, DHUGE, DHUGE/)          ! grid shift as fraction of half grid step
     INTEGER            :: nk_in(3) = (/-1, -1, -1/)  ! inner integration grid, only for tk_sma
+    integer            :: sc_grid(3) = (/-1, -1, -1/)         ! supercell grid
     LOGICAL            :: exp_t_factor = .false.     ! add elastic peak of raman, only in spectre calculation
     CHARACTER(9)   :: sort_freq = "default"      ! how to sort frequencies (default, overlap, shifted, reference)
     REAL(DP)           :: xq_ref(3) = 0._dp          ! reference point when sorting by reference
@@ -237,6 +241,9 @@ CONTAINS
       isotopes_ok=.false., &! true after reading ISOTOPES
       do_grid=.false.       ! is true, construct a regular grid of q-points
     !
+    NAMELIST /definput / &
+      file_mat2, file_mat3, outdir, prefix, asr2, asr3, sc_grid, &
+      nk, n_omega, use_symm, delta_approx
     NAMELIST  / lwinput / &
       calculation, outdir, prefix, &
       file_mat2, file_mat3, asr2, &
@@ -348,6 +355,11 @@ CONTAINS
             IF(nq<=0) nq = 1
             qpoints_ok = .true.
           ENDIF
+        ELSE IF(code=="DEF") THEN
+          IF(PASS==1) calculation="def"
+          ! do_grid = .true.
+          READ(aux_unit, definput)
+          IF(PASS==2.and.ionode) WRITE(*, definput)
         ELSE
           CALL errore('READ_INPUT', 'Wrong code', 1)
         ENDIF
@@ -385,6 +397,8 @@ CONTAINS
     input%file_dzeu                    =  file_dzeu
     input%outdir                       =  TRIMCHECK(outdir)
     input%asr2                         =  asr2
+    input%asr3                         =  asr3
+    input%sc_grid                      =  sc_grid
     input%delta_approx                 =  delta_approx
     input%n_omega                      =  n_omega
     input%skip_q                       =  skip_q
@@ -667,7 +681,8 @@ CONTAINS
           !
         ENDDO &
           QPOINT_LOOP ! .................................................................
-
+        qpts%nqtot = qpts%nq
+        !
         ioWRITE(*,"(2x,a,i4,a,i6,a)") "Read", nq," lines, set-up ",qpts%nq,&
           " q-points, "//TRIM(qpts%basis)//" coordinates"
         !
@@ -892,6 +907,7 @@ CONTAINS
         "x"//TRIM(int_to_char(nq2))// &
         "x"//TRIM(int_to_char(nq3))
       IF(LEN(TRIM(grid_type))==2) input%prefix=TRIM(input%prefix)//"@"//TRIM(grid_type)
+      if(input%use_symm) call qpts%symmetrize(S)
       !DO i = 1,qpts%nq
       !  WRITE(*,'(i3,3f12.6,f16.3)') i, qpts%xq(:,i), qpts%w(i)
       !ENDDO
@@ -929,6 +945,7 @@ CONTAINS
       USE mpi_thermal, ONLY : mpi_broadcast
       IMPLICIT NONE
       CALL mpi_broadcast(asr2)
+      call mpi_broadcast(asr3)
       CALL mpi_broadcast(calculation)
       CALL mpi_broadcast(casimir_scattering)
       CALL mpi_broadcast(de)
@@ -960,6 +977,7 @@ CONTAINS
       CALL mpi_broadcast(niter_max)
       CALL mpi_broadcast(3,nk)
       CALL mpi_broadcast(3,nk_in)
+      call mpi_broadcast(3, sc_grid)
       CALL mpi_broadcast(nq)
       CALL mpi_broadcast(outdir)
       CALL mpi_broadcast(prefix)

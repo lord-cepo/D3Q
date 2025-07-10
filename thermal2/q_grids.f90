@@ -94,7 +94,7 @@ CONTAINS
     use constants,       ONLY : eps12
 
     IMPLICIT NONE
-    CLASS(q_grid),INTENT(inout) :: grid
+    class(q_grid), INTENT(inout) :: grid
     TYPE(ph_system_info), INTENT(IN) :: S
     REAL(DP), ALLOCATABLE :: m_loc(:,:), xq(:,:), wq(:)
     INTEGER :: nxq
@@ -113,19 +113,24 @@ CONTAINS
 
     CALL set_sym(S%nat, S%tau, S%ityp, 1, m_loc) ! 1 = nspin I think
     xq0 = grid%xq0
-    call cryst_to_cart(3, xq0, S%at, -1)
+    call cryst_to_cart(1, xq0, S%at, -1)
     xq0 = xq0 * 2 * grid%n
     if (any(ABS(NINT(xq0)-xq0) > eps12)) call errore("q_grid_symmetrize", &
       "grid shift is not 0 or 1", 1)
     CALL kpoint_grid(nsym, time_reversal, .false., s_symm_base, t_rev, S%bg, grid%nqtot, &
-      NINT(xq0(1)),NINT(xq0(1)),NINT(xq0(1)), grid%n(1),grid%n(2),grid%n(3), nxq, xq, wq)
-    grid%xq = xq(:,1:nxq)
-    grid%w = wq(1:nxq)
+      NINT(xq0(1)),NINT(xq0(2)),NINT(xq0(3)), grid%n(1),grid%n(2),grid%n(3), nxq, xq, wq)
+    deallocate(grid%xq)
+    deallocate(grid%w)
+    ALLOCATE(grid%xq(3,nxq))
+    ALLOCATE(grid%w(nxq))
+    grid%xq = xq(:,:nxq)
+    grid%w = wq(:nxq)
+    deallocate(wq)
+    deallocate(xq)
     grid%nq = nxq
     grid%nqtot = nxq
-    ioWRITE(*,*) "simple grid has", nxq, "irreducible q-points"
-    ioWRITE(*,*) " found", nsym, "symmetries"
     grid%symmetrized = .true.
+    print"(A,I4.3,A)", "Symmetrized grid now has ", nxq, " points"
   END SUBROUTINE
 
   SUBROUTINE q_grid_scatter(grid, quiet)
@@ -788,8 +793,10 @@ CONTAINS
       !RETURN
     ENDIF
     !
-    IF(nq_new>1 .and. path%nq==0) &
+    IF(nq_new>1 .and. path%nq==0) then
+      print*, nq_new, path%nq
       CALL errore('setup_path', 'cannot bootstrap the path', 1)
+    endif
     !
     IF(nq_new<-1) CALL errore("setup_path", "nq_new must be >= -1",1)
     !
