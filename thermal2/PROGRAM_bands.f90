@@ -1,7 +1,9 @@
 program bands
   use kinds,  ONLY : dp
   USE fc3_interpolate,  ONLY : forceconst3
-  use fc2_interpolate,  ONLY : add_rgd_blk_d3, forceconst2_grid, fc2_recenter, freq_phq_safe, fftinterp_mat2
+  use fc2_interpolate,  ONLY : &
+    add_rgd_blk_d3, forceconst2_grid, fc2_recenter, &
+    freq_phq_safe, fftinterp_mat2, mat2_diag
   use q_grids, only: setup_grid, q_grid
   use code_input, only: READ_INPUT, code_input_type
   use mpi_thermal, only: start_mpi, stop_mpi
@@ -12,14 +14,14 @@ program bands
   ! use quter_defect, only : map_uc2sc, fc_uc2RR
   IMPLICIT NONE
   !
-  type(ph_system_info) :: S, Sd, S_sc
-  type(forceconst2_grid) :: fc2, fc2d, fc2_periodic
+  type(ph_system_info) :: S, Sd, S_sc, S_
+  type(forceconst2_grid) :: fc2, fc2d, fc2_periodic, fc2_periodic_
   type(forceconst2_sc) :: fc2_sc, fc2_uc
   type(q_grid) :: path, grid
   type(code_input_type) :: input
   class(forceconst3), pointer :: fc3
   integer :: iq, ibnd, jq, jbnd, i, j, k
-  real(dp), allocatable :: freq0(:,:), freq(:,:,:,:), fc_uc(:,:,:,:), freq1(:,:,:,:)
+  real(dp), allocatable :: freq0(:,:), freq1(:,:), fc_uc(:,:,:,:)
   complex(dp), allocatable :: D(:,:), Ui(:,:), Uj(:,:), D1(:,:), TU(:,:)
   integer :: ir1, ir2, jn1, jn2
   real(dp), allocatable :: distance(:,:,:,:), distance0(:,:,:,:), distance_uc(:,:,:), dummy(:)
@@ -28,14 +30,17 @@ program bands
   !
   CALL start_mpi()
   !
-  CALL READ_INPUT("LW", input, grid, S, fc2_periodic, fc3)
+  CALL READ_INPUT("LW", input, grid, S, fc2_periodic)
   ! call setup_grid('simple', S%bg, input%nk(1),input%nk(2),input%nk(3), grid)
   ! grid%xq = grid%xq / input%e0
+  ! call read_fc2('reference/mat2R_periodic', S_, fc2_periodic)
+  ! call impose_asr2('simple', S%nat, fc2_periodic)
+  ! call div_mass_fc2(S, fc2_periodic)
 
   allocate(dummy(S%nat3))
   allocate(freq0(S%nat3,grid%nq))
-  allocate(freq1(S%nat3,S%nat3,grid%nq,grid%nq))
-  allocate(freq(S%nat3,S%nat3,grid%nq,grid%nq))
+  allocate(freq1(S%nat3,grid%nq))
+  ! allocate(freq(S%nat3,S%nat3,grid%nq,grid%nq))
   ! allocate(freq0, freq1, source=freq)
   allocate(D(S%nat3,S%nat3))
   allocate(Ui, Uj, D1, TU, source=D)
@@ -66,14 +71,16 @@ program bands
   call fc2_uc%allocate(S, fc2_periodic%nq)
 
   ! fc2_sc%fc = fc_sc2RR(fc2_periodic%nq, S, Sd, fc2d%fc)
-  fc2_sc%fc = fc_sc2RR(fc2_periodic%nq, S, Sd, fc2d%fc) - fc_uc2RR(fc2_periodic%nq, S, fc2_periodic%fc)
-  fc2_uc%fc = fc_uc2RR(fc2_periodic%nq, S, fc2_periodic%fc)
+  fc2_sc%fc = fc_sc2RR(fc2_periodic%nq, S, Sd, fc2d%fc) - fc_uc2RR(fc2_periodic)
+  ! fc2_uc%fc = fc_uc2RR(fc2_periodic)
 
-  call fc2_recenter(S, fc2_periodic, fc2, 2, distance_uc)
+  call fc2_recenter(S, fc2_periodic, fc2, 2)
   call S_uc2sc(S, fc2_periodic%nq, S_sc)
   S_sc%ityp(1) = 2
-  call center2(fc2_sc, fc2%nq, S, Sd)
-  call center3(fc2_uc, fc2%nq, S, Sd)
+  CALL fc2_sc%center_full(fc2%nq, S, Sd)
+  ! CALL fc2_uc%center_full(fc2%nq, S, Sd)
+
+  ! call center3(fc2_uc, fc2%nq, S, Sd)
   ! call center2(fc2_sc, fc2%nq, S, Sd)
 
   ! D1 = 0._dp
@@ -95,49 +102,49 @@ program bands
   !   print*, fc2_uc%n_R2(i), fc2_sc%n_R2(i)
   ! enddo
 
-  freq = 0._dp
   freq1 = 0._dp
   do iq = 1, grid%nq
     call freq_phq_safe(grid%xq(:,iq), S, fc2, freq0(:,iq), Ui)
-    call fc2_uc%interpolate(grid%xq(:,iq), S)
-    call fc2_sc%interpolate(grid%xq(:,iq), S)
-    ! do ibnd = 1, S%nat3
-    !   freq(ibnd,1,iq,1) = SQRT(REAL(braket(Ui(:,ibnd), D),DP))
-    ! enddo
+    ! call fc2_uc%r2q(grid%xq(:,iq))
+    ! call fc2_uc%r2q(grid%xq(:,jq), D)
 
-    ! call fc2_sc%interpolate(grid%xq(:,iq), S)
-    ! call fc2_sc%interpolate(grid%xq(:,iq), S, D)
-    ! do ibnd = 1, S%nat3
-    !   freq1(ibnd,1,iq,1) = SQRT(REAL(braket(Ui(:,ibnd), D),DP))
-    ! enddo
+    ! call fc2_uc%r2q(grid%xq(:,iq))
+    ! call fc2_uc%r2q(grid%xq(:,iq), D)
+    ! call mat2_diag(S%nat3, D, freq0(:,iq))
 
+    call fc2_sc%r2q(grid%xq(:,iq))
+    call fc2_sc%r2q(grid%xq(:,iq), D)
+    ! call mat2_diag(S%nat3, D, freq1(:,iq))
+    do ibnd = 1, S%nat3
+      freq1(ibnd,iq) = REAL(braket(Ui(:,ibnd), D),DP)/2/freq0(ibnd,iq)
+      if(isnan(freq1(ibnd,iq))) freq1(ibnd,iq) = 0._dp
+    enddo
+    ! call fc2_sc%r2q(grid%xq(:,iq))
+    ! call fc2_sc%r2q(grid%xq(:,iq), D)
+    ! call freq_phq_degen(grid%xq(:,iq), S, fc2, D, Ui)
+    ! do ibnd = 1, S%nat3
+    !   ! freq0(ibnd,iq) = SQRT(REAL(braket(Ui(:,ibnd), D),DP))
+    !   freq1(ibnd,iq) = SQRT(REAL(braket(Ui(:,ibnd), D),DP))
+    ! enddo
 
     ! freq1(:,1,iq,1) = AIMAG(braket(Ui(:,ibnd), D))
-    TU = CONJG(TRANSPOSE(Ui(:,:)))
 
-    do jq = 1, grid%nq
-      if(iq /= jq .and. input%q_summed) cycle
-      call freq_phq_safe(grid%xq(:,jq), S, fc2, dummy, Uj)
 
-      call fc2_sc%interpolate(grid%xq(:,jq), S, D)
-      call freq_phq_degen(grid%xq(:,jq), S, fc2, dummy, D, Uj)
+    ! freq(:) = ABS(matmul(CONJG(TRANSPOSE(Uj)), matmul(D, Uj)))
 
-      freq(:,:,jq,iq) = ABS(matmul(CONJG(TRANSPOSE(Uj)), matmul(D, Uj)))
 
-      call fc2_uc%interpolate(grid%xq(:,jq), S, D)
+    ! CALL fftinterp_mat2(xq, S, fc2, D)
 
-      ! CALL fftinterp_mat2(xq, S, fc2, D)
-
-      freq1(:,:,jq,iq) = ABS(matmul(TU, matmul(D, Uj)))
-    enddo
   enddo
+  print*, SUM(freq1)
+  ! freq0 = sqrt(freq0)
+  ! freq1 = sqrt(freq1)
 
-  print*, SUM(ABS(freq)) / grid%nq / S%nat3
 
   ! do iq = 1, path%nq
   !   call freq_phq_safe(path%xq(:,iq), S, fc2, freq0(:,iq), U)
-  !   call fc2_sc%interpolate(path%xq(:,iq), S)
-  !   call fc2_sc%interpolate(path%xq(:,iq), S, D)
+  !   call fc2_sc%r2q(path%xq(:,iq), S)
+  !   call fc2_sc%r2q(path%xq(:,iq), S, D)
   !   ! D = fc2_sc%mix(:,:,1)
   !   ! call mat2_diag(S%nat3, D, freq(:,iq))
   !   ! freq(:,iq) = SQRT(freq(:,iq))
@@ -201,17 +208,7 @@ program bands
 
   open(40, file='f2.dat', status='unknown')
   do iq = 1, grid%nq
-    do jq = 1, grid%nq
-      if (input%q_summed .and. iq /= jq) cycle
-      write(40, '(6E13.4)', advance='no') freq0(:,iq)
-      do ibnd = 1, S%nat3
-        do jbnd = 1, S%nat3
-          if (input%q_resolved .and. ibnd /= jbnd) cycle
-          write(40, '(E13.4)', advance='no') freq0(ibnd,iq) + freq(jbnd,ibnd,jq,iq)/freq0(ibnd,iq)/2
-        enddo
-      enddo
-      write(40, *) ''
-    enddo
+    write(40, '(12E13.4)') freq0(:,iq), freq1(:,iq)
   enddo
   close(40)
   !

@@ -61,7 +61,7 @@ MODULE thtetra
   ! INTEGER, allocatable :: which_tetra(:,:,:)
   !! inverse of tetra: given a q point, it gives all the tetrahedra that contain it
 
-  REAL(DP), PARAMETER :: tet_cutoff = 1.0E-3_DP
+  REAL(DP), PARAMETER :: tet_cutoff = 1.0E-2_DP
   REAL(DP), PARAMETER :: min_relative_distance = 1.0E-9_DP
   LOGICAL :: opt_flag
   !
@@ -963,10 +963,10 @@ CONTAINS
         !
         e = ek_sort(:,ibnd,nt)
         !
-        D = e
-        CALL rm_degen_vertices(ef_mult, e)
-        wR0 = real_vertices(ef_mult, -e)
-        wI0 = delta_vertices(ef_mult, D)
+        D = -e
+        CALL rm_degen_vertices(ef_mult, D)
+        wR0 = real_vertices(ef_mult, D)
+        wI0 = delta_vertices(ef_mult, e)
         !
         !
         if(symmetry) then

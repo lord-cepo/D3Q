@@ -15,7 +15,7 @@ PROGRAM r2rr
   USE f3_bwfft,        ONLY : d3_list, read_d3_matrices, bwfft_d3_interp, test_fwfft_d3
   USE clib_wrappers,        ONLY : memstat
   use fc2_interpolate, only: forceconst2_grid
-  use quter_defect, only : fc_sc2RR, interp_at_once, allocate_fc2_sc, forceconst2_sc
+  use quter_defect, only : fc_sc2RR, r2q_at_once, allocate_fc2_sc, forceconst2_sc
   use q_grids, only: q_grid, setup_simple_grid
   use d3_basis, only : d3_2idx_2_4idx
   USE cmdline_param_module
@@ -104,7 +104,7 @@ PROGRAM r2rr
   do i2 = 1, q2%nq
     do i3 = 1, q2%nq
       comp = i3 + (i2-1)*q2%nq
-      call interp_at_once(fc2sc, q2%xq(:,i2), q3%xq(:,i3), S%nat3, D)
+      call r2q_at_once(fc2sc, q2%xq(:,i2), q3%xq(:,i3), S%nat3, D)
       allocate(d3grid(comp)%D(1,3,3,1,S%nat,S%nat))
       call d3_2idx_2_4idx(S%nat, d3grid(comp)%D, D)
       d3grid(comp)%xq2 = q2%xq(:,i2)

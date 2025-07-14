@@ -227,121 +227,7 @@ CONTAINS
       e3 = tetra_evals(it, ib, 3)
       e4 = tetra_evals(it, ib, 4)
 
-      !Define the energy differences
-      e1e = e1 - e
-      e2e = e2 - e
-      e3e = e3 - e
-      e4e = e4 - e
-      e21 = e2 - e1
-      e31 = e3 - e1
-      e41 = e4 - e1
-      e32 = e3 - e2
-      e42 = e4 - e2
-      e43 = e4 - e3
-
-      !Evaluate the three cases
-      c1 = e1 <= e .and. e <= e2
-      c2 = e2 <= e .and. e <= e3
-      c3 = e3 <= e .and. e <= e4
-
-      if(.not. (e < e1 .or. e > e4)) then
-        !Evaluate the expressions for the three cases
-        select case(iv)
-         case(1)
-          if(c1) then
-            tmp = (e2e/e21 + e3e/e31 + e4e/e41)*(e1e**2)/e41/e31/e21
-
-            if(e1 == e2) then
-              tmp = 0._dp
-            end if
-          else if(c2) then
-            tmp = -0.5_dp*(e3e/(e31**2)*(e3e*e2e/e42/e32 + e4e*e1e/e41/e42 + e3e*e1e/e32/e41) &
-              + e4e/(e41**2)*(e4e*e1e/e42/e31 + e4e*e2e/e42/e32 + e3e*e1e/e31/e32))
-
-            if(e2 == e3) then
-              tmp = -0.5_dp*(e4e*e1e/e41/e42 + e1e/e41 &
-                + e4e/(e41**2)*(e4e*e1e/e42/e31 + e4e/e42 + e1e/e31))
-            end if
-          else if(c3) then
-            tmp = (e4e**3)/(e41**2)/e42/e43
-
-            if(e3 == e4) then
-              tmp = (e4e**2)/(e41**2)/e42
-            end if
-          end if
-         case(2)
-          if(c1) then
-            tmp = -(e1e**3)/(e21**2)/e31/e41
-
-            if(e1 == e2) then
-              tmp = 0.0_dp
-            end if
-          else if(c2) then
-            tmp = -0.5_dp*(e3e/(e32**2)*(e3e*e2e/e42/e31 + e4e*e2e/e42/e41 + e3e*e1e/e31/e41) &
-              + e4e/(e42**2)*(e3e*e2e/e32/e31 + e4e*e1e/e41/e31 + e4e*e2e/e32/e41))
-
-            if(e2 == e3) then
-              tmp = -0.5_dp*(0._dp + e4e/e42/e41 + 0._dp &
-                + e4e/(e42**2)*(0._dp + e4e*e1e/e41/e31 + 1._dp))
-            end if
-          else if(c3) then
-            tmp = (e4e**3)/e41/(e42**2)/e43
-
-            if(e3 == e4) then
-              tmp = 0.0_dp
-            end if
-          end if
-         case(3)
-          if(c1) then
-            tmp = -(e1e**3)/e21/(e31**2)/e41
-
-            if(e1 == e2) then
-              tmp = 0.0_dp
-            end if
-          else if(c2) then
-            tmp = 0.5_dp*(e2e/(e32**2)*(e3e*e2e/e42/e31 + e4e*e2e/e42/e41 + e3e*e1e/e31/e41) &
-              + e1e/(e31**2)*(e3e*e2e/e42/e32 + e4e*e1e/e41/e42 + e3e*e1e/e32/e41))
-
-            if(e2 == e3) then
-              tmp = 0.5_dp*(0._dp + e4e/e42/e41 + e1e/e31/e41 &
-                + e1e/(e31**2)*(0._dp + e4e*e1e/e41/e42 + e1e/e41))
-            end if
-          else if(c3) then
-            tmp = (e4e**3)/e41/e42/(e43**2)
-
-            if(e3 == e4) then
-              tmp = 0.0_dp
-            end if
-          end if
-         case(4)
-          if(c1) then
-            tmp = -(e1e**3)/e21/e31/(e41**2)
-            if(e1 == e2) then
-              tmp = 0.0_dp
-            end if
-          else if(c2) then
-            tmp = 0.5_dp*(e2e/(e42**2)*(e3e*e2e/e32/e31 + e4e*e1e/e41/e31 + e4e*e2e/e32/e41) &
-              + e1e/(e41**2)*(e4e*e1e/e42/e31 + e4e*e2e/e42/e32 + e3e*e1e/e31/e32))
-
-            if(e2 == e3) then
-              tmp = 0.5_dp*(0._dp &
-                + e1e/(e41**2)*(e4e*e1e/e42/e31 + e4e/e42 + e1e/e31))
-            end if
-          else if(c3) then
-            tmp = -(e3e/e43 + e2e/e42 + e1e/e41)*(e4e**2)/e41/e42/e43
-
-            if(e3 == e4) then
-              tmp = 0.0_dp
-            end if
-          end if
-        end select
-
-        if ((e1 == e2) .and. (e1 == e3) .and. (e1 == e4) .and. (e == e1)) then
-          tmp = 0.25_dp
-        end if
-
-        delta_fn_tetra = delta_fn_tetra + tmp
-      end if ! .not. (e <= e1 .or. e >= e4)
+      delta_fn_tetra = delta_fn_tetra + delta_vertices(e, e1, e2, e3, e4, iv)
     end do !itk
 
     if(delta_fn_tetra < 1.0e-12) delta_fn_tetra = 0.0_dp
@@ -349,6 +235,141 @@ CONTAINS
     !Normalize with the total number of tetrahedra
     delta_fn_tetra = delta_fn_tetra/numtetra
   end function delta_fn_tetra
+  !
+  function delta_vertices(e,e1,e2,e3,e4,iv)
+    !! Calculate the delta function at the vertices of the tetrahedron
+    !! using the analytic tetraheron method.
+    !!
+    !! e Sample energy
+    !! e1, e2, e3, e4 Vertex energies
+    !! iv Vertex number
+
+    real(DP), intent(in) :: e, e1, e2, e3, e4
+    integer, intent(in) :: iv
+
+    !Local variables
+    real(dp) :: e1e, e2e, e3e, e4e, &
+      e21, e31, e41, e32, e42, e43
+    logical :: c1, c2, c3
+    real(DP) :: delta_vertices
+
+    delta_vertices = 0._dp
+
+    !Define the energy differences
+    e1e = e1 - e
+    e2e = e2 - e
+    e3e = e3 - e
+    e4e = e4 - e
+    e21 = e2 - e1
+    e31 = e3 - e1
+    e41 = e4 - e1
+    e32 = e3 - e2
+    e42 = e4 - e2
+    e43 = e4 - e3
+
+    !Evaluate the three cases
+    c1 = e1 <= e .and. e <= e2
+    c2 = e2 < e .and. e <= e3
+    c3 = e3 < e .and. e <= e4
+
+    if(.not. (e < e1 .or. e > e4)) then
+      !Evaluate the expressions for the three cases
+      select case(iv)
+       case(1)
+        if(c1) then
+          delta_vertices = (e2e/e21 + e3e/e31 + e4e/e41)*(e1e**2)/e41/e31/e21
+
+          if(e1 == e2) then
+            delta_vertices = 0._dp
+          end if
+        else if(c2) then
+          delta_vertices = -0.5_dp*(e3e/(e31**2)*(e3e*e2e/e42/e32 + e4e*e1e/e41/e42 + e3e*e1e/e32/e41) &
+            + e4e/(e41**2)*(e4e*e1e/e42/e31 + e4e*e2e/e42/e32 + e3e*e1e/e31/e32))
+
+          ! if(e2 == e3) then
+          !   delta_vertices = -0.5_dp*(e4e*e1e/e41/e42 + e1e/e41 &
+          !     + e4e/(e41**2)*(e4e*e1e/e42/e31 + e4e/e42 + e1e/e31))
+          ! end if
+        else if(c3) then
+          delta_vertices = (e4e**3)/(e41**2)/e42/e43
+
+          ! if(e3 == e4) then
+          !   delta_vertices = (e4e**2)/(e41**2)/e42
+          ! end if
+        end if
+       case(2)
+        if(c1) then
+          delta_vertices = -(e1e**3)/(e21**2)/e31/e41
+
+          if(e1 == e2) then
+            delta_vertices = 0.0_dp
+          end if
+        else if(c2) then
+          delta_vertices = -0.5_dp*(e3e/(e32**2)*(e3e*e2e/e42/e31 + e4e*e2e/e42/e41 + e3e*e1e/e31/e41) &
+            + e4e/(e42**2)*(e3e*e2e/e32/e31 + e4e*e1e/e41/e31 + e4e*e2e/e32/e41))
+
+          ! if(e2 == e3) then
+          !   delta_vertices = -0.5_dp*(0._dp + e4e/e42/e41 + 0._dp &
+          !     + e4e/(e42**2)*(0._dp + e4e*e1e/e41/e31 + 1._dp))
+          ! end if
+        else if(c3) then
+          delta_vertices = (e4e**3)/e41/(e42**2)/e43
+
+          ! if(e3 == e4) then
+          !   delta_vertices = 0.0_dp
+          ! end if
+        end if
+       case(3)
+        if(c1) then
+          delta_vertices = -(e1e**3)/e21/(e31**2)/e41
+
+          if(e1 == e2) then
+            delta_vertices = 0.0_dp
+          end if
+        else if(c2) then
+          delta_vertices = 0.5_dp*(e2e/(e32**2)*(e3e*e2e/e42/e31 + e4e*e2e/e42/e41 + e3e*e1e/e31/e41) &
+            + e1e/(e31**2)*(e3e*e2e/e42/e32 + e4e*e1e/e41/e42 + e3e*e1e/e32/e41))
+
+          ! if(e2 == e3) then
+          !   delta_vertices = 0.5_dp*(0._dp + e4e/e42/e41 + e1e/e31/e41 &
+          !     + e1e/(e31**2)*(0._dp + e4e*e1e/e41/e42 + e1e/e41))
+          ! end if
+        else if(c3) then
+          delta_vertices = (e4e**3)/e41/e42/(e43**2)
+
+          ! if(e3 == e4) then
+          !   delta_vertices = 0.0_dp
+          ! end if
+        end if
+       case(4)
+        if(c1) then
+          delta_vertices = -(e1e**3)/e21/e31/(e41**2)
+          if(e1 == e2) then
+            delta_vertices = 0.0_dp
+          end if
+        else if(c2) then
+          delta_vertices = 0.5_dp*(e2e/(e42**2)*(e3e*e2e/e32/e31 + e4e*e1e/e41/e31 + e4e*e2e/e32/e41) &
+            + e1e/(e41**2)*(e4e*e1e/e42/e31 + e4e*e2e/e42/e32 + e3e*e1e/e31/e32))
+
+          ! if(e2 == e3) then
+          !   delta_vertices = 0.5_dp*(0._dp &
+          !     + e1e/(e41**2)*(e4e*e1e/e42/e31 + e4e/e42 + e1e/e31))
+          ! end if
+        else if(c3) then
+          delta_vertices = -(e3e/e43 + e2e/e42 + e1e/e41)*(e4e**2)/e41/e42/e43
+
+          ! if(e3 == e4) then
+          !   delta_vertices = 0.0_dp
+          ! end if
+        end if
+      end select
+
+      if ((e1 == e2) .and. (e1 == e3) .and. (e1 == e4) .and. (e == e1)) then
+        delta_vertices = 0.25_dp
+      end if
+
+    end if ! .not. (e <= e1 .or. e >= e4)
+  end function
   !
   function real_tetra(e, ik, ib, mesh, tetramap, tetracount, tetra_evals)
     !! Calculate the real part of the matrix elements of the resolvent operator

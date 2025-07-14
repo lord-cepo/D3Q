@@ -13,16 +13,16 @@ MODULE rigid_d3
 !-----------------------------------------------------------------------
 SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, alat, loto_2d, sign) !, alpha)
   !-----------------------------------------------------------------------
-  !! Compute the rigid-ion (long-range) term for q.  
+  !! Compute the rigid-ion (long-range) term for q.
   !! The long-range term used here, to be added to or subtracted from the
-  !! dynamical matrices, is exactly the same of the formula introduced in:  
-  !! X. Gonze et al, PRB 50. 13035 (1994).  
+  !! dynamical matrices, is exactly the same of the formula introduced in:
+  !! X. Gonze et al, PRB 50. 13035 (1994).
   !! Only the G-space term is implemented: the Ewald parameter alpha must
   !! be large enough to have negligible r-space contribution.
   !
   USE kinds,     ONLY : DP
   USE constants, ONLY : pi, tpi, fpi, e2
-  ! 
+  !
   IMPLICIT NONE
   !
   LOGICAL :: loto_2d
@@ -30,9 +30,9 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
   INTEGER, INTENT(in) :: nr1, nr2, nr3
   !! FFT grid
   INTEGER, INTENT(in) :: nat
-  !! Number of atoms  
+  !! Number of atoms
   REAL(KIND = DP), INTENT(in) :: q(3)
-  !! q-vector 
+  !! q-vector
   REAL(KIND = DP), INTENT(in) :: epsil(3, 3)
   !! dielectric constant tensor
   REAL(KIND = DP), INTENT(in) :: zeu(3, 3, nat)
@@ -46,7 +46,7 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
   REAL(KIND = DP), INTENT(in) :: bg(3, 3)
   !! Reciprocal lattice basis vectors
   REAL(KIND = DP), INTENT(in) :: omega
-  !! Unit cell volume 
+  !! Unit cell volume
   REAL(KIND = DP), INTENT(in) :: alat
   !! Cell dimension units
   COMPLEX(KIND = DP), INTENT(inout) :: dyn(3, 3, nat, nat)
@@ -56,7 +56,7 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
   INTEGER :: nr1x, nr2x, nr3x
   !! Max nr in direction 1, 2, 3
   INTEGER :: na
-  !! Atom index 1 
+  !! Atom index 1
   INTEGER :: nb
   !! Atom index 2
   INTEGER :: i
@@ -74,7 +74,7 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
   REAL(KIND = DP) :: g1, g2, g3
   !! G-vectors
   REAL(KIND = DP) :: facgd
-  !! fac * EXP(-geg / (alph * 4.0d0)) / geg  
+  !! fac * EXP(-geg / (alph * 4.0d0)) / geg
   REAL(KIND = DP) :: arg
   !! Argument of the function
   REAL(KIND = DP) :: gmax
@@ -90,7 +90,7 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
   REAL(KIND = DP) :: fmtx(3, 3)
   !! Z * Z * G * cos(arg)
   REAL(KIND = DP) :: reff(2, 2)
-  !! Effective screening length for 2D materials  
+  !! Effective screening length for 2D materials
   REAL(KIND = DP) :: grg
   !! G-vector * reff * G-vector for 2D loto
   COMPLEX(KIND = DP) :: facg
@@ -111,7 +111,7 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
 !  ENDIF
   !
   geg  = gmax * alph * 4.0d0
-  ! 
+  !
   ! Estimate of nr1x,nr2x,nr3x generating all vectors up to G^2 < geg
   ! Only for dimensions where periodicity is present, e.g. if nr1=1
   ! and nr2=1, then the G-vectors run along nr3 only.
@@ -135,18 +135,18 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
   !
   IF (ABS(sign) /= 1.0_DP) CALL errore('rgd_blk',' wrong value for sign ',1)
   !
-  IF (loto_2d) THEN 
-    ! (e^2 * 2\pi) / Area     
+  IF (loto_2d) THEN
+    ! (e^2 * 2\pi) / Area
     fac = (sign * e2 * tpi) / (omega * bg(3, 3) / alat)
     ! Effective screening length
-    ! reff = (epsil - 1) * c/2 
+    ! reff = (epsil - 1) * c/2
     reff(:, :) = 0.0d0
     reff(:, :) = epsil(1:2, 1:2) * 0.5d0 * tpi / bg(3, 3) ! (eps)*c/2 in 2pi/a units
     reff(1, 1) = reff(1, 1) - 0.5d0 * tpi / bg(3, 3) ! (-1)*c/2 in 2pi/a units
-    reff(2, 2) = reff(2, 2) - 0.5d0 * tpi / bg(3, 3) ! (-1)*c/2 in 2pi/a units    
+    reff(2, 2) = reff(2, 2) - 0.5d0 * tpi / bg(3, 3) ! (-1)*c/2 in 2pi/a units
   ELSE
     ! (e^2 * 4\pi) / Volume
-    fac = (sign * e2 * fpi) / omega          
+    fac = (sign * e2 * fpi) / omega
   ENDIF
   DO m1 = -nr1x, nr1x
     DO m2 = -nr2x, nr2x
@@ -154,9 +154,9 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
         !
         g1 = m1 * bg(1, 1) + m2 * bg(1, 2) + m3 * bg(1, 3)
         g2 = m1 * bg(2, 1) + m2 * bg(2, 2) + m3 * bg(2, 3)
-        g3 = m1 * bg(3, 1) + m2 * bg(3, 2) + m3 * bg(3, 3)         
+        g3 = m1 * bg(3, 1) + m2 * bg(3, 2) + m3 * bg(3, 3)
         !
-        IF (loto_2d) THEN 
+        IF (loto_2d) THEN
           geg = g1**2 + g2**2 + g3**2
           grg = 0.0d0
           IF (g1**2 + g2**2 > 1.0d-8) THEN
@@ -166,13 +166,13 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
         ELSE
           geg = (g1 * (epsil(1, 1) * g1 + epsil(1, 2) * g2 + epsil(1, 3) * g3) + &
                  g2 * (epsil(2, 1) * g1 + epsil(2, 2) * g2 + epsil(2, 3) * g3) + &
-                 g3 * (epsil(3, 1) * g1 + epsil(3, 2) * g2 + epsil(3, 3) * g3))             
+                 g3 * (epsil(3, 1) * g1 + epsil(3, 2) * g2 + epsil(3, 3) * g3))
         ENDIF
         !
-        IF (geg > 0.0d0 .AND. geg / (alph * 4) < gmax) THEN        
+        IF (geg > 0.0d0 .AND. geg / (alph * 4) < gmax) THEN
           !
           IF (loto_2d) THEN
-            facgd = fac * (tpi / alat) * EXP(-geg / (alph * 4)) / (SQRT(geg) * (1.0 + grg * SQRT(geg)))       
+            facgd = fac * (tpi / alat) * EXP(-geg / (alph * 4)) / (SQRT(geg) * (1.0 + grg * SQRT(geg)))
           ELSE
             facgd = fac * EXP(-geg / (alph * 4)) / geg
           ENDIF
@@ -205,7 +205,7 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
         g2 = g2 + q(2)
         g3 = g3 + q(3)
         !
-        IF (loto_2d) THEN 
+        IF (loto_2d) THEN
           geg = g1**2 + g2**2 + g3**2
           grg = 0.0d0
           IF (g1**2 + g2**2 > 1d-8) THEN
@@ -218,7 +218,7 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
                  g3 * (epsil(3, 1) * g1 + epsil(3, 2) * g2 + epsil(3, 3) * g3))
         ENDIF
         !
-        IF (geg > 0.0d0 .AND. geg / (alph * 4) < gmax) THEN        
+        IF (geg > 0.0d0 .AND. geg / (alph * 4) < gmax) THEN
           !
           IF (loto_2d) THEN
             facgd = fac * (tpi / alat) * EXP(-geg / (alph * 4)) / (SQRT(geg) * (1.0 + grg * SQRT(geg)))
@@ -234,8 +234,8 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
               arg = 2 * pi * (g1 * (tau(1, na) - tau(1 ,nb)) + &
                                  g2 * (tau(2, na) - tau(2, nb)) + &
                                  g3 * (tau(3, na) - tau(3, nb)) )
-              facg = facgd * CMPLX(COS(arg), SIN(arg), KIND=DP)            
-              !  
+              facg = facgd * CMPLX(COS(arg), SIN(arg), KIND=DP)
+              !
               DO j = 1, 3
                 DO i = 1, 3
                   dyn(i, j, na, nb) = dyn(i, j, na, nb) + facg * zag(i) * zbg(j)
@@ -244,8 +244,8 @@ SUBROUTINE rgd_blk_d3(nr1, nr2, nr3, nat, dyn, q, tau, epsil, zeu, bg, omega, al
             ENDDO ! na
           ENDDO ! nb
 !$OMP END PARALLELDO
-        ENDIF 
-      ENDDO ! m3 
+        ENDIF
+      ENDDO ! m3
     ENDDO ! m2
   ENDDO ! m1
   !

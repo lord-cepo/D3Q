@@ -8,15 +8,15 @@ module quter_defect
   integer, parameter :: nfar = 2
   !
   type forceconst2_sc
-    INTEGER :: n_R1 = 0
-    INTEGER, allocatable :: n_R2(:)
+    INTEGER :: n_R2 = 0
+    INTEGER, allocatable :: n_R1(:)
     ! INTEGER :: i_0(2) = 0
-    complex(dp), allocatable :: FC(:,:,:,:)      ! (jn1,jn2,iR,jR)
+    real(dp), allocatable :: FC(:,:,:,:)      ! (jn1,jn2,iR,jR)
     complex(dp), allocatable :: mix(:,:,:)    ! (jn1,jn2,iR)
-    integer,  allocatable :: yR2(:,:,:)       ! (3,iR,which)
-    real(dp), allocatable :: xR2(:,:,:)       ! (3,iR,which)
-    integer,  allocatable :: yR1(:,:)         ! (3,iR)
-    real(dp), allocatable :: xR1(:,:)         ! (3,iR)
+    integer,  allocatable :: yR1(:,:,:)       ! (3,iR,which)
+    real(dp), allocatable :: xR1(:,:,:)       ! (3,iR,which)
+    integer,  allocatable :: yR2(:,:)         ! (3,iR)
+    real(dp), allocatable :: xR2(:,:)         ! (3,iR)
     integer               :: nq(3)            ! sc size
     integer :: stage = -1                     ! centered or not
     real(dp) :: taudef(3) = 0._dp             ! tau of the defect atom
@@ -31,9 +31,9 @@ module quter_defect
     procedure :: center => center3
     procedure :: cart => construct_cart
     generic   :: r2q => r2q_1st_step, r2q_2nd_step
-    generic   :: q2r => q2r_1st_step, q2r_2nd_step
-    PROCEDURE, PASS :: q2r_1st_step
-    PROCEDURE, PASS :: q2r_2nd_step
+    ! generic   :: q2r => q2r_1st_step, q2r_2nd_step
+    ! PROCEDURE, PASS :: q2r_1st_step
+    ! PROCEDURE, PASS :: q2r_2nd_step
     PROCEDURE, PASS :: r2q_1st_step
     PROCEDURE, PASS :: r2q_2nd_step
   end type
@@ -57,7 +57,7 @@ contains
       do isc = 1, S_sc%nat
         r_cryst = S_sc%tau(:,isc)*sc_grid-S%tau(:,i)
         call cryst_to_cart(1, r_cryst, S_sc%bg, -1)
-        if (NORM2(r_cryst - NINT(r_cryst))<1e-2) then
+        if (NORM2(r_cryst - NINT(r_cryst))<3e-1_dp) then
           iR = v2index(NINT(r_cryst), sc_grid)
           if (map_uc2sc(i, iR) > -1) CALL errore("map_uc2sc", "found same atom in same R", 1)
           if (iR < 1 .or. iR > PRODUCT(sc_grid)) CALL errore("map_uc2sc", "R is out of bound", ABS(iR))
@@ -134,17 +134,17 @@ contains
       CALL errore(sub, 'some element is already allocated', 1)
     !
     n_R = PRODUCT(grid)
-    fc%n_R1 = n_R
-    allocate(fc%n_R2(n_R))
     fc%n_R2 = n_R
+    allocate(fc%n_R1(n_R))
+    fc%n_R1 = n_R
     !
-    ALLOCATE(fc%yR2(3,n_R,n_R), fc%yR1(3,n_R))
-    fc%yR1 = grid_vec(grid)
+    ALLOCATE(fc%yR1(3,n_R,n_R), fc%yR2(3,n_R))
+    fc%yR2 = grid_vec(grid)
     do iR = 1, n_R
-      fc%yR2(:,:,iR) = fc%yR1
+      fc%yR1(:,:,iR) = fc%yR2
     enddo
     !
-    ALLOCATE(fc%xR2(3,n_R,n_R), fc%xR1(3,n_R))
+    ALLOCATE(fc%xR1(3,n_R,n_R), fc%xR2(3,n_R))
     call fc%cart(S, 1)
     call fc%cart(S, 2)
     ALLOCATE(fc%FC(S%nat3,S%nat3,n_R,n_R))
@@ -163,8 +163,8 @@ contains
     if (allocated(fc%mix)) deallocate(fc%mix)
     if (allocated(fc%yR1)) deallocate(fc%yR1)
     if (allocated(fc%xR1)) deallocate(fc%xR1)
-    if (allocated(fc%n_R2)) deallocate(fc%n_R2)
-    fc%n_R1 = 0
+    if (allocated(fc%n_R1)) deallocate(fc%n_R1)
+    fc%n_R2 = 0
     fc%taudef = 0._dp
     fc%stage = -1
     fc%nq = 0
@@ -178,20 +178,20 @@ contains
     real(dp), allocatable :: R(:,:)
     integer :: i
     !
-    if(which == 2) then
-      do i = 1, fc%n_R1
-        allocate(R(3,fc%n_R2(i)))
-        R = REAL(fc%yR2(:,:,i), DP)
-        call cryst_to_cart(fc%n_R2(i), R, S%at, 1)
-        fc%xR2(:,:,i) = R
+    if(which == 1) then
+      do i = 1, fc%n_R2
+        allocate(R(3,fc%n_R1(i)))
+        R = REAL(fc%yR1(:,:,i), DP)
+        call cryst_to_cart(fc%n_R1(i), R, S%at, 1)
+        fc%xR1(:,:,i) = R
         deallocate(R)
       enddo
       !
-    elseif(which == 1) then
-      allocate(R(3,fc%n_R1))
-      R = REAL(fc%yR1, DP)
-      call cryst_to_cart(fc%n_R1, R, S%at, 1)
-      fc%xR1 = R
+    elseif(which == 2) then
+      allocate(R(3,fc%n_R2))
+      R = REAL(fc%yR2, DP)
+      call cryst_to_cart(fc%n_R2, R, S%at, 1)
+      fc%xR2 = R
       deallocate(R)
     else
       call errore("construct_cart", "which is not 1 or 2", 1)
@@ -207,25 +207,25 @@ contains
     real(dp), allocatable :: R(:,:)
     integer :: i
     !
-    if (which == 2) then
-      do i = 1, fc%n_R1
-        allocate(R(3,fc%n_R2(i)))
-        R = fc%xR2(:,:,i)
-        call cryst_to_cart(fc%n_R2(i), R, S%bg, -1)
+    if (which == 1) then
+      do i = 1, fc%n_R2
+        allocate(R(3,fc%n_R1(i)))
+        R = fc%xR1(:,:,i)
+        call cryst_to_cart(fc%n_R1(i), R, S%bg, -1)
         if (ALL(ABS(R - NINT(R)) < 1e-6)) then
-          fc%yR2(:,:,i) = NINT(R)
+          fc%yR1(:,:,i) = NINT(R)
         else
           call errore("construct_cryst", "R is not integer", 1)
         endif
         deallocate(R)
       enddo
       !
-    elseif(which == 1) then
-      allocate(R(3,fc%n_R1))
-      R = fc%xR1
-      call cryst_to_cart(fc%n_R1, R, S%bg, -1)
+    elseif(which == 2) then
+      allocate(R(3,fc%n_R2))
+      R = fc%xR2
+      call cryst_to_cart(fc%n_R2, R, S%bg, -1)
       if (ALL(ABS(R - NINT(R)) < 1e-6)) then
-        fc%yR1 = NINT(R)
+        fc%yR2 = NINT(R)
       else
         call errore("construct_cryst", "R is not integer", 1)
       endif
@@ -300,7 +300,7 @@ contains
   !   integer, dimension(3) :: far_grid, Rbig_from_0, Rbig_shift
   !   !
   !   integer, allocatable :: new_yR_list(:,:,:)
-  !   complex(dp), allocatable :: new_fc(:,:,:,:)
+  !   real(dp), allocatable :: new_fc(:,:,:,:)
   !   integer :: counter
   !   !
   !   ! Stuff used to compute Wigner-Seitz weights:
@@ -409,24 +409,24 @@ contains
     type(ph_system_info), intent(in) :: S, S_sc
     !
     ! type(forceconst2_grid) :: fsc
-    real(dp), dimension(3) :: d1, d2
+    real(dp), dimension(3) :: d2, d1
     real(dp) :: perix, peri_min
     real(dp), parameter :: eps_peri = 1e-3
     integer, parameter :: nperix = (2*nfar+1)**3
     integer :: nperi
     integer :: SAFE_ALLOCATION
     !
-    integer :: na1, na2, j1, j2, nR, R1, R2, R1_big, R2_big
+    integer :: na2, na1, j1, j2, nR, R2, R1, R2_big, R1_big
     integer :: map_sc(S%nat, PRODUCT(grid))
     integer :: far_grid_cryst(3,(2*nfar+1)**3)
     real(dp) :: far_grid_cart(3,(2*nfar+1)**3)
     integer :: nRbig, counter
-    integer :: iperi, nxR1, ixR1, ixR2
-    integer, allocatable :: R1_list(:), R2_list(:,:), yR1_list(:,:), yR2_list(:,:,:), nxR2(:)
+    integer :: iperi, nxR2, ixR2, ixR1
+    integer, allocatable :: R2_list(:), R1_list(:,:), yR2_list(:,:), yR1_list(:,:,:), nxR1(:)
     integer, dimension(3) :: far_mesh
     integer :: farx_list(3,2,nperix), ind(2,nperix)
     !
-    complex(dp), allocatable :: new_fc(:,:,:,:)
+    real(dp), allocatable :: new_fc(:,:,:,:)
     !
     ! Stuff used to compute Wigner-Seitz weights:
     INTEGER, PARAMETER:: nrwsx=2000
@@ -447,32 +447,33 @@ contains
     !
     SAFE_ALLOCATION = 10 * nR
     allocate(new_fc(S%nat3, S%nat3, SAFE_ALLOCATION, SAFE_ALLOCATION))
-    allocate(R1_list(nR*nRbig))
-    allocate(R2_list(nR*nRbig,nR*nRbig))
-    allocate(yR1_list(3, nR*nRbig))
-    allocate(yR2_list(3, nR*nRbig, nR*nRbig))
-    allocate(nxR2(nR*nRbig))
+    allocate(R2_list(nR*nRbig))
+    allocate(R1_list(nR*nRbig,nR*nRbig))
+    allocate(yR2_list(3, nR*nRbig))
+    allocate(yR1_list(3, nR*nRbig, nR*nRbig))
+    allocate(nxR1(nR*nRbig))
     !
     map_sc = map_uc2sc(S, S_sc, grid, fc%taudef)
     !
     new_fc = 0._dp
-    R1_list = -1
     R2_list = -1
-    nxR2 = 0
+    R1_list = -1
     nxR1 = 0
+    nxR2 = 0
     counter = 0
     !
-    do R1 = 1, nR
-      do na1 = 1, S%nat
-        do R2 = 1, nR
-          do na2 = 1, S%nat
+    open(10, file='distance-defect.dat', status='replace')
+    do R2 = 1, nR
+      do na2 = 1, S%nat
+        do R1 = 1, nR
+          do na1 = 1, S%nat
             nperi = 0
             peri_min = 0._dp
-            do R1_big = 1, nRbig
-              d1 = S_sc%tau(:,map_sc(na1,R1)) + far_grid_cart(:,R1_big)
-              do R2_big = 1, nRbig
-                d2 = S_sc%tau(:,map_sc(na2,R2)) + far_grid_cart(:,R2_big)
-                perix = (norm2(d1 - fc%taudef) + norm2(d2 - fc%taudef)) + norm2(d1 - d2)
+            do R2_big = 1, nRbig
+              d2 = S_sc%tau(:,map_sc(na2,R2)) + far_grid_cart(:,R2_big)
+              do R1_big = 1, nRbig
+                d1 = S_sc%tau(:,map_sc(na1,R1)) + far_grid_cart(:,R1_big)
+                perix = (norm2(d2 - fc%taudef) + norm2(d1 - fc%taudef)) + norm2(d2 - d1)
                 IF (perix < peri_min-eps_peri .or. nperi==0 ) THEN
                   nperi = 1
                   farx_list = 0
@@ -486,28 +487,32 @@ contains
                   nperi = nperi + 1
                   IF(nperi > nperix) CALL errore("center2", "nperix is too small", nperi)
                   peri_min = (peri_min*(nperi-1)+perix)/DBLE(nperi)
-                  farx_list(:,1,nperi) = index2v(R1, grid) + grid * far_grid_cryst(:,R1_big)
                   farx_list(:,2,nperi) = index2v(R2, grid) + grid * far_grid_cryst(:,R2_big)
-                  ind(1,nperi) = R1 + nR*(R1_big-1)
+                  farx_list(:,1,nperi) = index2v(R1, grid) + grid * far_grid_cryst(:,R1_big)
                   ind(2,nperi) = R2 + nR*(R2_big-1)
+                  ind(1,nperi) = R1 + nR*(R1_big-1)
                 END IF
               enddo
             enddo
             if (nperi > 1) counter = counter + 1
             !
             do iperi = 1, nperi
-              call add_ind(R1_list, ind(1,iperi), nxR1, ixR1)
-              yR1_list(:,ixR1) = farx_list(:,1,iperi)
+              call add_ind(R2_list, ind(2,iperi), nxR2, ixR2)
+              yR2_list(:,ixR2) = farx_list(:,2,iperi)
               !
-              call add_ind(R2_list(:,ixR1), ind(2,iperi), nxR2(ixR1), ixR2)
-              yR2_list(:,ixR2,ixR1) = farx_list(:,2,iperi)
+              call add_ind(R1_list(:,ixR2), ind(1,iperi), nxR1(ixR2), ixR1)
+              yR1_list(:,ixR1,ixR2) = farx_list(:,1,iperi)
               !> and populate force constants with usual index wrapping
+              R1_big = ind(1,iperi)/ nR + 1
+              R2_big = ind(2,iperi)/ nR + 1
+              d2 = S_sc%tau(:,map_sc(na2,R2)) + far_grid_cart(:,R2_big)
+              d1 = S_sc%tau(:,map_sc(na1,R1)) + far_grid_cart(:,R1_big)
               do j1 = 1, 3
                 do j2 = 1, 3
-                  new_fc(j1+3*(na1-1), j2+3*(na2-1), ixR2, ixR1) = &
-                    fc%FC(j1+(na1-1)*3, j2+(na2-1)*3, R2, R1) / nperi
-                  ! if (present(distance)) &
-                  !   distance(j1+3*(na1-1), j2+3*(na2-1), ixR2, ixR1) = norm2(dist)
+                  new_fc(j1+3*(na1-1), j2+3*(na2-1), ixR1, ixR2) = &
+                    fc%FC(j1+(na1-1)*3, j2+(na2-1)*3, R1, R2) / nperi
+                  write(10, "(4E15.5)") norm2(d1-fc%taudef), norm2(d2-fc%taudef), &
+                    norm2(d1-d2), new_fc(j1+3*(na1-1), j2+3*(na2-1), ixR1, ixR2)
                 enddo
               enddo
             enddo
@@ -516,23 +521,24 @@ contains
         enddo
       enddo
     enddo
+    close(10)
     !
-    deallocate(fc%yR2, fc%xR2, fc%FC, fc%xR1, fc%yR1, fc%n_R2)
+    deallocate(fc%yR2, fc%xR2, fc%FC, fc%xR1, fc%yR1, fc%n_R1)
     !> the yR list is populated until nxR(which), but the size can be larger.
     !> the values after nxR(which) are not even initialized (they are garbage).
-    ALLOCATE(fc%yR1(3,nxR1))
-    ALLOCATE(fc%xR1(3,nxR1))
-    ALLOCATE(fc%yR2(3,maxval(nxR2),nxR1))
-    ALLOCATE(fc%xR2(3,maxval(nxR2),nxR1))
-    ALLOCATE(fc%FC(S%nat3,S%nat3,maxval(nxR2),nxR1))
-    ALLOCATE(fc%n_R2(nxR1))
-    fc%n_R2 = nxR2(:nxR1)
-    fc%n_R1 = nxR1
+    ALLOCATE(fc%yR2(3,nxR2))
+    ALLOCATE(fc%xR2(3,nxR2))
+    ALLOCATE(fc%yR1(3,maxval(nxR1),nxR2))
+    ALLOCATE(fc%xR1(3,maxval(nxR1),nxR2))
+    ALLOCATE(fc%FC(S%nat3,S%nat3,maxval(nxR1),nxR2))
+    ALLOCATE(fc%n_R1(nxR2))
+    fc%n_R1 = nxR1(:nxR2)
+    fc%n_R2 = nxR2
     fc%nq = grid
-    do ixR1 = 1, nxR1
-      fc%yR1(:,ixR1) = yR1_list(:,ixR1)
-      fc%yR2(:,:nxR2(ixR1),ixR1) = yR2_list(:,:nxR2(ixR1),ixR1)
-      fc%FC(:,:,:nxR2(ixR1),ixR1) = new_fc(:,:,:nxR2(ixR1),ixR1)
+    do ixR2 = 1, nxR2
+      fc%yR2(:,ixR2) = yR2_list(:,ixR2)
+      fc%yR1(:,:nxR1(ixR2),ixR2) = yR1_list(:,:nxR1(ixR2),ixR2)
+      fc%FC(:,:,:nxR1(ixR2),ixR2) = new_fc(:,:,:nxR1(ixR2),ixR2)
     enddo
     call fc%cart(S_sc, 1)
     call fc%cart(S_sc, 2)
@@ -540,8 +546,8 @@ contains
     call print_message("fine del centering")
 
     print*, "------------------------"
-    print*, "number of R1", nxR1
-    print*, "number of R1,R2", sum(nxR2)
+    print*, "number of R1", nxR2
+    print*, "number of R1,R2", sum(nxR1)
     ! print*, "number of R2", nxR2(:nxR1)
     ! do R1 = 1, nxR1
     !   print"(3I4,3F10.3)", fc%yR1(:,R1), fc%xR1(:,R1)
@@ -549,7 +555,7 @@ contains
     print*, "counter is  ", counter, "over", nR**2*S%nat**2
     print*, "------------------------"
 
-    deallocate(new_fc, R1_list, R2_list, yR1_list, yR2_list, nxR2)
+    deallocate(new_fc, R2_list, R1_list, yR2_list, yR1_list, nxR1)
   end subroutine
   !
   subroutine center3(fc, grid, S, S_sc)
@@ -571,13 +577,13 @@ contains
     real(dp) :: far_grid_cart(3,(2*nfar+1)**3)
     real(dp) :: grid_cart(3,PRODUCT(grid))
     integer :: nRbig
-    integer :: nxR1, ixR1, ixR2
+    integer :: nxR1, ixR2, ixR1
     integer, allocatable :: R1_list(:), R2_list(:,:), yR1_list(:,:), yR2_list(:,:,:), nxR2(:)
     real(dp), allocatable :: weights1(:), weights2(:)
     integer, allocatable :: inds1(:), inds2(:)
     integer, dimension(3) :: far_mesh
     !
-    complex(dp), allocatable :: new_fc(:,:,:,:)
+    real(dp), allocatable :: new_fc(:,:,:,:)
     !
     ! Stuff used to compute Wigner-Seitz weights:
     INTEGER, PARAMETER:: nrwsx=2000
@@ -613,24 +619,27 @@ contains
     nxR2 = 0
     nxR1 = 0
     !
+
     do R1 = 1, nR
       do na1 = 1, S%nat
         d1 = S%tau(:,na1) + grid_cart(:,R1) - fc%taudef
         call inside_ws(far_grid_cart, d1, nrws, rws, weights1, inds1)
         do R1_big = 1, size(weights1)
-          call add_ind(R1_list, R1 + nR*(inds1(R1_big)-1), nxR1, ixR1)
-          yR1_list(:,ixR1) = index2v(R1, grid) + grid * far_grid_cryst(:,inds1(R1_big))
+          call add_ind(R1_list, R1 + nR*(inds1(R1_big)-1), nxR1, ixr2)
+          yR1_list(:,ixr2) = index2v(R1, grid) + grid * far_grid_cryst(:,inds1(R1_big))
           do R2 = 1, nR
             do na2 = 1, S%nat
               d2 = S%tau(:,na2) + grid_cart(:,R2) - S%tau(:,na1) - grid_cart(:,R1) - far_grid_cart(:,inds1(R1_big))
               call inside_ws(far_grid_cart, d2, nrws, rws, weights2, inds2)
               do R2_big = 1, size(weights2)
-                call add_ind(R2_list(:,ixR1), R2 + nR*(inds2(R2_big)-1), nxR2(ixR1), ixR2)
-                yR2_list(:,ixR2,ixR1) = index2v(R2, grid) + grid * far_grid_cryst(:,inds2(R2_big))
+                call add_ind(R2_list(:,ixr2), R2 + nR*(inds2(R2_big)-1), nxR2(ixr2), ixR1)
+                yR2_list(:,ixR1,ixr2) = index2v(R2, grid) + grid * far_grid_cryst(:,inds2(R2_big))
                 do j1 = 1, 3
                   do j2 = 1, 3
-                    new_fc(j1+3*(na1-1), j2+3*(na2-1), ixR2, ixR1) = &
+                    new_fc(j1+3*(na1-1), j2+3*(na2-1), ixR1, ixr2) = &
                       fc%FC(j1+(na1-1)*3, j2+(na2-1)*3, R2, R1) * weights1(R1_big) * weights2(R2_big)
+                    ! write(10, '(2E15.5)') norm2(fc2_sc%xR1(:,R1,R2) - fc2_sc%xR2(:,R2)), &
+                    !   SUM(ABS(fc2_sc%fc((na1-1)*3+1:na1*3,(na2-1)*3+1:na2*3,R1,R2)))
                   enddo
                 enddo
               enddo
@@ -641,27 +650,27 @@ contains
       enddo
     enddo
     !
-    deallocate(weights1, weights2, inds1, inds2)
-    deallocate(fc%yR2, fc%xR2, fc%FC, fc%xR1, fc%yR1, fc%n_R2)
-    !> the yR list is populated until nxR(which), but the size can be larger.
-    !> the values after nxR(which) are not even initialized (they are garbage).
-    ALLOCATE(fc%yR1(3,nxR1))
-    ALLOCATE(fc%xR1(3,nxR1))
-    ALLOCATE(fc%yR2(3,maxval(nxR2),nxR1))
-    ALLOCATE(fc%xR2(3,maxval(nxR2),nxR1))
-    ALLOCATE(fc%FC(S%nat3,S%nat3,maxval(nxR2),nxR1))
-    ALLOCATE(fc%n_R2(nxR1))
-    fc%n_R2 = nxR2(:nxR1)
-    fc%n_R1 = nxR1
-    fc%nq = grid
-    fc%yR2 = -1000
-    do ixR1 = 1, nxR1
-      fc%yR1(:,ixR1) = yR1_list(:,ixR1)
-      fc%yR2(:,:nxR2(ixR1),ixR1) = yR2_list(:,:nxR2(ixR1),ixR1)
-      fc%FC(:,:,:nxR2(ixR1),ixR1) = new_fc(:,:,:nxR2(ixR1),ixR1)
-    enddo
-    call fc%cart(S_sc, 1)
-    call fc%cart(S_sc, 2)
+    ! deallocate(weights1, weights2, inds1, inds2)
+    ! deallocate(fc%yR2, fc%xR2, fc%FC, fc%xR1, fc%yR1, fc%n_R2)
+    ! !> the yR list is populated until nxR(which), but the size can be larger.
+    ! !> the values after nxR(which) are not even initialized (they are garbage).
+    ! ALLOCATE(fc%yR1(3,nxR1))
+    ! ALLOCATE(fc%xR1(3,nxR1))
+    ! ALLOCATE(fc%yR2(3,maxval(nxR2),nxR1))
+    ! ALLOCATE(fc%xR2(3,maxval(nxR2),nxR1))
+    ! ALLOCATE(fc%FC(S%nat3,S%nat3,maxval(nxR2),nxR1))
+    ! ALLOCATE(fc%n_R2(nxR1))
+    ! fc%n_R2 = nxR2(:nxR1)
+    ! fc%n_R1 = nxR1
+    ! fc%nq = grid
+    ! fc%yR2 = -1000
+    ! do ixr2 = 1, nxR1
+    !   fc%yR1(:,ixr2) = yR1_list(:,ixr2)
+    !   fc%yR2(:,:nxR2(ixr2),ixr2) = yR2_list(:,:nxR2(ixr2),ixr2)
+    !   fc%FC(:,:,:nxR2(ixr2),ixr2) = new_fc(:,:,:nxR2(ixr2),ixr2)
+    ! enddo
+    ! call fc%cart(S_sc, 1)
+    ! call fc%cart(S_sc, 2)
 
     call print_message("fine del centering")
 
@@ -837,7 +846,7 @@ contains
       do sc_na2 = 1, S_sc%nat
         do j1 = 1, 3
           do j2 = 1, 3
-            fc_sc2RR(j1+(map_nat(sc_na1)-1)*3, j2+(map_nat(sc_na2)-1)*3, map_R(sc_na2), map_R(sc_na1)) = &
+            fc_sc2RR(j1+(map_nat(sc_na1)-1)*3, j2+(map_nat(sc_na2)-1)*3, map_R(sc_na1), map_R(sc_na2)) = &
               FC(j1+(sc_na1-1)*3, j2+(sc_na2-1)*3)
           enddo
         enddo
@@ -889,97 +898,97 @@ contains
     nR = product(fc%nq)
     nat3 = size(fc%fc, 1)
     allocate(fc_uc2RR(nat3, nat3, nR, nR))
-    do R1 = 1, nR
-      do R2 = 1, nR
-        R = index2v(R2, fc%nq) - index2v(R1, fc%nq)
+    do R2 = 1, nR
+      do R1 = 1, nR
+        R = index2v(R1, fc%nq) - index2v(R2, fc%nq)
         do j1 = 1, 3
           if (R(j1) < 0) R(j1) = R(j1) + fc%nq(j1)
         enddo
-        fc_uc2RR(:,:,R2,R1) = fc%fc(:,:,v2index(R, fc%nq))
+        fc_uc2RR(:,:,R1,R2) = fc%fc(:,:,v2index(R, fc%nq))
       enddo
     enddo
   end function
   !
-  subroutine q2r_1st_step(fc, iR1, grid, V)
-    use q_grids, only : q_grid
-    use constants, only : tpi
-    CLASS(forceconst2_sc),INTENT(inout) :: fc
-    INTEGER, INTENT(in) :: iR1
-    complex(DP),INTENT(in) :: V(:,:,:,:)
-    type(q_grid), intent(in) :: grid
-    !
-    INTEGER :: qj, Nq, qi, nat3
-    REAL(DP), allocatable :: varg(:), vcos(:), vsin(:)
-    COMPLEX(DP), allocatable :: vphase(:)
-    !
-    Nq = product(grid%n)
-    nat3 = size(fc%FC, 1)
-    if(allocated(fc%mix)) deallocate(fc%mix)
-    fc%iR1 = iR1
-    !
-    allocate(fc%mix(nat3, nat3, Nq))
-    fc%mix = 0._dp
-    !
-    allocate(varg(Nq), vcos(Nq), &
-      vsin(Nq), vphase(Nq))
-    do qi = 1, Nq
-      FORALL(qj=1:Nq) varg(qj) =  tpi * &
-        dot_product(fc%xR1(:,iR1), grid%xq(:,qj))
-      !
-      ! Pre-compute phase to use the vectorized MKL subroutines
-#if defined(__INTEL) && defined(__HASVTRIG)
-!dir$ message "Using MKL vectorized Sin and Cos implementation, if this does not compile, remove -D__HASVTRIG from Makefile"
-      CALL vdCos(Nq, varg, vcos)
-      CALL vdSin(Nq, varg, vsin)
-#else
-      vcos = DCOS(varg)
-      vsin = DSIN(varg)
-#endif
-      vphase =  CMPLX( vcos, -vsin, kind=DP  )
-      !
-      do qj = 1, Nq
-        fc%mix(:,:,qi) = fc%mix(:,:,qi) + vphase(qj) * V(:,:,qi,qj)
-      enddo
-      ! fc%mix(:,:,R1) = SUM(vphase * fc%FC(:,:,:,R1), dim=3)
-      !
-    enddo
-    deallocate(varg, vcos, vsin, vphase)
-  end subroutine
-  !
-  subroutine q2r_2nd_step(fc, iR2, grid)
-    use q_grids, only : q_grid
-    use constants, only : tpi
-    CLASS(forceconst2_sc),INTENT(inout) :: fc
-    integer, INTENT(in) :: iR2
-    type(q_grid), intent(in) :: grid
-    !
-    INTEGER :: qi, Nq
-    REAL(DP), allocatable, dimension(:) :: varg, vcos, vsin
-    COMPLEX(DP), allocatable :: vphase(:)
-    !
-    Nq = product(grid%n)
-    allocate(varg(Nq), vcos(Nq), vsin(Nq), vphase(Nq))
-    !
-    FORALL(qi=1:Nq) varg(qi) =  tpi * &
-      dot_product(fc%xR2(:,iR2, fc%iR1), grid%xq(:,qi))
-    !
-    ! Pre-compute phase to use the vectorized MKL subroutines
-#if defined(__INTEL) && defined(__HASVTRIG)
-!dir$ message "Using MKL vectorized Sin and Cos implementation, if this does not compile, remove -D__HASVTRIG from Makefile"
-    CALL vdCos(Nq, varg, vcos)
-    CALL vdSin(Nq, varg, vsin)
-#else
-    vcos = DCOS(varg)
-    vsin = DSIN(varg)
-#endif
-    vphase =  CMPLX( vcos, vsin, kind=DP  )
-    !
-    fc%fc(:,:,:,fc%iR1) = 0._dp
-    do qi = 1, Nq
-      fc%fc(:,:,iR2,fc%iR1) = fc%fc(:,:,iR2,fc%iR1) + vphase(qi) * fc%mix(:,:,qi)
-    enddo
-    !
-  END SUBROUTINE
+!   subroutine q2r_1st_step(fc, iR1, grid, V)
+!     use q_grids, only : q_grid
+!     use constants, only : tpi
+!     CLASS(forceconst2_sc),INTENT(inout) :: fc
+!     INTEGER, INTENT(in) :: iR1
+!     complex(DP),INTENT(in) :: V(:,:,:,:)
+!     type(q_grid), intent(in) :: grid
+!     !
+!     INTEGER :: qj, Nq, qi, nat3
+!     REAL(DP), allocatable :: varg(:), vcos(:), vsin(:)
+!     COMPLEX(DP), allocatable :: vphase(:)
+!     !
+!     Nq = product(grid%n)
+!     nat3 = size(fc%FC, 1)
+!     if(allocated(fc%mix)) deallocate(fc%mix)
+!     fc%iR1 = iR1
+!     !
+!     allocate(fc%mix(nat3, nat3, Nq))
+!     fc%mix = 0._dp
+!     !
+!     allocate(varg(Nq), vcos(Nq), &
+!       vsin(Nq), vphase(Nq))
+!     do qi = 1, Nq
+!       FORALL(qj=1:Nq) varg(qj) =  tpi * &
+!         dot_product(fc%xR1(:,iR1), grid%xq(:,qj))
+!       !
+!       ! Pre-compute phase to use the vectorized MKL subroutines
+! #if defined(__INTEL) && defined(__HASVTRIG)
+! !dir$ message "Using MKL vectorized Sin and Cos implementation, if this does not compile, remove -D__HASVTRIG from Makefile"
+!       CALL vdCos(Nq, varg, vcos)
+!       CALL vdSin(Nq, varg, vsin)
+! #else
+!       vcos = DCOS(varg)
+!       vsin = DSIN(varg)
+! #endif
+!       vphase =  CMPLX( vcos, -vsin, kind=DP  )
+!       !
+!       do qj = 1, Nq
+!         fc%mix(:,:,qi) = fc%mix(:,:,qi) + vphase(qj) * V(:,:,qi,qj)
+!       enddo
+!       ! fc%mix(:,:,R1) = SUM(vphase * fc%FC(:,:,:,R1), dim=3)
+!       !
+!     enddo
+!     deallocate(varg, vcos, vsin, vphase)
+!   end subroutine
+!   !
+!   subroutine q2r_2nd_step(fc, iR2, grid)
+!     use q_grids, only : q_grid
+!     use constants, only : tpi
+!     CLASS(forceconst2_sc),INTENT(inout) :: fc
+!     integer, INTENT(in) :: iR2
+!     type(q_grid), intent(in) :: grid
+!     !
+!     INTEGER :: qi, Nq
+!     REAL(DP), allocatable, dimension(:) :: varg, vcos, vsin
+!     COMPLEX(DP), allocatable :: vphase(:)
+!     !
+!     Nq = product(grid%n)
+!     allocate(varg(Nq), vcos(Nq), vsin(Nq), vphase(Nq))
+!     !
+!     FORALL(qi=1:Nq) varg(qi) =  tpi * &
+!       dot_product(fc%xR2(:,iR2, fc%iR1), grid%xq(:,qi))
+!     !
+!     ! Pre-compute phase to use the vectorized MKL subroutines
+! #if defined(__INTEL) && defined(__HASVTRIG)
+! !dir$ message "Using MKL vectorized Sin and Cos implementation, if this does not compile, remove -D__HASVTRIG from Makefile"
+!     CALL vdCos(Nq, varg, vcos)
+!     CALL vdSin(Nq, varg, vsin)
+! #else
+!     vcos = DCOS(varg)
+!     vsin = DSIN(varg)
+! #endif
+!     vphase =  CMPLX( vcos, vsin, kind=DP  )
+!     !
+!     fc%fc(:,:,:,fc%iR1) = 0._dp
+!     do qi = 1, Nq
+!       fc%fc(:,:,iR2,fc%iR1) = fc%fc(:,:,iR2,fc%iR1) + vphase(qi) * fc%mix(:,:,qi)
+!     enddo
+!     !
+!   END SUBROUTINE
 
   SUBROUTINE r2q_1st_step(fc, xq)
     USE input_fc, ONLY : ph_system_info, forceconst2_grid
@@ -989,35 +998,35 @@ contains
     CLASS(forceconst2_sc),INTENT(inout) :: fc
     REAL(DP),INTENT(in) :: xq(3)
     !
-    INTEGER :: R1, R2, nat3
+    INTEGER :: R2, R1, nat3
     REAL(DP), allocatable :: varg(:), vcos(:), vsin(:)
     COMPLEX(DP), allocatable :: vphase(:)
     !
     nat3 = size(fc%FC, 1)
     if(allocated(fc%mix)) deallocate(fc%mix)
     !
-    allocate(fc%mix(nat3, nat3, fc%n_R1))
+    allocate(fc%mix(nat3, nat3, fc%n_R2))
     fc%mix = 0._dp
     !
-    do R1 = 1, fc%n_R1
-      allocate(varg(fc%n_R2(R1)), vcos(fc%n_R2(R1)), &
-        vsin(fc%n_R2(R1)), vphase(fc%n_R2(R1)))
-      FORALL(R2=1:fc%n_R2(R1)) varg(R2) =  tpi * &
-        dot_product(xq, fc%xR2(:,R2,R1))
+    do R2 = 1, fc%n_R2
+      allocate(varg(fc%n_R1(R2)), vcos(fc%n_R1(R2)), &
+        vsin(fc%n_R1(R2)), vphase(fc%n_R1(R2)))
+      FORALL(R1=1:fc%n_R1(R2)) varg(R1) =  tpi * &
+        dot_product(xq, fc%xR1(:,R1,R2))
       !
       ! Pre-compute phase to use the vectorized MKL subroutines
 #if defined(__INTEL) && defined(__HASVTRIG)
 !dir$ message "Using MKL vectorized Sin and Cos implementation, if this does not compile, remove -D__HASVTRIG from Makefile"
-      CALL vdCos(fc%n_R2(R1), varg, vcos)
-      CALL vdSin(fc%n_R2(R1), varg, vsin)
+      CALL vdCos(fc%n_R1(R2), varg, vcos)
+      CALL vdSin(fc%n_R1(R2), varg, vsin)
 #else
       vcos = DCOS(varg)
       vsin = DSIN(varg)
 #endif
       vphase =  CMPLX( vcos, -vsin, kind=DP  )
       !
-      do R2 = 1, fc%n_R2(R1)
-        fc%mix(:,:,R1) = fc%mix(:,:,R1) + vphase(R2) * fc%FC(:,:,R2,R1)
+      do R1 = 1, fc%n_R1(R2)
+        fc%mix(:,:,R2) = fc%mix(:,:,R2) + vphase(R1) * fc%FC(:,:,R1,R2)
       enddo
       ! fc%mix(:,:,R1) = SUM(vphase * fc%FC(:,:,:,R1), dim=3)
       !
@@ -1036,18 +1045,18 @@ contains
     complex(dp), intent(out) :: D(size(fc%fc, 1), size(fc%fc, 1))
     !
     INTEGER :: i
-    REAL(DP), dimension(fc%n_R1) :: varg, vcos, vsin
-    COMPLEX(DP) :: vphase(fc%n_R1)
+    REAL(DP), dimension(fc%n_R2) :: varg, vcos, vsin
+    COMPLEX(DP) :: vphase(fc%n_R2)
     !
     !
-    FORALL(i=1:fc%n_R1) varg(i) =  tpi * &
-      dot_product(xq, fc%xR1(:,i))
+    FORALL(i=1:fc%n_R2) varg(i) =  tpi * &
+      dot_product(xq, fc%xR2(:,i))
     !
     ! Pre-compute phase to use the vectorized MKL subroutines
 #if defined(__INTEL) && defined(__HASVTRIG)
 !dir$ message "Using MKL vectorized Sin and Cos implementation, if this does not compile, remove -D__HASVTRIG from Makefile"
-    CALL vdCos(fc%n_R1, varg, vcos)
-    CALL vdSin(fc%n_R1, varg, vsin)
+    CALL vdCos(fc%n_R2, varg, vcos)
+    CALL vdSin(fc%n_R2, varg, vsin)
 #else
     vcos = DCOS(varg)
     vsin = DSIN(varg)
@@ -1055,44 +1064,44 @@ contains
     vphase =  CMPLX( vcos, vsin, kind=DP  )
     !
     D = 0._dp
-    do i = 1, fc%n_R1
+    do i = 1, fc%n_R2
       D = D + vphase(i) * fc%mix(:,:,i)
     enddo
     !
-    D = D / PRODUCT(fc%nq)
+    ! D = D / PRODUCT(fc%nq)
     !
   END SUBROUTINE
   !
-  SUBROUTINE r2q_at_once(fc, xq1, xq2, nat3, D)
-    USE input_fc, ONLY : ph_system_info, forceconst2_grid
-    USE constants, ONLY : tpi
-    IMPLICIT NONE
-    !
-    CLASS(forceconst2_sc), INTENT(in) :: fc
-    REAL(DP),INTENT(in) :: xq1(3), xq2(3)
-    integer, intent(in) :: nat3
-    complex(dp), intent(out) :: D(nat3, nat3)
-    !
-    INTEGER :: i, j
-    REAL(DP), dimension(fc%n_R1,fc%n_R2(1)) :: varg, vcos, vsin
-    COMPLEX(DP) :: vphase(fc%n_R1,fc%n_R2(1))
-    !
-    FORALL(i=1:fc%n_R1, j=1:fc%n_R2(1)) varg(i,j) = &
-      tpi * (-dot_product(xq1, fc%xR1(:,i)) + &
-      dot_product(xq2, fc%xR2(:,j,1)))
-    !
-    vcos = DCOS(varg)
-    vsin = DSIN(varg)
-    vphase =  CMPLX( vcos, vsin, kind=DP  )
-    !
-    D = 0._dp
-    do j = 1, fc%n_R2(1)
-      do i = 1, fc%n_R1
-        D = D + vphase(i,j) * fc%fc(:,:,i,j)
-      enddo
-    enddo
-    !
-  END SUBROUTINE
+  ! SUBROUTINE r2q_at_once(fc, xq1, xq2, nat3, D)
+  !   USE input_fc, ONLY : ph_system_info, forceconst2_grid
+  !   USE constants, ONLY : tpi
+  !   IMPLICIT NONE
+  !   !
+  !   CLASS(forceconst2_sc), INTENT(in) :: fc
+  !   REAL(DP),INTENT(in) :: xq1(3), xq2(3)
+  !   integer, intent(in) :: nat3
+  !   complex(dp), intent(out) :: D(nat3, nat3)
+  !   !
+  !   INTEGER :: i, j
+  !   REAL(DP), dimension(fc%n_R1,fc%n_R2(1)) :: varg, vcos, vsin
+  !   COMPLEX(DP) :: vphase(fc%n_R1,fc%n_R2(1))
+  !   !
+  !   FORALL(i=1:fc%n_R1, j=1:fc%n_R2(1)) varg(i,j) = &
+  !     tpi * (-dot_product(xq1, fc%xR1(:,i)) + &
+  !     dot_product(xq2, fc%xR2(:,j,1)))
+  !   !
+  !   vcos = DCOS(varg)
+  !   vsin = DSIN(varg)
+  !   vphase =  CMPLX( vcos, vsin, kind=DP  )
+  !   !
+  !   D = 0._dp
+  !   do j = 1, fc%n_R2(1)
+  !     do i = 1, fc%n_R1
+  !       D = D + vphase(i,j) * fc%fc(:,:,i,j)
+  !     enddo
+  !   enddo
+  !   !
+  ! END SUBROUTINE
   !
   function flatten_RR_cmplx(mat) result(mat_flat)
     complex(dp), intent(in) :: mat(:,:,:,:)
@@ -1103,8 +1112,8 @@ contains
     !
     nat3i = size(mat,1)
     nat3j = size(mat,2)
-    nqj = size(mat,3)
-    nqi = size(mat,4)
+    nqi = size(mat,3)
+    nqj = size(mat,4)
 
     allocate(mat_flat(nat3i*nqi, nat3j*nqj))
     do n1 = 1, nqi
@@ -1113,7 +1122,7 @@ contains
           j = na2 + (n2-1)*nat3j
           do na1 = 1, nat3i
             i = na1 + (n1-1)*nat3i
-            mat_flat(i,j) = mat(na1,na2,n2,n1)
+            mat_flat(i,j) = mat(na1,na2,n1,n2)
           enddo
         enddo
       enddo
@@ -1129,8 +1138,8 @@ contains
     !
     nat3i = size(mat,1)
     nat3j = size(mat,2)
-    nqj = size(mat,3)
-    nqi = size(mat,4)
+    nqi = size(mat,3)
+    nqj = size(mat,4)
 
     allocate(mat_flat(nat3i*nqi, nat3j*nqj))
     do n1 = 1, nqi
@@ -1139,7 +1148,7 @@ contains
           j = na2 + (n2-1)*nat3j
           do na1 = 1, nat3i
             i = na1 + (n1-1)*nat3i
-            mat_flat(i,j) = mat(na1,na2,n2,n1)
+            mat_flat(i,j) = mat(na1,na2,n1,n2)
           enddo
         enddo
       enddo
@@ -1163,7 +1172,7 @@ contains
         do n1 = 1, nqi
           do na1 = 1, nat3i
             i = na1 + (n1-1)*nat3i
-            mat(na1,na2,n2,n1) = mat_flat(i,j)
+            mat(na1,na2,n1,n2) = mat_flat(i,j)
           end do
         end do
       end do
@@ -1187,7 +1196,7 @@ contains
         do n1 = 1, nqi
           do na1 = 1, nat3i
             i = na1 + (n1-1)*nat3i
-            mat(na1,na2,n2,n1) = mat_flat(i,j)
+            mat(na1,na2,n1,n2) = mat_flat(i,j)
           end do
         end do
       end do
@@ -1242,96 +1251,96 @@ contains
       CALL errore("build_mass_ratios", "there should be only one defect", ABS(tot_defects))
   end subroutine
   !
-  SUBROUTINE div_mass_fcsc(S, Sd,fc)
-    USE kinds, only : DP
-    use thutils, only: bz2simple
-    IMPLICIT NONE
-    TYPE(forceconst2_sc) :: fc
-    TYPE(ph_system_info)   :: S, Sd
-    !
-    INTEGER :: i, j, iR1, iR2, map(S%nat,product(fc%nq)), si, sj
-    !
-    IF(.not.ALLOCATED(Sd%sqrtmm1)) &
-      call errore('div_mass_fc2', 'missing sqrtmm1, call aux_system first', 1)
+  ! SUBROUTINE div_mass_fcsc(S, Sd,fc)
+  !   USE kinds, only : DP
+  !   use thutils, only: bz2simple
+  !   IMPLICIT NONE
+  !   TYPE(forceconst2_sc) :: fc
+  !   TYPE(ph_system_info)   :: S, Sd
+  !   !
+  !   INTEGER :: i, j, iR1, iR2, map(S%nat,product(fc%nq)), si, sj
+  !   !
+  !   IF(.not.ALLOCATED(Sd%sqrtmm1)) &
+  !     call errore('div_mass_fc2', 'missing sqrtmm1, call aux_system first', 1)
 
-    map = map_uc2sc(S, Sd, fc%nq)
-    DO iR1 = 1, fc%n_R1
-      si = v2index(bz2simple(fc%yR1(:,iR1), fc%nq), fc%nq)
-      do iR2 = 1, fc%n_R2(iR1)
-        sj = v2index(bz2simple(fc%yR2(:,iR2,iR1), fc%nq), fc%nq)
-        DO j = 1, S%nat3
-          DO i = 1, S%nat3
-            fc%FC(i, j, iR2, iR1) = fc%FC(i, j, iR2, iR1) * Sd%sqrtmm1(map((i-1)/3+1,si))*Sd%sqrtmm1(map((j-1)/3+1,sj))
-          ENDDO
-        ENDDO
-      ENDDO
-    ENDDO
-    !
-  END SUBROUTINE
+  !   map = map_uc2sc(S, Sd, fc%nq)
+  !   DO iR1 = 1, fc%n_R1
+  !     si = v2index(bz2simple(fc%yR1(:,iR1), fc%nq), fc%nq)
+  !     do iR2 = 1, fc%n_R2(iR1)
+  !       sj = v2index(bz2simple(fc%yR2(:,iR2,iR1), fc%nq), fc%nq)
+  !       DO j = 1, S%nat3
+  !         DO i = 1, S%nat3
+  !           fc%FC(i, j, iR2, iR1) = fc%FC(i, j, iR2, iR1) * Sd%sqrtmm1(map((i-1)/3+1,si))*Sd%sqrtmm1(map((j-1)/3+1,sj))
+  !         ENDDO
+  !       ENDDO
+  !     ENDDO
+  !   ENDDO
+  !   !
+  ! END SUBROUTINE
   !
-  subroutine matd2RR(fc3, S, fcsc)
-    use fc3_interpolate, only : sparse
-    type(sparse), intent(in) :: fc3
-    type(ph_system_info), intent(in) :: S
-    integer :: mesh_cube, len2_new, i2_new, i3_new, i, j
-    integer :: minimum, maximum, mesh(3)
-    integer, dimension(size(fc3%yR2, 2)) :: iR2, iR3
-    integer, allocatable :: ind2(:), ind3(:,:), len3_new(:)
-    type(forceconst2_sc), intent(out) :: fcsc
-    !
-    minimum = min(minval(fc3%yR2), minval(fc3%yR3))
-    maximum = max(maxval(fc3%yR2), maxval(fc3%yR3))
-    mesh = maximum - minimum + 1
-    mesh_cube = product(mesh)
-    !
-    do i = 1, fc3%n_R
-      iR2(i) = v2index(fc3%yR2(:,i) - minimum, mesh)
-      iR3(i) = v2index(fc3%yR3(:,i) - minimum, mesh)
-    end do
-    !
-    allocate(ind2(mesh_cube), ind3(mesh_cube, mesh_cube))
-    allocate(len3_new(mesh_cube))
-    !
-    ind2 = -1
-    ind3 = -1
-    len2_new = 0
-    len3_new = 0
-    do i = 1, fc3%n_R
-      call add_ind(ind2, iR2(i), len2_new, i2_new)
-      call add_ind(ind3(:,i2_new), iR3(i), len3_new(i2_new), i3_new)
-    enddo
-    !
-    allocate(fcsc%n_R2(len2_new))
-    fcsc%n_R2 = len3_new(:len2_new)
-    fcsc%n_R1 = len2_new
-    !
-    allocate(fcsc%yR1(3,len2_new))
-    allocate(fcsc%xR1(3,len2_new))
-    allocate(fcsc%yR2(3,maxval(len3_new),len2_new))
-    allocate(fcsc%xR2(3,maxval(len3_new),len2_new))
-    allocate(fcsc%fc(S%nat3,S%nat3,maxval(len3_new),len2_new))
-    !
-    ind2 = -1
-    ind3 = -1
-    len2_new = 0
-    len3_new = 0
-    do i = 1, fc3%n_R
-      call add_ind(ind2, iR2(i), len2_new, i2_new)
-      fcsc%yR1(:,i2_new) = fc3%yR2(:,i)
-      call add_ind(ind3(:,i2_new), iR3(i), len3_new(i2_new), i3_new)
-      fcsc%yR2(:,i3_new,i2_new) = fc3%yR3(:,i)
-      do j = 1, fc3%n_terms(i)
-        fcsc%fc(fc3%dat(i)%idx(2,j),fc3%dat(i)%idx(3,j),i3_new,i2_new) = &
-          fc3%dat(i)%fc(j)
-      enddo
-    enddo
-    !
-    call fcsc%cart(S, 1)
-    call fcsc%cart(S, 2)
-    fcsc%nq = fc3%nq
-    !
-    deallocate(ind2, ind3, len3_new)
-  end subroutine
+  ! subroutine matd2RR(fc3, S, fcsc)
+  !   use fc3_interpolate, only : sparse
+  !   type(sparse), intent(in) :: fc3
+  !   type(ph_system_info), intent(in) :: S
+  !   integer :: mesh_cube, len2_new, i2_new, i3_new, i, j
+  !   integer :: minimum, maximum, mesh(3)
+  !   integer, dimension(size(fc3%yR2, 2)) :: iR2, iR3
+  !   integer, allocatable :: ind2(:), ind3(:,:), len3_new(:)
+  !   type(forceconst2_sc), intent(out) :: fcsc
+  !   !
+  !   minimum = min(minval(fc3%yR2), minval(fc3%yR3))
+  !   maximum = max(maxval(fc3%yR2), maxval(fc3%yR3))
+  !   mesh = maximum - minimum + 1
+  !   mesh_cube = product(mesh)
+  !   !
+  !   do i = 1, fc3%n_R
+  !     iR2(i) = v2index(fc3%yR2(:,i) - minimum, mesh)
+  !     iR3(i) = v2index(fc3%yR3(:,i) - minimum, mesh)
+  !   end do
+  !   !
+  !   allocate(ind2(mesh_cube), ind3(mesh_cube, mesh_cube))
+  !   allocate(len3_new(mesh_cube))
+  !   !
+  !   ind2 = -1
+  !   ind3 = -1
+  !   len2_new = 0
+  !   len3_new = 0
+  !   do i = 1, fc3%n_R
+  !     call add_ind(ind2, iR2(i), len2_new, i2_new)
+  !     call add_ind(ind3(:,i2_new), iR3(i), len3_new(i2_new), i3_new)
+  !   enddo
+  !   !
+  !   allocate(fcsc%n_R2(len2_new))
+  !   fcsc%n_R2 = len3_new(:len2_new)
+  !   fcsc%n_R1 = len2_new
+  !   !
+  !   allocate(fcsc%yR1(3,len2_new))
+  !   allocate(fcsc%xR1(3,len2_new))
+  !   allocate(fcsc%yR2(3,maxval(len3_new),len2_new))
+  !   allocate(fcsc%xR2(3,maxval(len3_new),len2_new))
+  !   allocate(fcsc%fc(S%nat3,S%nat3,maxval(len3_new),len2_new))
+  !   !
+  !   ind2 = -1
+  !   ind3 = -1
+  !   len2_new = 0
+  !   len3_new = 0
+  !   do i = 1, fc3%n_R
+  !     call add_ind(ind2, iR2(i), len2_new, i2_new)
+  !     fcsc%yR1(:,i2_new) = fc3%yR2(:,i)
+  !     call add_ind(ind3(:,i2_new), iR3(i), len3_new(i2_new), i3_new)
+  !     fcsc%yR2(:,i3_new,i2_new) = fc3%yR3(:,i)
+  !     do j = 1, fc3%n_terms(i)
+  !       fcsc%fc(fc3%dat(i)%idx(2,j),fc3%dat(i)%idx(3,j),i3_new,i2_new) = &
+  !         fc3%dat(i)%fc(j)
+  !     enddo
+  !   enddo
+  !   !
+  !   call fcsc%cart(S, 1)
+  !   call fcsc%cart(S, 2)
+  !   fcsc%nq = fc3%nq
+  !   !
+  !   deallocate(ind2, ind3, len3_new)
+  ! end subroutine
   !
   subroutine diag_degen_cmplx(nat3, dim_deg, V1, Udeg, e1)
     use fc2_interpolate, only : mat2_diag

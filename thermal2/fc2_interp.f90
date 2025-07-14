@@ -395,7 +395,10 @@ CONTAINS
     !
     ! Compute eigenvalues and right eigenvectors
     CALL ZGEEV('N', 'V', n, D, n, w2, vl, n, vr, n, work, lwork, rwork, info)
-    CALL errore ('mat2_diag','ZHEEV info =/= 0',ABS(info))
+    if(ABS(info) /= 0) then
+      print*, D
+      CALL errore ('mat2_diag','ZHEEV info =/= 0',ABS(info))
+    endif
     !
     ! Eigenvalues are now in w2(:)
     ! Right eigenvectors are in vr(:,i) if you need them

@@ -788,6 +788,7 @@ CONTAINS
     USE input_fc,         ONLY : ph_system_info
     USE fc2_interpolate,  ONLY : forceconst2_grid, freq_phq_safe, bose_phq, set_nu0
     USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat
+    use thutils, only: freq_in_grid
     !
     IMPLICIT NONE
     !
@@ -811,35 +812,55 @@ CONTAINS
     ! To compute the spectral function from the self energy:
     INTEGER  :: i, ie, it
     REAL(DP) :: gamma, delta, omega, denom
-    COMPLEX(DP) :: selfnrg(ne,S%nat3,nconf)
+    COMPLEX(DP) :: selfnrg(ne,S%nat3,nconf), self2(ne,S%nat3,nconf)
     ! FUNCTION RESULT:
     REAL(DP)    :: spectralf(ne,S%nat3,nconf)
+    character(100) :: filename
+    real(dp) :: freqs(S%nat3, grid%nqtot)
+    real(dp) :: max_freq
+    real(dp) :: ener1(size(ener))
     !
+    call freq_in_grid(S, fc2, grid, freqs)
+    max_freq = MAXVAL(freqs) * 1.1_dp
+
+    do i = 1, size(ener)
+      ener1(i) = (i-1) * max_freq / REAL(size(ener)-1, DP)
+    enddo
     ! Once we have the self-energy, the rest is trivial
     selfnrg = selfnrg_omega_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1)
     !
+
     timer_CALL t_mkspf%start()
     DO it = 1,nconf
       DO i = 1,S%nat3
         DO ie = 1, ne
-          gamma =  -DIMAG(selfnrg(ie,i,it))
+          omega = freq1(i)
+          gamma =  AIMAG(selfnrg(ie,i,it)) * 2 * omega
           IF(shift) THEN
-            delta =   DBLE(selfnrg(ie,i,it))
+            delta =   REAL(selfnrg(ie,i,it), DP) * 2 * omega
           ELSE
             delta = 0._dp
           ENDIF
-          omega = freq1(i)
-          denom =   (ener(ie)**2 -omega**2 -2*omega*delta)**2 &
-            + 4*omega**2 *gamma**2
-          IF(ABS(denom)/=0._dp)THEN
-            spectralf(ie,i,it) = 2*omega*gamma / denom
-          ELSE
-            spectralf(ie,i,it) = 0._dp
-          ENDIF
+          self2(ie,i,it) = selfnrg(ie,i,it) * 2 * omega
+          denom = (ener1(ie)**2 - omega**2 - delta)**2 + gamma**2
+          ! IF(ABS(denom)/=0._dp)THEN
+          spectralf(ie,i,it) = - gamma / denom
+          ! ELSE
+          !   spectralf(ie,i,it) = 0._dp
+          ! ENDIF
         ENDDO
       ENDDO
     ENDDO
     timer_CALL t_mkspf%stop()
+    !
+    do it = 1, nconf
+      write(filename,'(A,I2.2,A)') 'self-energy-anh-', it, '.dat'
+      open(unit=10, file=filename, status='replace')
+      do ie = 1, ne
+        write(10,'(100E25.8)') ener1(ie), self2(ie,:,it)
+      enddo
+      close(10)
+    enddo
     !
   END FUNCTION spectre_q
 
