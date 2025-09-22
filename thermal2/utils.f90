@@ -5,6 +5,11 @@ module thutils
   use q_grids, only: q_grid
   use mpi_thermal, only: mpi_bsum
   !
+  interface cryst2cart
+    module procedure cryst2cart_more
+    module procedure cryst2cart_one
+  end interface
+!
 contains
   !
   subroutine freq_in_grid(S, fc2, grid, freqs, Us)
@@ -214,6 +219,19 @@ contains
     call int_div(aux, mesh(2), index2v(1), index2v(2))
   end function
   !
+  pure function index2v_cart(i, mesh, at)
+    !! Demultiplex index of a single wave vector.
+    !! i is the multiplexed index of a wave vector (always 1-based).
+    !! v is the demultiplexed triplet of a wave vector.
+    !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
+    !! base chooses whether v has 0- or 1-based indexing.
+    integer, intent(in) :: i, mesh(3)
+    real(dp), intent(in) :: at(3,3)
+    real(dp) :: index2v_cart(3)
+    !
+    index2v_cart = cryst2cart(real(index2v(i, mesh), dp), at, 1)
+  end function
+  !
   pure subroutine int_div(num, denom, q, r)
     !! Quotient(q) and remainder(r) of the integer division num/denom.
     integer, intent(in) :: num, denom
@@ -245,55 +263,55 @@ contains
     end do
   end function
   !
-  function grid_vec_cryst(mesh, shift)
+  function grid_vec_cryst(mesh, center)
     !! Generates a grid of wave vectors.
     !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
 
     integer, intent(in) :: mesh(3)
     integer :: grid_vec_cryst(3,product(mesh))
-    integer, intent(in), optional :: shift
+    logical, intent(in), optional :: center
     integer :: i, j, k, n
-    integer :: shift_
+    integer :: center_
 
-    if(present(shift)) then
-      shift_ = shift
+    if(present(center)) then
+      if(center) then
+        center_ = 1
+      else
+        center_ = 0
+      end if
     else
-      shift_ = 0
+      center_ = 0
     end if
-
-    n = product(mesh)
 
     n = 0
     do i = 0, mesh(1)-1
       do j = 0, mesh(2)-1
         do k = 0, mesh(3)-1
           n = n + 1
-          grid_vec_cryst(:,n) = [i, j, k]
+          grid_vec_cryst(:,n) = [i, j, k] - center_ * mesh / 2
         end do
       end do
     end do
-
-    grid_vec_cryst = grid_vec_cryst + shift_
   end function
   !
-  function grid_vec_cart(mesh, at, shift)
+  function grid_vec_cart(mesh, at, center)
     !! Generates a grid of wave vectors.
     !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
 
     integer, intent(in) :: mesh(3)
     real(dp) :: at(3,3)
-    integer, intent(in), optional :: shift
+    logical, intent(in), optional :: center
     real(dp) :: grid_vec_cart(3, product(mesh))
-    integer :: shift_
+    logical :: center_
     integer :: grid_vec_cryst_(3, product(mesh))
     !
-    if(present(shift)) then
-      shift_ = shift
+    if(present(center)) then
+      center_ = center
     else
-      shift_ = 0
+      center_ = .false.
     end if
     !
-    grid_vec_cryst_ = grid_vec_cryst(mesh, shift_)
+    grid_vec_cryst_ = grid_vec_cryst(mesh, center_)
     grid_vec_cart = REAL(grid_vec_cryst_, DP)
     call cryst_to_cart(product(mesh), grid_vec_cart, at, 1)
   end function
@@ -501,5 +519,113 @@ contains
       endif
     end do
   end subroutine
+  !
+  pure function cryst2cart_more (vec, trmat, iflag)
+    !-----------------------------------------------------------------------
+    !
+    !     This routine transforms the atomic positions or the k-point
+    !     components from crystallographic to cartesian coordinates
+    !     ( iflag=1 ) and viceversa ( iflag=-1 ).
+    !     Output cartesian coordinates are stored in the input ('vec') array
+    !
+    !
+    implicit none
+    !
+    integer, intent(in) :: iflag
+    ! nvec:  number of vectors (atomic positions or k-points)
+    !        to be transformed from crystal to cartesian and vice versa
+    ! iflag: gives the direction of the transformation
+    real(dp), intent(in) :: trmat (3, 3)
+    ! trmat: transformation matrix
+    ! if iflag=1:
+    !    trmat = at ,  basis of the real-space lattice,       for atoms   or
+    !          = bg ,  basis of the reciprocal-space lattice, for k-points
+    ! if iflag=-1: the opposite
+    real(dp), intent(in) :: vec (:,:)
+    ! coordinates of the vector (atomic positions or k-points) to be
+    ! transformed - overwritten on output
+    !
+    !    local variables
+    !
+    integer :: nv, kpol
+    ! counter on vectors
+    ! counter on polarizations
+    real(dp):: vau (3)
+    real(dp) :: cryst2cart_more(3, size(vec,2))
+    ! workspace
+    !
+    !     Compute the cartesian coordinates of each vectors
+    !     (atomic positions or k-points components)
+    !
+    do nv = 1, size(vec,2)
+      if (iflag.eq.1) then
+        do kpol = 1, 3
+          vau (kpol) = trmat (kpol, 1) * vec (1, nv) + trmat (kpol, 2) &
+            * vec (2, nv) + trmat (kpol, 3) * vec (3, nv)
+        end do
+      else
+        do kpol = 1, 3
+          vau (kpol) = trmat (1, kpol) * vec (1, nv) + trmat (2, kpol) &
+            * vec (2, nv) + trmat (3, kpol) * vec (3, nv)
+        end do
+      endif
+      do kpol = 1, 3
+        cryst2cart_more(kpol, nv) = vau(kpol)
+      end do
+    end do
+  end function
+  !
+  pure function cryst2cart_one (vec, trmat, iflag)
+    !-----------------------------------------------------------------------
+    !
+    !     This routine transforms the atomic positions or the k-point
+    !     components from crystallographic to cartesian coordinates
+    !     ( iflag=1 ) and viceversa ( iflag=-1 ).
+    !     Output cartesian coordinates are stored in the input ('vec') array
+    !
+    !
+    implicit none
+    !
+    integer, intent(in) :: iflag
+    ! nvec:  number of vectors (atomic positions or k-points)
+    !        to be transformed from crystal to cartesian and vice versa
+    ! iflag: gives the direction of the transformation
+    real(dp), intent(in) :: trmat (3, 3)
+    ! trmat: transformation matrix
+    ! if iflag=1:
+    !    trmat = at ,  basis of the real-space lattice,       for atoms   or
+    !          = bg ,  basis of the reciprocal-space lattice, for k-points
+    ! if iflag=-1: the opposite
+    real(dp), intent(in) :: vec (3)
+    ! coordinates of the vector (atomic positions or k-points) to be
+    ! transformed - overwritten on output
+    !
+    !    local variables
+    !
+    integer :: kpol
+    ! counter on vectors
+    ! counter on polarizations
+    real(dp):: vau (3)
+    real(dp) :: cryst2cart_one(3)
+    ! workspace
+    !
+    !     Compute the cartesian coordinates of each vectors
+    !     (atomic positions or k-points components)
+    !
+    if (iflag.eq.1) then
+      do kpol = 1, 3
+        vau (kpol) = trmat (kpol, 1) * vec(1) + trmat (kpol, 2) &
+          * vec (2) + trmat (kpol, 3) * vec (3)
+      end do
+    else
+      do kpol = 1, 3
+        vau (kpol) = trmat (1, kpol) * vec (1) + trmat (2, kpol) &
+          * vec (2) + trmat (3, kpol) * vec (3)
+      end do
+    endif
+    do kpol = 1, 3
+      cryst2cart_one(kpol) = vau(kpol)
+    end do
+  end function
   !
 end module

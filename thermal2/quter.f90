@@ -74,7 +74,7 @@ MODULE quter_module
         END DO
         END DO
         END DO
-        IF(nRbig/=size(Rbig)/3) call errore('main','wrong nRbig',1)  
+        IF(nRbig/=size(Rbig)/3) call errore('main','wrong nRbig',1)
  !       WRITE(*,*) "seeking over ", nRbig," vectors"
     ELSE
         fc%periodic = .true.
@@ -89,7 +89,7 @@ MODULE quter_module
         END DO
         END DO
         END DO
-        IF(nRbig/=size(Rbig)/3) call errore('main','wrong nRbig',1)  
+        IF(nRbig/=size(Rbig)/3) call errore('main','wrong nRbig',1)
 !        WRITE(*,*) "nfar==0 => standard FT over ", nRbig," vectors"
     ENDIF
     !
@@ -111,11 +111,11 @@ MODULE quter_module
           ELSE
             wg = 1._dp/DFLOAT(nqt)
           ENDIF
-          IF(wg /= 0) THEN 
+          IF(wg /= 0) THEN
             !
             DO iiq=1,nqt
-              !   
-              arg=tpi*SUM(gridq(:,iiq)*Rbig(:,iR)) 
+              !
+              arg=tpi*SUM(gridq(:,iiq)*Rbig(:,iR))
               aus = aus + CMPLX(cos(arg),sin(arg),kind=DP)*matq(j1,j2,na1,na2,iiq)
               !
             END DO
@@ -126,13 +126,16 @@ MODULE quter_module
             iout = R_list_idx(nRout,Rout,Rx)
             ! ... if not, increase storage
             CALL expand_matR(iout,nRout,nat,matR)
-            matR(j1,j2,na1,na2,iout) = aus * wg  
+            matR(j1,j2,na1,na2,iout) = aus * wg
             !
             totalweight=totalweight+wg
             !
           END IF
         END DO
-        IF(ABS(totalweight-1._dp)>eps) CALL errore('main','wrong totalweight',1)  
+        IF(ABS(totalweight-1._dp)>eps) THEN
+          print*, totalweight, na1, na2
+          CALL errore('main','wrong totalweight',1)
+        ENDIF
       ENDDO
       ENDDO
     ENDDO
@@ -144,11 +147,11 @@ MODULE quter_module
     CALL allocate_fc2_grid(nRout, nat, fc)
     fc%nq = (/ nq1, nq2, nq3 /)
     DO na1=1,nat
-    DO na2=1,nat 
+    DO na2=1,nat
       DO j1=1,3
       jn1 = j1 + (na1-1)*3
-      DO j2=1,3     
-      jn2 = j2 + (na2-1)*3            
+      DO j2=1,3
+      jn2 = j2 + (na2-1)*3
           !
           DO i = 1, fc%n_R
             fc%FC(jn1,jn2,i) = DBLE(matR(j1,j2,na1,na2,i))
@@ -197,7 +200,7 @@ MODULE quter_module
             DO j = 1,3
               DO i = 1,3
                 IF(r<=nR) THEN
-                   matR(i,j,a,b,r) = auxR(i,j,a,b,r) 
+                   matR(i,j,a,b,r) = auxR(i,j,a,b,r)
                 ELSE
                   matR(i,j,a,b,r) = 0._dp
                 ENDIF
@@ -207,13 +210,13 @@ MODULE quter_module
       ENDDO
     ENDDO
     ! vector form is miscompiled with intel fortran 2024
-    !matR(1:3,1:3,1:nat,1:nat,1:nR) = auxR(1:3,1:3,1:nat,1:nat,1:nR) 
+    !matR(1:3,1:3,1:nat,1:nat,1:nR) = auxR(1:3,1:3,1:nat,1:nat,1:nR)
     !matR(1:3,1:3,1:nat,1:nat,nR+1:iR) = 0._dp
     DEALLOCATE(auxR)
     nR = iR
   END SUBROUTINE
   !
-  ! given a list of R vectors, find the index of R in the list, 
+  ! given a list of R vectors, find the index of R in the list,
   ! if R is not found it is appended to the list. NR is changed accordingly
   INTEGER FUNCTION R_list_idx(NR, listR, R) RESULT(idx)
     IMPLICIT NONE

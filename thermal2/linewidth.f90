@@ -824,7 +824,7 @@ CONTAINS
     max_freq = MAXVAL(freqs) * 1.1_dp
 
     do i = 1, size(ener)
-      ener1(i) = (i-1) * max_freq / REAL(size(ener)-1, DP)
+      ener1(i) = (i-1) * max_freq / REAL(size(ener), DP)
     enddo
     ! Once we have the self-energy, the rest is trivial
     selfnrg = selfnrg_omega_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1)

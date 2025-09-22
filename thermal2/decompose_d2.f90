@@ -7,7 +7,7 @@
 !  <http://www.gnu.org/copyleft/gpl.txt>
 !
 ! <<^V^\\=========================================//-//-//========//O\\//
-MODULE decompose_d2 
+MODULE decompose_d2
    USE kinds, ONLY : dp
 #include "mpi_thermal.h"
 
@@ -29,7 +29,7 @@ MODULE decompose_d2
       ! nq_tr  : degeneracy of the star of q and -q
       ! isq : index of q in the star for a given sym
       ! imq : index of -q in the star (0 if not present)
-   
+
       !real(DP) :: sxq(3, 48)
       real(DP),allocatable :: sxq(:,:)
       ! list of vectors in the star
@@ -65,7 +65,7 @@ subroutine generate_simple_base(ndim, mtx, nx)
    complex(DP),intent(out) :: mtx(ndim, ndim, ndim**2)
    integer :: i,j
 
-   nx = 0  
+   nx = 0
    !first matrices with a single 1 along the diagonal
    mtx = 0._dp
    DO i = 1, ndim
@@ -110,7 +110,7 @@ subroutine generate_mu_base(ndim, mtx, u0, nx)
    u=u0
    call cdiag_serial (ndim, u, ndim, e, ev)
 
-   nx = 0  
+   nx = 0
    !first matrices with a single 1 along the diagonal
    mtx = 0._dp
    !print*, e
@@ -159,7 +159,7 @@ subroutine find_d2_symm_base(xq, rank, basis, nat, at, bg, &
   real(DP),INTENT(in) :: rtau(3,48,nat)
   integer,INTENT(in)  :: irt(48,nat), s(3,3,48), invs(48)
   complex(dp),INTENT(in) :: u0(3*nat,3*nat)
-  CHARACTER(len=*),INTENT(in) :: method 
+  CHARACTER(len=*),INTENT(in) :: method
 
 ! input: the q point
 
@@ -167,7 +167,7 @@ subroutine find_d2_symm_base(xq, rank, basis, nat, at, bg, &
   REAL(DP)   :: eigen(3*nat)
   logical :: lgamma
   complex(DP):: u(3*nat, 3*nat)
-  
+
   integer :: i, j, k, nx, jx, na, nb, nb1, nb2, nb3, nb4
 
   complex(DP) :: wdyn (3, 3, nat, nat) !, phi (3 * nat, 3 * nat)
@@ -381,7 +381,7 @@ subroutine make_qstar_d2 (dyn, at, bg, nat, nsym, s, invs, irt, rtau, &
   ! the input dynamical matrix. if imq.ne.0 the
   complex(DP),OPTIONAL,INTENT(out) :: star_dyn (3 * nat, 3 * nat, nq_trstar)
   complex(DP),OPTIONAL,INTENT(out) :: star_wdyn (3,3,nat,nat, nq_trstar)
-  ! output matrices 
+  ! output matrices
 
   real(DP),INTENT(in) :: at (3, 3), bg (3, 3), rtau (3, 48, nat), sxq (3, 48)
   ! direct lattice vectors
@@ -494,7 +494,7 @@ subroutine make_qstar_d2 (dyn, at, bg, nat, nsym, s, invs, irt, rtau, &
            enddo
         enddo
         !
-        ! and writes it 
+        ! and writes it
         !print*, "iq done", iq+nq
         IF(present(star_dyn)) CALL compact_dyn(nat, star_dyn(:,:,iq+nq), phi2)
         IF(present(star_wdyn)) star_wdyn(:,:,:,:, iq)= phi2
@@ -536,7 +536,7 @@ subroutine tr_star_q (xq, at, bg, nsym, s, invs, nq, nq_tr, sxq, isq, imq, verbo
   ! if true prints several messages.
 
   CALL star_q(xq, at, bg, nsym, s, invs, nq, sxq, isq, imq, verbosity )
- 
+
   IF(imq==0) THEN
      nq_tr = 2*nq
      IF(nq>48) CALL errore("make_wedge","unexpected imq=0 and nq_star>48/2",1)
@@ -548,7 +548,7 @@ subroutine tr_star_q (xq, at, bg, nsym, s, invs, nq, nq_tr, sxq, isq, imq, verbo
 end subroutine
 
 
-! The original smallg_q, only looks for minus_q in a very specific case, 
+! The original smallg_q, only looks for minus_q in a very specific case,
 ! this subroutine always does.
 !-----------------------------------------------------------------------
 SUBROUTINE smallg_q_fullmq (xq, modenum, at, bg, nrot, s, sym, minus_q)
@@ -563,16 +563,16 @@ SUBROUTINE smallg_q_fullmq (xq, modenum, at, bg, nrot, s, sym, minus_q)
    !
    USE kinds, ONLY : DP
    USE symm_base, ONLY : t_rev
-   
+
    implicit none
- 
+
    real(DP), parameter :: accep = 1.e-5_dp
- 
+
    real(DP), intent(in) :: bg (3, 3), at (3, 3), xq (3)
    ! input: the reciprocal lattice vectors
    ! input: the direct lattice vectors
    ! input: the q point of the crystal
- 
+
    integer, intent(in) :: s (3, 3, 48), nrot, modenum
    ! input: the symmetry matrices
    ! input: number of symmetry operations
@@ -586,17 +586,17 @@ SUBROUTINE smallg_q_fullmq (xq, modenum, at, bg, nrot, s, sym, minus_q)
    !
    !  local variables
    !
- 
+
    real(DP) :: aq (3), raq (3), zero (3)
    ! q vector in crystal basis
    ! the rotated of the q vector
    ! the zero vector
- 
+
    integer :: irot, ipol, jpol
    ! counter on symmetry op.
    ! counter on polarizations
    ! counter on polarizations
- 
+
    logical :: eqvect
    ! logical function, check if two vectors are equa
    !
@@ -651,7 +651,7 @@ SUBROUTINE smallg_q_fullmq (xq, modenum, at, bg, nrot, s, sym, minus_q)
    return
    !
  END SUBROUTINE smallg_q_fullmq
- 
+
  SUBROUTINE recompose_fc(Si, nq_wedge, symq, dmb, rank, nph, ph_coef, nq1, nq2, nq3, nqmax, nfar, fcout)
    USE kinds,        ONLY : DP
    USE input_fc,     ONLY : read_fc2, forceconst2_grid, ph_system_info
@@ -679,7 +679,7 @@ SUBROUTINE smallg_q_fullmq (xq, modenum, at, bg, nrot, s, sym, minus_q)
 
    ALLOCATE(star_wdyn(3,3,Si%nat,Si%nat, nqmax))
    ALLOCATE(xqmax(3,nqmax))
-   
+
    ! Reconstruct the dynamical matrix from the coefficients
    nq_done = 0
    iph = 0

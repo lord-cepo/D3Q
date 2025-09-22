@@ -101,7 +101,6 @@ PROGRAM q2r
      !
      !
   IF (ionode .and. inputf /= '///')  THEN
-   print*, "cazzo"
    IF(TRIM(inputf)=='-')THEN
      input_unit=5
    ELSE
@@ -109,7 +108,7 @@ PROGRAM q2r
    ENDIF
    IF(ios==0) READ ( input_unit, input, IOSTAT =ios )
   ENDIF
- 
+
   !CALL mp_bcast(ios, ionode_id, world_comm)
   !CALL errore('q2r','error reading input namelist', abs(ios))
 
@@ -236,16 +235,18 @@ PROGRAM q2r
         WRITE (stdout,*) ' nqs= ',nqs
         DO nq = 1,nqs
 !           write(998,'(i6,6f12.6)') nq, q(:,nq)
-!           write(998,'(6f12.6)') phiq(:,:,:,:,nq) 
+!           write(998,'(6f12.6)') phiq(:,:,:,:,nq)
             IF (lrigid) THEN
               !WRITE(stdout,*) "quite rigid"
               ! Remove non-analytic part before doing the Fourier transform
               !CALL rgd_blk_d3 (nr1,nr2,nr3,nat,phiq(:,:,:,:,nq),q(:,nq), &
               !              tau,epsil,zeu,bg,omega,-1.d0)
+              esum = sum(abs(phiq))
               CALL rgd_blk_d3 (2,2,2,nat,phiq(:,:,:,:,nq),q(:,nq), &
                     tau,epsil,zeu,bg,omega,celldm(1), .false.,-1.d0) ! 2D added celldm and flag
+               print*, nq, esum-sum(abs(phiq))
             END IF
-!            write(998,'(6f12.6)') phiq(:,:,:,:,nq) 
+!            write(998,'(6f12.6)') phiq(:,:,:,:,nq)
             nqtot = nqtot+1
             matq(:,:,:,:,nqtot) = phiq(:,:,:,:,nq)
             gridq(:,nqtot)      = q(:,nq)
@@ -280,14 +281,14 @@ PROGRAM q2r
      !
 !     ! auxiliary quantities:
 !     REAL(DP),ALLOCATABLE :: sqrtmm1(:) ! 1/sqrt(amass)
-!     INTEGER :: nat3, nat32, nat33     
+!     INTEGER :: nat3, nat32, nat33
      ALLOCATE(S%tau(3,nat), S%ityp(nat), S%zeu(3,3,nat))
      S%ntyp  = ntyp
      S%amass(1:ntyp) = amass(1:ntyp)
      S%atm(1:ntyp)   = atm(1:ntyp)
      S%nat   = nat
      S%tau   = tau
-     
+
      ! simple sum rule on effective charges
 !     do i=1,3
 !        do j=1,3
@@ -425,7 +426,7 @@ END PROGRAM q2r
 !   CHARACTER(LEN=6) :: int_to_char
 !   LOGICAL :: exst
 !   INTEGER :: ios
-! 
+!
 !   !
 !   ALLOCATE (gaminp(3,3,nat,nat,48), gamout(nr1*nr2*nr3,3,3,nat,nat) )
 !   ALLOCATE ( nc (nr1,nr2,nr3) )
@@ -514,13 +515,13 @@ END PROGRAM q2r
 !      IF (ionode) close(filea2F)
 !      !
 !      filea2F = 60 + isig
-!      name = TRIM(elph_dir) // 'a2Fmatdyn.'// TRIM(int_to_char(filea2F)) 
+!      name = TRIM(elph_dir) // 'a2Fmatdyn.'// TRIM(int_to_char(filea2F))
 !      IF (ionode) THEN
 !      open(unit=filea2F, file=name, STATUS = 'unknown')
 !      !
 !      WRITE(filea2F,*) deg, ef, dosscf
 !      write(filea2F,'(3i4)') nr1, nr2, nr3
-! 
+!
 !      do j1=1,3
 !         do j2=1,3
 !            do na1=1,nat
@@ -542,15 +543,15 @@ END PROGRAM q2r
 !      end do   ! j1
 !      close(filea2F)
 !      ENDIF  ! ionode
-! 
+!
 !      resi = SUM ( ABS ( AIMAG( gamout ) ) )
-! 
+!
 !      IF (resi > eps12) THEN
 !         WRITE (stdout,"(/5x,' fft-check warning: sum of imaginary terms = ',es12.6)") resi
 !      ELSE
 !         WRITE (stdout,"(/5x,' fft-check success (sum of imaginary terms < 10^-12)')")
 !      END IF
-! 
+!
 !   ENDDO
 !   !
 !   DEALLOCATE (gaminp, gamout )
@@ -666,7 +667,7 @@ subroutine set_zasr ( zasr, nr1,nr2,nr3, nat, ibrav, tau, zeu)
   ! temporary vectors and parameters
 
   ! Initialization.
-  ! n is the number of sum rules to be considered (if zasr.ne.'simple')
+  ! n is the number of sum rules to be considesumered (if zasr.ne.'simple')
   ! and 'axis' is the rotation axis in the case of a 1D system
   ! (i.e. the rotation axis is (Ox) if axis='1', (Oy) if axis='2'
   ! and (Oz) if axis='3')

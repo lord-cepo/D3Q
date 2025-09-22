@@ -242,7 +242,7 @@ CONTAINS
       do_grid=.false.       ! is true, construct a regular grid of q-points
     !
     NAMELIST /definput / &
-      file_mat2, file_mat3, outdir, prefix, asr2, asr3, sc_grid, &
+      calculation, file_mat2, file_mat3, outdir, prefix, asr2, asr3, sc_grid, &
       nk, n_omega, use_symm, delta_approx
     NAMELIST  / lwinput / &
       calculation, outdir, prefix, &
@@ -356,7 +356,7 @@ CONTAINS
             qpoints_ok = .true.
           ENDIF
         ELSE IF(code=="DEF") THEN
-          IF(PASS==1) calculation="def"
+          ! IF(PASS==1) calculation="def"
           ! do_grid = .true.
           READ(aux_unit, definput)
           IF(PASS==2.and.ionode) WRITE(*, definput)

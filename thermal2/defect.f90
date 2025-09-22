@@ -415,7 +415,8 @@ contains
       GV_flat, GV2_flat, GV3_flat, GV4_flat, poly_T, inv_T
     logical, parameter :: full_born = .false.
     real(dp) :: max_freq, omega, omegaq
-    integer :: iq, iqp, iw, ibnd, nR, jq, Nin, Nout, comp, compj
+    complex(dp) :: lw2
+    integer :: iq, iqp, iw, ibnd, nR, jq, Nin, Nout, comp, compj, i
     integer ::  jbnd, ibnd1, dim_deg ! , jn1, jn2
     ! real(dp), allocatable :: freqs_sym(:,:)
     complex(dp), allocatable, dimension(:,:,:) :: Vqqs, Vqqs_out
@@ -424,7 +425,7 @@ contains
     real(dp) :: V0_cm3, mult
     real(dp) :: concentrations(3)
     real(dp) :: spectral_function(3,0:input%n_omega)
-    integer :: iconc
+    integer :: iconc, iq_star
     real(dp) :: TETRA_MULTIPLIER
     real(dp) :: cq(3)
     complex(dp) :: self_energy(S%nat3, 0:input%n_omega)
@@ -436,7 +437,7 @@ contains
     !> full born quantities in real space
     ! complex(dp), allocatable :: VG(:,:,:,:)
     !
-    concentrations = [0.0_dp, 1e-2_dp, 1e-1_dp] ! cm^-3
+    concentrations = [0.0_dp, 1e-4_dp, 1e-3_dp] ! defects per cell
     V0_cm3 = S%omega * (BOHR_RADIUS_CM)**3
     print*, "V0_cm3", V0_cm3
     nR   = product(fc2%nq)
@@ -461,7 +462,7 @@ contains
     !
     !> max_freq is slightly larger than the maximum frequency, to be sure that
     !> maxval(out_freqs) <= max_freq
-    max_freq = maxval(out_freqs) * 1.47_dp
+    max_freq = maxval(freqs) * 1.1_dp
     TETRA_MULTIPLIER = 1.0_dp / max_freq**2
     !
     !> tetra have already the square of freq, it can be changed with
@@ -487,7 +488,6 @@ contains
         call merge_degen(S%nat3, w_in%w(:,w_in%e(iq),iw), freqs(:,iq))
       enddo
     enddo
-
     ! do iq = 1, out_grid%nqtot
     !   matmul(Sd%fc, matmul(G0(input%sc_grid, omegaq**2, w_in, S, grid_sym, Us_sym). Sd%fc))
     ! !
@@ -519,54 +519,108 @@ contains
     call full_V(S, fc2, out_grid, fc2_sc, V, out_us, grid, Us)
     V_flat = flatten_RR_cmplx(V)
     !
-    allocate(interp(S%nat3, grid%nqtot))
-    lws_out = 0._dp
     do iq = 1, out_grid%nq
       call fc2_sc%r2q(out_grid%xq(:,iq))
-      do jq = 1, grid%nqtot
-        call fc2_sc%r2q(grid%xq(:,jq), Vqqs(:,:,jq))
-        ! if (norm2(grid%xq(:,jq) - out_grid%xq(:,iq)) < 1e-10_dp) then
-        !   call fftinterp_mat2(out_grid%xq(:,iq), S, fc2, Vqq)
-        !   Vqqs(:,:,jq) = Vqqs(:,:,jq) - Vqq
-        ! endif
-        ! pixel(jq,iq) = sum(Vqqs(:,:,jq))
-      enddo
-      !
-      do ibnd = 1, S%nat3
-        ! comp = (iq-1)*S%nat3 + ibnd
-        omegaq = out_freqs(ibnd,iq)
-        ! interp = tetra_weights_green(omegaq**2)
-        interp = interp1_matrix(w_in%w, omegaq*input%n_omega/max_freq)
+      call fc2_sc%r2q(out_grid%xq(:,iq), Vqqs_out(:,:,iq))
+    enddo
+    !
+    open(1236, file="self-q6.dat", status='replace', action='write')
+    open(1237, file="self-q7.dat", status='replace', action='write')
+    open(1238, file="self-q8.dat", status='replace', action='write')
 
+    allocate(interp(S%nat3, grid%nqtot))
+    do iw = 0, input%n_omega
+      lws_out = 0._dp
+      omega = max_freq*iw/input%n_omega
+      if (iw > 1 .and. trim(input%calculation) == 'lw') exit
+      if(mod(iw, input%n_omega/10) == 0) &
+        print"(A,A,I3,A)", input%calculation, " progress ", NINT(100 * REAL(iw,DP) / input%n_omega), "%"
+      do iq = 1, out_grid%nq
+        call fc2_sc%r2q(out_grid%xq(:,iq))
         do jq = 1, grid%nqtot
-          do jbnd = 1, S%nat3
-            if(norm2(grid%xq(:,jq) - out_grid%xq(:,iq)) < 1e-10_dp .and. &
-              jbnd == ibnd) cycle
-            lws_out(ibnd,iq) = lws_out(ibnd,iq) + &
-            ! ABS(V_flat((jq-1)*S%nat3+jbnd,comp))**2 * &
-            ! ABS(V(ibnd,jbnd,iq,jq))**2 * &
-            ! ABS(braket(us(:,jbnd,jq), Vqqs(:,:,jq), out_us(:,ibnd,iq)))**2 * &
-              ABS(braket(out_us(:,ibnd,iq), Vqqs(:,:,jq), us(:,jbnd,jq)))**2 * &
-              interp(jbnd,w_in%e(jq)) / omegaq
+          call fc2_sc%r2q(grid%xq(:,jq), Vqqs(:,:,jq))
+          ! if (norm2(grid%xq(:,jq) - out_grid%xq(:,iq)) < 1e-10_dp) then
+          !   call fftinterp_mat2(out_grid%xq(:,iq), S, fc2, Vqq)
+          !   Vqqs(:,:,jq) = Vqqs(:,:,jq) - Vqq
+          ! endif
+          pixel(jq,iq) = sum(Vqqs(:,:,jq))
+        enddo
+        !
+        do ibnd = 1, S%nat3
+          lws_out(ibnd,iq) = lws_out(ibnd,iq) + REAL(braket(out_us(:,ibnd,iq), Vqqs_out(:,:,iq)), dp)
+          ! comp = (iq-1)*S%nat3 + ibnd
+          omegaq = out_freqs(ibnd,iq)
+          ! interp = tetra_weights_green(omegaq**2)
+          if (trim(input%calculation) == 'lw') then
+            interp = interp1_matrix(w_in%w, omegaq*input%n_omega/max_freq) / omegaq
+          else
+            interp = w_in%w(:,:,iw)
+          endif
+
+          do jq = 1, grid%nqtot
+            Vqq = Vqqs(:,:,jq)
+            ! if(allocated(fc2_sc%inclusion_eig)) then
+            !   do concurrent(i=1:size(fc2_sc%inclusion_eig))!, ABS(omegaq**2 - fc2_sc%inclusion_eig(i)) > 1e-10)
+            !     Vqq = Vqq + outer_product2(fc2_sc%inclusion_Dnx_out(:,i,iq) / &
+            !       (omegaq**2 - fc2_sc%inclusion_eig(i)), fc2_sc%inclusion_Dnx_in(:,i,jq))
+            !   enddo
+            ! endif
+            lw2 = 0._dp
+            do jbnd = 1, S%nat3
+              if(norm2(grid%xq(:,jq) - out_grid%xq(:,iq)) < 1e-10_dp .and. &
+                jbnd == ibnd) cycle
+              lw2 = lw2 + ABS(braket(out_us(:,ibnd,iq), Vqq, us(:,jbnd,jq)))**2 * &
+                interp(jbnd,w_in%e(jq))
+            enddo
+            lws_out(ibnd,iq) = lws_out(ibnd,iq) + lw2
+            if (ibnd == 6 .and. iw == 2481) write(1236, "(4E20.8)") cryst2cart(grid%xq(:,jq), S%at, -1), aimag(lw2)
+            if (ibnd == 6 .and. iw == 2568) write(1237, "(4E20.8)") cryst2cart(grid%xq(:,jq), S%at, -1), aimag(lw2)
+            if (ibnd == 8 .and. iw == 2526) write(1238, "(4E20.8)") cryst2cart(grid%xq(:,jq), S%at, -1), aimag(lw2)
+
           enddo
         enddo
+        call merge_degen(S%nat3, lws_out(:,iq), out_freqs(:,iq))
       enddo
-      ! call merge_degen(S%nat3, lws_out(:,iq), out_freqs(:,iq))
+      close(1236)
+      close(1237)
+      close(1238)
+      !
+      if(trim(input%calculation) == 'spfdef') then
+        do iconc = 1, size(concentrations)
+          mult = concentrations(iconc)
+          call tetra_init_sym_cmplx(out_grid, S, TETRA_MULTIPLIER * (out_freqs**2 + mult*lws_out))
+          spectral_function(iconc, iw) = &
+            sum(matmul(AIMAG(tetra_weights_green_cmplx(TETRA_MULTIPLIER * omega**2)), out_grid%w)) * &
+            TETRA_MULTIPLIER
+          ! do iq = 1, out_grid%nqtot
+          !   do ibnd = 1, S%nat3
+          !     write(11, "(3e14.5,I3,3F7.2,E13.4)") out_freqs(ibnd,iq), lws_out(ibnd,iq), ibnd, out_grid%xq(:,iq), out_grid%w(iq)
+          !   enddo
+          ! enddo
+          ! close(11)
+        enddo
+      elseif((trim(input%calculation) == 'self') ) then
+        if (out_grid%nqtot /= 1) &
+          call errore("main_defect", "you can calculate self-energy only in one q-point at once", 1)
+        self_energy(:,iw) = lws_out(:,1)
+      endif
+      call mpi_bsum(S%nat3, out_grid%nqtot, lws_out)
     enddo
-    call mpi_bsum(S%nat3, out_grid%nqtot, lws_out)
-    if(trim(out_grid%type) == 'path') then
-      write(filename, '(A4,I2.2,A4)') 'path', grid%n(1), '.dat'
-    else
-      write(filename, '(I2.2,I2.2,A4)') out_grid%n(1), grid%n(1), '.dat'
-    endif
-    call write_file(out_freqs, lws_out, filename, out_grid%type)
-    call print_message("end of 1B calculation")
-    !
-    ! open(10, file="V.dat", status='replace', action='write')
+    ! !
+    ! write(filename, "(A,I1,A)") "V-real", fc2%nq(1), "p.dat"
+    ! open(10, file=filename, status='replace', action='write')
+    ! write(filename, "(A,I1,A)") "V-imag", fc2%nq(1), "p.dat"
+    ! open(11, file=filename, status='replace', action='write')
     ! do iq = 1, out_grid%nq
-    !   write(10, "(10000E15.5)") pixel(:,iq)
+    !   write(10, "(10000E15.5)") REAL(pixel(:,iq),DP)
+    !   write(11, "(10000E15.5)") AIMAG(pixel(:,iq))
     ! enddo
     ! close(10)
+    ! close(11)
+
+
+
+
     ! lws = 0._dp
     ! lws_out = 0._dp
     ! do iq = 1, out_grid%nq
@@ -623,68 +677,72 @@ contains
     ! call print_message("end of degen calculation")
     !
     ! out_us = us
-    do iq = 1, out_grid%nq
-      call fc2_sc%r2q(out_grid%xq(:,iq))
-      call fc2_sc%r2q(out_grid%xq(:,iq), Vqqs_out(:,:,iq))
-      ! call fftinterp_mat2(out_grid%xq(:,iq), S, fc2, Vqq)
-      ! Vqqs_out(:,:,iq) = Vqqs_out(:,:,iq) - Vqq
-    enddo
 
-    do iw = my_id, input%n_omega, num_procs
-      lws_out = 0._dp
-      if(mod(iw,10) == 0) print"(I2.2,A)", NINT(100._dp * iw/input%n_omega), " % done"
-      omega = max_freq*iw/input%n_omega
-      ! write(filename, '(A5,I3.3,A4)') "self-", iw, '.dat'
-      ! open(11, file=filename, status='unknown')
-      do iq = 1, out_grid%nq
-        iqp = iq + out_grid%iq0
-        do ibnd = 1, S%nat3
-          lws_out(ibnd,iq) = lws_out(ibnd,iq) + braket(out_us(:,ibnd,iqp), Vqqs_out(:,:,iq))
-          ! omegaq = out_freqs(ibnd,iqp)
-          do jq = 1, grid%nqtot
-            do jbnd = 1, S%nat3
-              lws_out(ibnd,iq) = lws_out(ibnd,iq) + &
-                ABS(V(jbnd,ibnd,jq,iq))**2 * w_in%w(jbnd,w_in%e(jq),iw)
-            enddo
-          enddo
-          if (ABS(aimag(lws_out(ibnd,iq))) < 1e-15_dp) lws_out(ibnd,iq) = CMPLX(REAL(lws_out(ibnd,iq), dp), 0._dp, dp)
-        enddo
-      enddo
-      if(out_grid%nqtot > 1) then
-        do iconc = 1, size(concentrations)
-          mult = concentrations(iconc)
-          call tetra_init_sym_cmplx(out_grid, S, TETRA_MULTIPLIER * (out_freqs**2 + mult*lws_out))
-          spectral_function(iconc, iw) = &
-            sum(matmul(AIMAG(tetra_weights_green_cmplx(TETRA_MULTIPLIER * omega**2)), out_grid%w)) * &
-            TETRA_MULTIPLIER
-          ! do iq = 1, out_grid%nqtot
-          !   do ibnd = 1, S%nat3
-          !     write(11, "(3e14.5,I3,3F7.2,E13.4)") out_freqs(ibnd,iq), lws_out(ibnd,iq), ibnd, out_grid%xq(:,iq), out_grid%w(iq)
-          !   enddo
-          ! enddo
-          ! close(11)
-        enddo
-      else
-        self_energy(:,iw) = lws_out(:,1)
-      endif
-    enddo
+
+    ! do iw = my_id, input%n_omega, num_procs
+    !   lws_out = 0._dp
+    !   if(mod(iw, input%n_omega/10) == 0) &
+    !     print"(A,A,I3,A)", input%calculation, " progress ", 100 * iw / input%n_omega, "%"
+    !   omega = max_freq*iw/input%n_omega
+    !   ! write(filename, '(A5,I3.3,A4)') "self-", iw, '.dat'
+    !   ! open(11, file=filename, status='unknown')
+    !   do iq = 1, out_grid%nq
+    !     iqp = iq + out_grid%iq0
+    !     do ibnd = 1, S%nat3
+    !       ! lws_out(ibnd,iq) = lws_out(ibnd,iq) + braket(out_us(:,ibnd,iqp), Vqqs_out(:,:,iq))
+    !       ! omegaq = out_freqs(ibnd,iqp)
+    !       do jq = 1, grid%nqtot
+    !         do jbnd = 1, S%nat3
+    !           lws_out(ibnd,iq) = lws_out(ibnd,iq) + &
+    !             ABS(V(jbnd,ibnd,jq,iq))**2 * w_in%w(jbnd,w_in%e(jq),iw)
+    !         enddo
+    !       enddo
+    !       ! if (ABS(aimag(lws_out(ibnd,iq))) < 1e-15_dp) lws_out(ibnd,iq) = CMPLX(REAL(lws_out(ibnd,iq), dp), 0._dp, dp)
+    !     enddo
+    !   enddo
+    !   if(out_grid%nqtot > 1) then
+    !     do iconc = 1, size(concentrations)
+    !       mult = concentrations(iconc)
+    !       call tetra_init_sym_cmplx(out_grid, S, TETRA_MULTIPLIER * (out_freqs**2 + mult*lws_out))
+    !       spectral_function(iconc, iw) = &
+    !         sum(matmul(AIMAG(tetra_weights_green_cmplx(TETRA_MULTIPLIER * omega**2)), out_grid%w)) * &
+    !         TETRA_MULTIPLIER
+    !       ! do iq = 1, out_grid%nqtot
+    !       !   do ibnd = 1, S%nat3
+    !       !     write(11, "(3e14.5,I3,3F7.2,E13.4)") out_freqs(ibnd,iq), lws_out(ibnd,iq), ibnd, out_grid%xq(:,iq), out_grid%w(iq)
+    !       !   enddo
+    !       ! enddo
+    !       ! close(11)
+    !     enddo
+    !   else
+    !     self_energy(:,iw) = lws_out(:,1)
+    !   endif
+    ! enddo
     !
-    if(out_grid%nqtot > 1) then
+    select case(trim(input%calculation))
+     case("lw")
+      if(trim(out_grid%type) == 'path') then
+        write(filename, '(A4,I2.2,A4)') 'path', grid%n(1), '.dat'
+      else
+        write(filename, '(I2.2,I2.2,A4)') out_grid%n(1), grid%n(1), '.dat'
+      endif
+      call write_file(out_freqs, lws_out, filename, out_grid%type)
+      call print_message("end of 1B calculation")
+     case("spfdef")
       open(10, file="spectral_function.dat", status='replace', action='write')
       do iw = 0, input%n_omega
         omega = max_freq*iw/input%n_omega
         write(10, "(100E17.4)") omega, spectral_function(:,iw)
       enddo
-    else
+     case("self")
       open(10, file="self-energy-def.dat", status='replace', action='write')
       write(10, "(100E25.8)") out_freqs(:,1)
       do iw = 0, input%n_omega
         omega = max_freq*iw/input%n_omega
         write(10, "(E17.4,100E17.4)") omega, self_energy(:,iw)
       enddo
-    endif
-    close(10)
-    !
+      close(10)
+    end select
     !
     if(full_born) then
       deallocate(V, V_flat)
