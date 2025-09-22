@@ -15,7 +15,7 @@ MODULE ph_system
     INTEGER              :: ntyp
     REAL(DP)             :: amass(ntypx)
     REAL(DP)             :: amass_variance(ntypx)
-    CHARACTER(len=3  )   :: atm(ntypx)
+    CHARACTER(len=6)     :: atm(ntypx)
     ! atoms basis
     INTEGER              :: nat
     REAL(DP),ALLOCATABLE :: tau(:,:), zeu(:,:,:)
@@ -28,6 +28,7 @@ MODULE ph_system
     ! phonon switches (mostly unused here)
     REAL(DP)             :: epsil(3,3)
     LOGICAL              :: lrigid
+    LOGICAL              :: nopbc(3)
     ! for derivative of effective charges
     LOGICAL              :: ldrigid
     REAL(DP),ALLOCATABLE :: dzeu(:,:,:, :,:)
@@ -42,10 +43,10 @@ MODULE ph_system
     IMPLICIT NONE
     TYPE(ph_system_info),INTENT(in) :: S,Z
     LOGICAL :: same
-    REAL(DP),PARAMETER :: eps = 1.d-6
+    REAL(DP),PARAMETER :: eps = 1.d-5
     LOGICAL :: verbose
     !
-    verbose = ionode.and..FALSE. !just shut up
+    verbose = ionode !.and..FALSE. !just shut up
     
     !
     ! NOT checking : atm, amass, symm_type
@@ -93,7 +94,7 @@ MODULE ph_system
     IF(.not.same.and.verbose) WRITE(stdout,*) "at", S%at, Z%at
     same = same .and. ALL( ABS(S%bg -Z%bg) < eps)
     IF(.not.same.and.verbose) WRITE(stdout,*) "bg", S%bg, Z%bg
-    same = same .and. ( ABS(S%omega -Z%omega) < eps)
+    same = same .and. ( ABS(S%omega -Z%omega) < (S%omega+Z%omega)*eps)
     IF(.not.same.and.verbose) WRITE(stdout,*) "omega", S%omega, Z%omega
 
 !     same = same .and. (S%lrigid .or. Z%lrigid)
@@ -114,7 +115,7 @@ MODULE ph_system
     INTEGER :: ios, dummy
     !
     INTEGER :: nt, na
-    CHARACTER(len=256) cdummy
+    CHARACTER(len=512) cdummy
     !
     READ(unit,*,iostat=ios) S%ntyp, S%nat, S%ibrav, S%celldm(1:6)
     IF(ios/=0) CALL errore(sub,"reading S%ntyp, S%nat, S%ibrav, S%celldm(1:6)", 1)
@@ -167,7 +168,15 @@ MODULE ph_system
       IF(ios/=0) CALL errore(sub,"reading na, S%atm(nt), S%amass(nt)", nt)
     ENDDO
     !
-    READ(unit,*,iostat=ios) S%lrigid
+    READ(unit,'(a512)',iostat=ios) cdummy
+    READ(cdummy,*,iostat=ios) S%lrigid, S%nopbc
+    IF(ios/=0) THEN
+       READ(cdummy,*,iostat=ios) S%lrigid
+       S%nopbc = .false.
+       ioWRITE(stdout,*) "Importing old force constant file: setting periodicity along ALL directions."
+       ioWRITE(stdout,*) "If system is isolated along one direction, please regenerate FCs with option '-n'."
+    ENDIF
+    
     !print*, "lrigid", S%lrigid
     IF(ios/=0) CALL errore(sub,"reading rigid", 1)
     IF(S%lrigid)THEN
@@ -216,7 +225,7 @@ MODULE ph_system
     ENDIF
     !
     DO nt = 1, S%ntyp
-      WRITE(unit,'(i9,2x,a5,f25.16)',iostat=ios) nt, "'"//S%atm(nt)//"'", S%amass(nt)
+      WRITE(unit,'(i9,2x,a9,f25.16)',iostat=ios) nt, "'"//TRIM(S%atm(nt))//"'", S%amass(nt)
       IF(ios/=0) CALL errore(sub,"writing nt, S%atm(nt), S%amass(nt)", nt)
     ENDDO
     !
@@ -229,7 +238,7 @@ MODULE ph_system
    
 !    WRITE(*,*) "present matdyn", present(matdyn), matdyn, default_if_not_present(matdyn,.false.) 
     IF(.not. default_if_not_present(.false.,matdyn)) THEN
-    WRITE(unit,'(5x,l)',iostat=ios) S%lrigid
+    WRITE(unit,'(5x,l,3x,3l)',iostat=ios) S%lrigid, S%nopbc
     IF(ios/=0) CALL errore(sub,"writing rigid", 1)
     IF(S%lrigid)THEN
       WRITE(unit,'(3(3f25.16,/))',iostat=ios) S%epsil

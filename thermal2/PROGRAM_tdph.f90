@@ -24,7 +24,7 @@ MODULE tdph_module
     CHARACTER(len=8) :: fit_type = "force"
     CHARACTER(len=8) :: minimization = "ph+zstar"
     CHARACTER(len=9) :: basis = "mu"
-    INTEGER :: nfirst, nskip, nmax, nprint
+    INTEGER :: nfirst, nskip, nread, nprint
     REAL(DP) :: e0, thr, T, randomization, alpha_rigid
     !
   END TYPE tdph_input_type
@@ -131,9 +131,10 @@ MODULE tdph_module
         CALL errore("tdph","need zero energy (e0 = total energy of unit cell) to fit energy difference", 1)
 
     IF(nmax>0 .and. nread>0) CALL errore("tdph", "You cannot specify both nread and nmax",1)
-    IF(nmax<0 .and. nread>0) nmax = nfirst+nskip*nread
-    IF(nmax<0 .and. nread<0) nmax = 50000 ! default value when nothing specified
-    IF(ANY((/nfirst,nmax,nskip/)<1)) &
+    !IF(nmax>0 .and. nread<0) nmax = nfirst+nskip*nread
+    IF(nmax>0) nread = (nmax-nfirst)/nskip
+    IF(nmax<0 .and. nread<0) nread = 1000 ! default value when nothing specified
+    IF(ANY((/nfirst,nread,nskip/)<1)) &
         CALL errore("tdph","wrong parameters", 1)
     !
     input%ai            = ai
@@ -146,7 +147,7 @@ MODULE tdph_module
     input%minimization  = minimization
     input%nfirst        = nfirst
     input%nskip         = nskip
-    input%nmax          = nmax
+    input%nread         = nread
     input%nprint        = nprint
     input%e0            = e0
     input%thr           = thr
@@ -279,8 +280,8 @@ MODULE tdph_module
       CALL zstar_to_supercell(Si%nat, nat_sc, zstar, zstar_sc)
       rbdyn = 0._dp
       CALL t_rigid%start()
-      CALL rgd_blk_d3(2,2,2, nat_sc, rbdyn, gamma, tau_sc_alat, Si%epsil, zstar_sc, bg_sc, &
-                   omega_sc, Si%alat, .false., +1._dp) !, alpha=input%alpha_rigid)
+      CALL rgd_blk_d3(Si%nopbc, nat_sc, rbdyn, gamma, tau_sc_alat, Si%epsil, zstar_sc, bg_sc, &
+                   omega_sc, Si%alat, +1._dp) !, alpha=input%alpha_rigid)
       CALL t_rigid%stop()
 !$OMP PARALLELDO DEFAULT(shared) PRIVATE(istep,i,j,mat_ij)
       DO istep = 1, n_steps
@@ -603,7 +604,7 @@ PROGRAM tdph
   ENDDO Q_POINTS_LOOP_c
   ioWRITE(stdout, '(5x,a,999i5)') "Points in the star of each q-point:", symq(:)%nq_trstar
   !
-  ! Find symmetric basis for effetcive charges
+  ! Find symmetric basis for effetctive charges
   IF(Si%lrigid) THEN
     ! I use the symmetry of Gamma as it is the same as the one of the crystal
     IF(ANY(symq(1)%xq/=0._dp)) CALL errore("star","gamma should be the first point",1)
@@ -618,7 +619,7 @@ PROGRAM tdph
   ioWRITE(stdout, '(5x,a,2i5)') "TOTAL number of degrees of freedom", nph
 
   ! Allocate a vector to hold the decomposed phonons over the entire grid
-  ! I need single vector in order to do minimization, otherwise a derived
+  ! I need a single vector in order to do minimization, otherwise a derived
   ! type would be more handy
   ALLOCATE(ph_coefficients(nph+zrank), ph_coefficients0(nph+zrank))
   iph = 0
@@ -652,23 +653,40 @@ PROGRAM tdph
   ENDIF
   !
   ph_coefficients0 = ph_coefficients
-!-----------------------------------------------------------------------
+
+#define __DEBUG_TDPH 1
+#ifdef __DEBUG_TDPH
+  ! Write to file the matrices in "centered" form for later Fourier interpolation
+  CALL recompose_fc(Si, nq_wedge, symq, dmb, rank, nph, ph_coefficients(1:nph),&
+                    nq1, nq2, nq3, nqmax, 3, fcout)
+  IF(Si%lrigid) CALL recompose_zstar(Si%nat, zrank, zbasis, ph_coefficients(nph+1:nph+zrank), Si%zeu)
+  !CALL impose_asr2("simple", Si%nat, fcout, Si%zeu)
+  !Si%lrigid = lrigid_save
+  CALL write_fc2("matIN.centered", Si, fcout)
+#endif
+
+  !-----------------------------------------------------------------------
   ! Variables that can be adjusted according to need ...
   !
+  ! FIXME: here we compute the number of steps *per CPU*, this should be more logically
+  !        done inside read_md or read_pioud, with also the three following allocations
+  !        being moved inside.
+  !
   !n_steps    = input%nmax   ! total molecular dynamics steps TO READ
-  n_steps    = read_max_steps_para(input%nmax)   ! total molecular dynamics steps TO READ on this CPU
+  n_steps    = read_max_steps_para(input%nread)   ! total molecular dynamics steps TO READ on this CPU
   first_step = input%nfirst ! start reading from this step
   n_skip     = input%nskip  ! number of steps to skip
+  !
+  ALLOCATE(tau_md(3,nat_sc,n_steps))
+  ALLOCATE(force_md(3,nat_sc,n_steps))
+  ALLOCATE(toten_md(n_steps))
 
   CALL t_init%stop()
 !###################  end of initialization ####################################################
 
-  ALLOCATE(tau_md(3,nat_sc,n_steps))
-  ALLOCATE(force_md(3,nat_sc,n_steps))
-  ALLOCATE(toten_md(n_steps))
   CALL t_read%start()
   IF(input%ai=="md") THEN
-  CALL read_md(input%fmd, input%e0, nat_sc, Si%alat, at_sc, first_step, n_skip, n_steps, &
+  CALL read_md(input%fmd, input%e0, nat_sc, Si%alat, at_sc, bg_sc, first_step, n_skip, n_steps, &
                n_steps_tot, tau_md, force_md, toten_md, tau_sc, u)
   ELSE IF(input%ai=="pioud")THEN
     CALL read_pioud(input%ftau, input%fforce, input%ftoten, input%e0, nat_sc, Si%alat, &
@@ -676,7 +694,7 @@ PROGRAM tdph
   ELSE
     CALL errore("tdph","unknown input format", 1)
   ENDIF
-  IF(n_steps_tot > input%nmax) CALL errore('tdph','read more steps than expected',1)
+  IF(n_steps_tot > input%nread) CALL errore('tdph','read more steps than expected',1)
   CALL t_read%stop()
 
 !###################  end of data input ####################################################
@@ -763,8 +781,9 @@ PROGRAM tdph
   CALL write_fc2("matOUT.periodic", Si, fcout)
   !Si%lrigid = .false.
 
-  ! Force ratio
+  ! Print out final Harmonic forces compared with Abinitio forces
   OPEN(116,file="force_ratio.dat",status="unknown")
+  ioWRITE(116,'(a)') '# |f_ai-f_harm|   f_harm/f_mf   f_harm   f_md  (units=Ry/bohr)'
   !
   DO i = 1, n_steps
    WRITE(116,*) "i_step = ",i

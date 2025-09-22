@@ -38,7 +38,7 @@ MODULE read_md_module
   ENDDO
   CLOSE(112)
   !
-  END SUBROUTINE
+  END SUBROUTINE new_sc
   !
   ! Generate supercell that correspond to force constants FC
   SUBROUTINE fc_to_supercell(S, fc2, aa, bb, omega_sc, nat_tot, tau_sc, zeu_sc)
@@ -88,7 +88,7 @@ MODULE read_md_module
     ENDIF
 
 
-  END SUBROUTINE 
+  END SUBROUTINE fc_to_supercell
   !
   FUNCTION read_max_steps_para(n_steps)
     USE kinds,     ONLY : DP
@@ -104,7 +104,7 @@ MODULE read_md_module
     ! double check (Mostly that CPUs got consistent input): 
     CALL mpi_bsum(n_steps0)
     IF(n_steps0/=n_steps) CALL errore("md_read","parallel steps distribution not ok",1)
-  END FUNCTION
+  END FUNCTION read_max_steps_para
 
   SUBROUTINE read_pioud(file_tau, file_for, file_toten, toten0, nat_tot, alat, first_step, n_skip, n_steps,&
                         n_steps_tot, tau_md, force_md, toten_md, tau0, u_disp)
@@ -228,7 +228,7 @@ MODULE read_md_module
   !
   END SUBROUTINE
   !
-  SUBROUTINE read_md(md_file, toten0, nat_tot, alat, aa, first_step, n_skip, n_steps,&
+  SUBROUTINE read_md(md_file, toten0, nat_tot, alat, aa, bb, first_step, n_skip, n_steps,&
                      n_steps_tot, tau_md, force_md, toten_md, tau0, u_disp)
   !----------------------------------------------------------------------
   ! Compute the harmonic force from DFPT FCs (mat2R) and molecular dynamics displacement
@@ -245,7 +245,7 @@ MODULE read_md_module
   CHARACTER(len=*),INTENT(in) :: md_file
   REAL(DP),INTENT(in)  :: toten0 ! energy of unperturbed system, for reference
   INTEGER,INTENT(in)   :: nat_tot ! number of atoms to read
-  REAL(DP),INTENT(in)  :: alat, aa(3,3) ! alat  in bohr and cell size in units of alat
+  REAL(DP),INTENT(in)  :: alat, aa(3,3), bb(3,3) ! alat  in bohr and cell size in units of alat
   INTEGER,INTENT(in)   :: first_step, n_skip ! first step to read, number of steps to skip between two read
   INTEGER,INTENT(inout) :: n_steps         ! input: maximum number of steps to read, 
                                            ! output : number of steps actually read
@@ -257,14 +257,19 @@ MODULE read_md_module
   REAL(DP),ALLOCATABLE :: vel_md(:,:,:) ! the velocity in bohr/time
   INTEGER :: i, j, k, nu, mu, beta, n_steps0, &
                       jat, kat, iat, ios, uni, uni_f, i_step, k_step
-  REAL(DP)		:: dt, avg_x, avg_y, avg_z, avgsq_x, avgsq_y, avgsq_z
-  CHARACTER(len=1024)    :: line
-  CHARACTER(len=8)   :: dummy, dummyc, dummy1, dummy2, dummy3, dummy4, dummy5, dummy6
-  LOGICAL,EXTERNAL   :: matches 
+  REAL(DP)            :: dt, avg_x, avg_y, avg_z, avgsq_x, avgsq_y, avgsq_z, disp_test(3)
+  CHARACTER(len=1024) :: line
+  CHARACTER(len=8)    :: dummy, dummyc, dummy1, dummy2, dummy3, dummy4, dummy5, dummy6
+  LOGICAL,EXTERNAL    :: matches 
   LOGICAL      :: look_for_forces, look_for_toten_md, actually_read_the_forces, &
                   is_crystal_coords, is_alat_units, is_bohr_units, is_angstrom_units
   REAL(DP),PARAMETER :: ANGS_TO_BOHR = 1/BOHR_RADIUS_ANGS
   INTEGER :: first_step_=-1, n_skip_=-1, n_steps_=-1
+  !
+  !
+  ! total number of steps to read
+  n_steps0 = n_steps
+  CALL mpi_bsum(n_steps0)
   !
   !n_steps = 100
   IF(.not.ALLOCATED(force_md)) ALLOCATE(force_md(3,nat_tot,n_steps))
@@ -272,27 +277,26 @@ MODULE read_md_module
   ALLOCATE(toten_md(n_steps))
 
   OPEN(newunit=uni_f, file=TRIM(md_file)//".extract", action="READ",form="formatted", iostat=ios)
+  ! only use the "extract" file if it has the same first and step, and includes at least as many steps
   IF(ios==0) READ(uni_f, *, iostat=ios) dummy, first_step_, n_skip_, n_steps_
   IF(ios==0 .and. dummy == "EXTRACT:" .and. &
-          first_step_==first_step .and. n_skip_==n_skip .and. n_steps_==n_steps) THEN
+          first_step_==first_step .and. n_skip_==n_skip .and. n_steps_>=n_steps0) THEN
     ioWRITE(*,*) "NOTICE: Reading from "//TRIM(md_file)//".extract"
     uni = uni_f
-    OPEN(newunit=uni_f, file="/dev/null", action="WRITE",form="formatted")
+    !uni_f = -1
+    !OPEN(newunit=uni_f, file="/dev/null", action="WRITE",form="formatted")
   ELSE
     CLOSE(uni_f)
     OPEN(newunit=uni,file=md_file,action="READ",form="formatted")
-    OPEN(newunit=uni_f, file=TRIM(md_file)//".extract", action="WRITE",form="formatted")
+    IF(num_procs==1)then
+      ioWRITE(*,*) "Creating extract file: "//TRIM(md_file)//".extract"
+      OPEN(newunit=uni_f, file=TRIM(md_file)//".extract", action="WRITE",form="formatted")
+      WRITE(uni_f,*) "EXTRACT:", first_step, n_skip, n_steps, uni_f
+    ELSE
+      uni_f = uni
+      ioWRITE(*,*) "Not creating extract file (can only be done in serial)"
+    ENDIF
   ENDIF
-  WRITE(uni_f,*) "EXTRACT:", first_step, n_skip, n_steps
-  !
-  ! total number of steps to read
-  n_steps0 = n_steps
-  ! number of steps to read on this CPU
-  n_steps = n_steps/num_procs
-  IF( my_id<(n_steps0-n_steps*num_procs) ) n_steps = n_steps+1
-  i_step = n_steps
-  CALL mpi_bsum(i_step)
-  IF(i_step/=n_steps0) CALL errore("md_read","parallel steps distribution not ok",1)
   !
   i_step = 0
   k_step = 0
@@ -300,6 +304,8 @@ MODULE read_md_module
   look_for_toten_md =.false.
   actually_read_the_forces = .false.
   ! 
+    !print*, "I'm cpu ", my_id, "and I will read ", n_steps
+
   READ_LOOP : &
   DO
    READ(uni,"(a1024)", iostat=ios) line ! reads a line to variable "line"
@@ -315,10 +321,10 @@ MODULE read_md_module
       k_step = k_step+1
       IF(k_step >= first_step+n_skip*my_id .and. MODULO(k_step-first_step, n_skip*num_procs) == 0)THEN
          actually_read_the_forces = .true.
-         WRITE(uni_f,*) TRIM(line)
+         IF(uni_f/=uni) WRITE(uni_f,*) TRIM(line)
       ELSE
          actually_read_the_forces = .false.
-         WRITE(uni_f,*) TRIM(line), " skip"
+         IF(uni_f/=uni) WRITE(uni_f,*) TRIM(line), " skip"
       ENDIF
       !
       IF(actually_read_the_forces)THEN
@@ -333,7 +339,7 @@ MODULE read_md_module
         look_for_forces = .true.
         DO k=1, nat_tot
           READ(uni,"(a1024)", iostat=ios) line
-          WRITE(uni_f,*) TRIM(line)
+          IF(uni_f/=uni) WRITE(uni_f,*) TRIM(line)
           READ(line, *) dummy1, dummy2, dummy3, dummy4, dummy5, dummy6, tau_md(:,k, i_step)
         ENDDO
 
@@ -351,7 +357,7 @@ MODULE read_md_module
       is_bohr_units = matches("bohr",line)
       is_angstrom_units = matches("angstrom",line)
       IF(COUNT((/is_crystal_coords, is_alat_units, is_bohr_units, is_angstrom_units/))/=1) &
-         CALL errore("read_md","unknown atomic positions format",1)
+         CALL errore("read_md","unknown or inconsistent atomic positions format",1)
 
       IF(look_for_forces .or. look_for_toten_md) CALL errore("read_md","i found coordinates twice",1)
 
@@ -359,10 +365,10 @@ MODULE read_md_module
       !IF(k_step >= first_step .and. MODULO(k_step, n_skip) == 0)THEN
       IF(k_step >= first_step+n_skip*my_id .and. MODULO(k_step-first_step-n_skip*my_id, n_skip*num_procs) == 0)THEN
          actually_read_the_forces = .true.
-         WRITE(uni_f,*) TRIM(line)
+         IF(uni_f/=uni) WRITE(uni_f,*) TRIM(line)
       ELSE
          actually_read_the_forces = .false.
-         WRITE(uni_f,*) TRIM(line), " skip"
+         IF(uni_f/=uni) WRITE(uni_f,*) TRIM(line), " skip"
       ENDIF
           
       IF(actually_read_the_forces)THEN
@@ -378,7 +384,7 @@ MODULE read_md_module
         look_for_forces = .true. ! ..and this moved after the IF
         DO k=1, nat_tot
           READ(uni,"(a1024)", iostat=ios) line
-          WRITE(uni_f,*) TRIM(line), actually_read_the_forces
+          IF(uni_f/=uni) WRITE(uni_f,*) TRIM(line), actually_read_the_forces
           READ(line, *) dummyc, tau_md(:,k, i_step)
         ENDDO
         IF(is_crystal_coords) CALL cryst_to_cart(nat_tot,tau_md(:,:, i_step), aa, +1)
@@ -387,38 +393,39 @@ MODULE read_md_module
       ENDIF
 ! READ forces on atoms after md steps
     ELSE IF(matches("Forces acting on atoms",line) .and. look_for_forces) THEN 
-      WRITE(uni_f,*) TRIM(line), actually_read_the_forces
-      WRITE(uni_f,*)
+      IF(uni_f/=uni) WRITE(uni_f,*) TRIM(line), actually_read_the_forces
+      IF(uni_f/=uni) WRITE(uni_f,*)
       look_for_forces = .false.
       READ(uni,*)
       DO k=1, nat_tot
         READ(uni,"(a1024)", iostat=ios) line
-        WRITE(uni_f,*) TRIM(line), actually_read_the_forces
+        IF(uni_f/=uni) WRITE(uni_f,*) TRIM(line), actually_read_the_forces
         READ(line,*) dummy1, dummy2, dummy3, dummy4, dummy5, dummy6, force_md(:, k, i_step)
       ENDDO
 ! READ total energy after md steps
     ELSE IF(matches("!    total energy ",line) .and. look_for_toten_md) THEN
       look_for_toten_md = .false.
-      WRITE(uni_f,*) TRIM(line), actually_read_the_forces
+      IF(uni_f/=uni) WRITE(uni_f,*) TRIM(line), actually_read_the_forces
       READ(line,*)  dummy1, dummy2, dummy3, dummy4, toten_md(i_step)
     ENDIF
   ENDDO READ_LOOP
 
   CLOSE(uni)
-  CLOSE(uni_f)
+  IF(uni_f/=uni) CLOSE(uni_f)
 
+  !print*, "I'm cpu ", my_id, "and I have read ", i_step
   !i_step = n_steps
   !ioWRITE(stdout,'(2x,a,i8)') "Total number of steps read among all CPUS", i_step
-  IF(num_procs<17) WRITE(*,*) "Number of steps read on CPU",my_id," : ", n_steps
-  n_steps_tot = n_steps
-  CALL mpi_bsum(n_steps_tot)
-  ioWRITE(*,*) "Number of steps read among all CPUs : ", n_steps_tot
-
-
-  IF(n_steps_tot<n_steps0)THEN
-    ioWRITE(*,'(2x,a,i8,a,i8,a)') "NOTICE: Looking for ", n_steps0, "  steps, only", i_step, "  found."
-    !n_steps = i_step
+  IF(i_step < n_steps)THEN
+    ioWRITE(*,'(2x,a,i8,a,i8,a)') "NOTICE: Looking for ", n_steps, "  steps, only", i_step, "  found."
+    n_steps = i_step
+  ELSE
+    IF(num_procs<17) WRITE(*,*) "Number of steps read on CPU",my_id," : ", n_steps
   ENDIF
+
+  n_steps_tot = n_steps
+  CALL mpi_bsum(n_steps_tot )
+  ioWRITE(*,*) "Number of steps read among all CPUs : ", n_steps_tot
 
   IF(look_for_toten_md .or. look_for_forces)THEN
     ! error
@@ -451,8 +458,10 @@ MODULE read_md_module
     !            Feb. 4th - 12th: 
     !PRINT*, "---------------------------------------------------------------------"
       i_step = 0
-    OPEN(2244,file="new_disp-md.dat", status="unknown")
+    OPEN(2244,file="disp.dat", status="unknown")
+    ioWRITE(2244,'(a100)') '# disp (bohr, x,y,z)   tau_md (bohr, x,y,z)  tau_0 (bohr, x,y,z)'
     DO i_step = 1, n_steps
+      ioWRITE(2244,'(a,i6)') '# i_step=', i_step
       DO k=1, nat_tot
         ! ...cartesian components of displacement for each atom in supercell
         u_disp(1,k,i_step) = tau_md(1, k, i_step) - tau0(1, k) 
@@ -460,8 +469,10 @@ MODULE read_md_module
         u_disp(3,k,i_step) = tau_md(3, k, i_step) - tau0(3, k)
         ioWRITE(2244,'(3(3f10.5,10x))') u_disp(:,k,i_step),tau_md(:, k, i_step),tau0(:, k)
         ! MSD = 1./n_steps*(DABS(u())**2
+        disp_test = u_disp(:,k,i_step)
+        CALL cryst_to_cart(1,disp_test,bb, -1)
+        IF(ANY(disp_test>1/nat_tot**.33)) print*, "WARNING! HUGE DISPLACEMENT atom/step", k, i_step 
       ENDDO
-      ioWRITE(2244,*)
       u_disp(:,:,i_step) = u_disp(:,:,i_step)
     ENDDO
     CLOSE(2244)
