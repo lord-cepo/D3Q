@@ -10,7 +10,7 @@ program bands
   use input_fc, only: read_fc2, aux_system, div_mass_fc2, &
     ph_system_info, deallocate_fc2_grid, allocate_fc2_grid
   use asr2_module, only: impose_asr2
-  use thutils, only: v2index, braket, print_message
+  use thutils, only: v2index, braket, print_message, cryst2cart, e_iqr
   use quter_defect!, only : forceconst2_sc, fc_sc2RR, fc_uc2RR, S_uc2sc, center3, freq_phq_degen
   ! use quter_defect, only : map_uc2sc, fc_uc2RR
   IMPLICIT NONE
@@ -28,14 +28,18 @@ program bands
   real(dp), allocatable :: distance(:,:,:,:), distance0(:,:,:,:), distance_uc(:,:,:), dummy(:)
   ! integer :: wait_for_debugger
   real(dp) :: mean, max_diff_fc2d, max_diff_rel
+  complex(dp) :: phases
   character(len=100) :: filename
-  real(dp) :: conc(6)
+  real(dp) :: conc(1)
+  real(dp), dimension(3) :: q1, q2
   real(dp), allocatable :: pixel(:,:)
   integer :: indices(4)
   real(dp) :: ssomma
   integer :: sc_grid(3)
   complex(dp), allocatable :: Dd(:,:)
   CHARACTER(len=6), EXTERNAL :: int_to_char
+  real(dp) :: freqs_sc(64*6)
+  complex(dp) :: U_sc(64*6,64*6)
 
   !
   CALL start_mpi()
@@ -65,6 +69,7 @@ program bands
   call impose_asr2(input%asr3, Sd%nat, fc2d)
   CALL div_mass_fc2(Sd, fc2d)
   ! call S_uc2sc(S, Sd, fc2_periodic%nq, S_sc)
+
   max_diff_fc2d = 0._dp
   do ibnd = 1, Sd%nat3
     do jbnd = ibnd+1, Sd%nat3
@@ -82,14 +87,19 @@ program bands
 
   call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
   call fc2_recenter(S, fc2_periodic, fc2, 2)
+  Sd%lrigid = .false.
+  call freq_phq_safe([0._dp,0._dp,0._dp], Sd, fc2d_centered, freqs_sc, U_sc)
+  print*, U_sc(:,64*6)
   !
-  conc = [0._dp, 0.05_dp, 0.07_dp, 0.11_dp, 0.16_dp, 0.30_dp] * product(sc_grid)
+  ! conc = [0._dp, 0.05_dp, 0.07_dp, 0.11_dp, 0.16_dp, 0.30_dp] * product(sc_grid)
+  conc = 1._dp ! [1._dp/64] * product(sc_grid)
+  S%lrigid = .false.
   do iconc = 1, size(conc)
-    CALL fc2_sc%allocate(S, fc2_periodic%nq)
-    fc2_sc%fc = (1-conc(iconc)) * fc_uc2RR(fc2_periodic) / product(fc2_periodic%nq)
+    CALL fc2_sc%allocate(S, Sd, fc2_periodic%nq, input%sites)
+    fc2_sc%fc = fc_uc2RR(fc2_periodic) * (1-conc(iconc)) / product(fc2_periodic%nq)
     CALL fc2_sc%center(fc2%nq, S)
     !
-    call fc2_scd%allocate(S, sc_grid)
+    call fc2_scd%allocate(S, Sd, sc_grid, input%sites)
     fc2_scd%fc = conc(iconc) * fc_sc2RR(sc_grid, S, Sd, fc2d%fc) / product(sc_grid)
     call fc2_scd%center(sc_grid, S)
     !
@@ -109,9 +119,40 @@ program bands
     ! fc20_periodic%fc(:,:,1) = fc_uc2sc(S, S_sc, fc2%nq, fc2_periodic%fc)
     ! call fc2_recenter(S_sc, fc20_periodic, fc20_centered, 2)
     !
+    ! print*, fc2_sc%
+    ! phases = 0._dp
+    ! do ir2 = 1, fc2_sc%n_R2
+    !   phases = phases + e_iqr([0.2_dp, 0.4_dp, 0.1_dp], fc2_sc%xr2(:,ir2))
+    !   ! do ir1 = 1, 10
+    !   !   ! print*, fc2_sc%yR1(:,ir1,ir2)
+    !   !   ! print*, fc2_sc%xR1(:,ir1,ir2)
+
+    !   ! enddo
+    ! enddo
+    ! print*, phases
+    !
+    ! print*, shape(fc2_sc%fc)
+
+    q1 = cryst2cart([0._dp, 0.5_dp, 0.25_dp], S%bg, 1)
+    q2 = cryst2cart([0.75_dp, 0._dp, 0.5_dp], S%bg, 1)
+    ! call mat2_diag(S%nat3, D, freq0(:,1))
+    ! print*, freq0(:,1)
+    call fc2_sc%r2q(q1, q2, D)
+    print*, sum(D)
+    ! call fc2_sc%r2q(q1, q1, D)
+    ! call freq_phq(q1, S, fc2, freq0(:,1))
+    ! print*, freq0(:,1)
+    ! print*, sum(D)
+    ! call mat2_diag(S%nat3, D, freq0(:,1))
+    ! print*, sqrt(freq0(:,1) / 64)
+    ! call fc2_sc%r2q(q2, q2, D)
+    ! print*, sum(D)
+    ! call mat2_diag(S%nat3, D, freq0(:,1))
+    ! print*, freq0(:,1)
+    ! print*, fc2_sc%fc(:,:,4,2) - fc2_periodic%fc(:,:,3)
     freq1 = 0._dp
     do iq = 1, grid%nq
-      call freq_phq(grid%xq(:,iq), S, fc2, freq0(:,iq), Ui)
+      call freq_phq(grid%xq(:,iq), S, fc2, freq0(:,iq))
       ! call freq_phq_safe(grid%xq(:,iq), S_sc, fc20_centered, freq1(:,iq))
       ! call freq_phq_safe(grid%xq(:,iq), Sd, fc2d_centered, freq2(:,iq))
       ! call freq_phq_safe(grid%xq(:,iq), Sd, fc2d_centered, freq2(:,iq))
@@ -137,7 +178,7 @@ program bands
       !   ! freq0(ibnd,iq) = REAL(D(ibnd,ibnd), dp)
       ! enddo
       D = D1 + D
-      call mat2_diag(S%nat3, D, freq1(:,iq))
+      call mat2_diag(S%nat3, D1, freq1(:,iq))
 
       ! freq2(:,iq) = freq0(:,iq) + freq2(:,iq) / 2 / freq0(:,iq)
       !
@@ -155,13 +196,18 @@ program bands
     ! enddo
     ! close(10)
     !
-    ! call write_freq(freq0, "f"//trim(int_to_char(NINT(conc(iconc)*100)))//".dat")
-    call write_freq(freq1, "f"//trim(int_to_char(NINT(conc(iconc)*100/product(sc_grid))))//".dat")
+    open(10, file='f.sc.dat')
+    do iq = 1, size(freqs_sc)
+      write(10, "(E20.8)") freqs_sc(iq)
+    enddo
+    close(10)
+    call write_freq(freq0, "f."//trim(input%file_mat2)//".dat")
+    ! call write_freq(freq1, "f"//trim(int_to_char(NINT(conc(iconc)*100/product(sc_grid))))//".dat")
+    call write_freq(freq1, "f."//trim(input%file_mat3)//".dat")
     call fc2_sc%deallocate()
     call fc2_scd%deallocate()
   enddo
   ! call write_freq(freq2, "freq2-"//trim(input%file_mat2(11:))//".dat")
-  ! call write_freq(freq1, "freq-sc-"//trim(input%file_mat2(11:))//".dat")
   ! call write_freq(freq2, "freq-"//trim(input%file_mat3(11:))//".dat")
   !
   CALL stop_mpi()

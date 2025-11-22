@@ -1,7 +1,7 @@
 module thutils
   use kinds, only: dp
   use input_fc, only: ph_system_info
-  use fc2_interpolate, only: freq_phq_safe, forceconst2_grid
+  use fc2_interpolate, only: freq_phq_safe, forceconst2_grid, freq_phq
   use q_grids, only: q_grid
   use mpi_thermal, only: mpi_bsum
   !
@@ -78,7 +78,7 @@ contains
     !> interpolates linearly a 2D matrix on a 1D grid,
     !> the last dimension of matrices is the grid index.
     !> The matrices should be calculated from 0 to N included
-    complex(dp), intent(in) :: matrices(:,:,0:)
+    complex(dp), intent(in) :: matrices(:,:,:)
     real(dp), intent(in) :: x
     complex(dp), allocatable :: interp1_matrix(:,:)
     real(dp) :: dx
@@ -87,8 +87,8 @@ contains
     if(x > size(matrices, 3)) call errore('interp1_matrix', ': x out of range', INT(x))
     allocate(interp1_matrix(size(matrices, 1), size(matrices, 2)))
     !
-    x0 = INT(x)
-    dx = x - x0
+    x0 = INT(x+1)
+    dx = x+1 - x0
 
     interp1_matrix = (1.0_dp - dx) * matrices(:,:,x0) + &
       dx * matrices(:,:,x0+1)
@@ -99,7 +99,7 @@ contains
     !> interpolates linearly a 2D matrix on a 1D grid,
     !> the last dimension of scalars is the grid index.
     !> The scalars should be calculated from 0 to N included
-    complex(dp), intent(in) :: scl(0:)
+    complex(dp), intent(in) :: scl(:)
     real(dp), intent(in) :: x
     complex(dp) :: interp1_scl
     real(dp) :: dx
@@ -107,8 +107,8 @@ contains
     !
     if(x > size(scl)) call errore('interp1_scl', ': x out of range', INT(x))
     !
-    x0 = INT(x)
-    dx = x - x0
+    x0 = INT(x) + 1
+    dx = x+1 - x0
 
     interp1_scl = (1.0_dp - dx) * scl(x0) + &
       dx * scl(x0+1)
@@ -119,7 +119,7 @@ contains
     !> interpolates linearly a 2D matrix on a 1D grid,
     !> the last dimension of vectors is the grid index.
     !> The vectors should be calculated from 0 to N included
-    complex(dp), intent(in) :: vectors(:,0:)
+    complex(dp), intent(in) :: vectors(:,:)
     real(dp), intent(in) :: x
     complex(dp), allocatable :: interp1_vector(:)
     real(dp) :: dx
@@ -128,8 +128,8 @@ contains
     if(x > size(vectors, 2)) call errore('interp1_vector', ': x out of range', INT(x))
     allocate(interp1_vector(size(vectors, 1)))
     !
-    x0 = INT(x)
-    dx = x - x0
+    x0 = INT(x) + 1
+    dx = x+1 - x0
 
     interp1_vector = (1.0_dp - dx) * vectors(:,x0) + &
       dx * vectors(:,x0+1)
@@ -140,17 +140,17 @@ contains
     !> interpolates linearly a 2D matrix on a 1D grid,
     !> the last dimension of matrices is the grid index.
     !> The matrices should be calculated from 0 to N included
-    complex(dp), intent(in) :: matrices(:,:,:,:,0:)
+    complex(dp), intent(in) :: matrices(:,:,:,:,:)
     real(dp), intent(in) :: x
     complex(dp), allocatable :: interp1_tns4(:,:,:,:)
     real(dp) :: dx
     integer :: x0
     !
     if(x > size(matrices, 5)) call errore('interp1_tns4', ': x out of range', INT(x))
-    allocate(interp1_tns4, source=matrices(:,:,:,:,0))
+    allocate(interp1_tns4, source=matrices(:,:,:,:,1))
     !
-    x0 = INT(x)
-    dx = x - x0
+    x0 = INT(x) + 1
+    dx = x+1 - x0
 
     interp1_tns4 = (1.0_dp - dx) * matrices(:,:,:,:,x0) + &
       dx * matrices(:,:,:,:,x0+1)
@@ -204,6 +204,19 @@ contains
     v2index = (v(1)*mesh(2) + v(2))*mesh(3) + v(3) + 1
   end function
   !
+  pure function v2index_n(v, mesh)
+    !! Multiplex index of a single wave vector.
+    !! Output is always 1-based.
+    !! v is the demultiplexed triplet of a wave vector.
+    !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
+    !! base states whether v has 0- or 1-based indexing.
+
+    integer, intent(in) :: v(3), mesh(3)
+    integer :: v2index_n
+
+    v2index_n = (v(3)*mesh(2) + v(2))*mesh(1) + v(1) + 1
+  end function
+  !
   pure function index2v(i, mesh)
     !! Demultiplex index of a single wave vector.
     !! i is the multiplexed index of a wave vector (always 1-based).
@@ -217,6 +230,21 @@ contains
 
     call int_div(i - 1, mesh(3), aux, index2v(3))
     call int_div(aux, mesh(2), index2v(1), index2v(2))
+  end function
+  !
+  pure function index2v_n(i, mesh)
+    !! Demultiplex index of a single wave vector.
+    !! i is the multiplexed index of a wave vector (always 1-based).
+    !! v is the demultiplexed triplet of a wave vector.
+    !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
+    !! base chooses whether v has 0- or 1-based indexing.
+
+    integer, intent(in) :: i, mesh(3)
+    integer :: index2v_n(3)
+    integer :: aux
+
+    call int_div(i - 1, mesh(1), aux, index2v_n(1))
+    call int_div(aux, mesh(2), index2v_n(3), index2v_n(2))
   end function
   !
   pure function index2v_cart(i, mesh, at)
@@ -268,11 +296,12 @@ contains
     !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
 
     integer, intent(in) :: mesh(3)
-    integer :: grid_vec_cryst(3,product(mesh))
+    integer,allocatable :: grid_vec_cryst(:,:)
     logical, intent(in), optional :: center
     integer :: i, j, k, n
     integer :: center_
 
+    allocate(grid_vec_cryst(3,product(mesh)))
     if(present(center)) then
       if(center) then
         center_ = 1
@@ -301,9 +330,9 @@ contains
     integer, intent(in) :: mesh(3)
     real(dp) :: at(3,3)
     logical, intent(in), optional :: center
-    real(dp) :: grid_vec_cart(3, product(mesh))
+    real(dp), allocatable :: grid_vec_cart(:,:)
     logical :: center_
-    integer :: grid_vec_cryst_(3, product(mesh))
+    integer, allocatable :: grid_vec_cryst_(:,:)
     !
     if(present(center)) then
       center_ = center
@@ -311,8 +340,11 @@ contains
       center_ = .false.
     end if
     !
+    allocate(grid_vec_cryst_(3,product(mesh)))
+    allocate(grid_vec_cart(3,product(mesh)))
     grid_vec_cryst_ = grid_vec_cryst(mesh, center_)
     grid_vec_cart = REAL(grid_vec_cryst_, DP)
+    deallocate(grid_vec_cryst_)
     call cryst_to_cart(product(mesh), grid_vec_cart, at, 1)
   end function
   !
@@ -342,17 +374,22 @@ contains
     !
   end subroutine
   !
-  function bz2simple(R, grid)
+  pure function bz2simple(R, grid)
     integer, intent(in) :: R(3), grid(3)
     integer :: bz2simple(3)
     integer :: i, j
     !
     bz2simple = mod(R, grid)
     do i = 1, 3
-      if (bz2simple(i) < 0) &
+      do while (bz2simple(i) < 0)
         bz2simple(i) = bz2simple(i) + grid(i)
-      if(bz2simple(i) < 0 .or. bz2simple(i) >= grid(i)) &
-        call errore('bz2simple', ': R out of range', 1)
+      enddo
+      do while (bz2simple(i) >= grid(i))
+        bz2simple(i) = bz2simple(i) - grid(i)
+      enddo
+      ! if(bz2simple(i) < 0 .or. bz2simple(i) >= grid(i)) &
+      ! call errore('bz2simple', ': R out of range', 1)
+      ! stop 1
     end do
   end function
   !

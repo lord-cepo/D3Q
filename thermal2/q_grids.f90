@@ -447,9 +447,9 @@ CONTAINS
         DO k = 0, n3-1
           !
           idx = idx+1
-          grid%xq(1,idx) = REAL(i,kind=DP)/REAL(n1,kind=DP)
+          grid%xq(1,idx) = REAL(k,kind=DP)/REAL(n3,kind=DP)
           grid%xq(2,idx) = REAL(j,kind=DP)/REAL(n2,kind=DP)
-          grid%xq(3,idx) = REAL(k,kind=DP)/REAL(n3,kind=DP)
+          grid%xq(3,idx) = REAL(i,kind=DP)/REAL(n1,kind=DP)
           !
         ENDDO
       ENDDO

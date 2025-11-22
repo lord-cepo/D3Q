@@ -593,11 +593,12 @@ CONTAINS
     TYPE(ph_system_info),INTENT(in)   :: S
     TYPE(forceconst2_grid),INTENT(in) :: fc2
     REAL(DP),INTENT(out)              :: freq(S%nat3)
-    COMPLEX(DP),INTENT(out)           :: U(S%nat3,S%nat3)
+    COMPLEX(DP), optional, INTENT(out)           :: U(S%nat3,S%nat3)
     REAL(DP),PARAMETER :: eps = 0._dp
+    complex(dp) :: U_(S%nat3, S%nat3)
     !
-    CALL fftinterp_mat2(xq, S, fc2, U)
-    CALL mat2_diag(S%nat3, U, freq)
+    CALL fftinterp_mat2(xq, S, fc2, U_)
+    CALL mat2_diag(S%nat3, U_, freq)
     !U = CONJG(U)
     WHERE    (freq >  eps)
       freq = DSQRT(freq)
@@ -607,6 +608,7 @@ CONTAINS
       freq = 0._dp
     ENDWHERE
     !
+    if(present(U)) U = U_
   END SUBROUTINE freq_phq
   !
   ! Interpolate dynamical matrice at q and diagonalize it

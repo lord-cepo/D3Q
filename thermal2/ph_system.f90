@@ -8,7 +8,7 @@
 MODULE ph_system
   USE kinds,      ONLY : DP
   USE parameters, ONLY : ntypx
-#include "mpi_thermal.h"  
+#include "mpi_thermal.h"
   ! \/o\________\\\_________________________________________/^>
   TYPE ph_system_info
     ! atoms
@@ -47,7 +47,7 @@ MODULE ph_system
     LOGICAL :: verbose
     !
     verbose = ionode !.and..FALSE. !just shut up
-    
+
     !
     ! NOT checking : atm, amass, symm_type
     !
@@ -58,15 +58,15 @@ MODULE ph_system
     IF(.not.same.and.verbose) WRITE(stdout,*) "nat", S%nat, Z%nat
     same = same .and. (S%ibrav == Z%ibrav)
     IF(.not.same.and.verbose) WRITE(stdout,*) "ibrav", S%ibrav, Z%ibrav
-    
-    
+
+
     IF(allocated(S%ityp).and.allocated(Z%ityp)) THEN
       same = same .and. ALL( S%ityp(1:S%ntyp) == Z%ityp(1:Z%ntyp))
       IF(.not.same.and.verbose) WRITE(stdout,*) "ityp", S%ityp, Z%ityp
     ELSE
       WRITE(stdout,*) "One system is missing ions types!"
     ENDIF
-    
+
     IF(allocated(S%tau).and.allocated(Z%tau)) THEN
       same = same .and. ALL( ABS(S%tau -Z%tau) < eps)
       IF(.not.same.and.verbose) WRITE(stdout,*) "tau", S%tau, Z%tau
@@ -100,7 +100,7 @@ MODULE ph_system
 !     same = same .and. (S%lrigid .or. Z%lrigid)
 !     same = same .and. ALL( ABS(S%epsil -Z%epsil) < eps)
 !     IF(.not.same) ioWRITE(stdout,*) "epsil", S%epsil, Z%epsil
-    
+
   END FUNCTION same_system
   ! \/o\________\\\_________________________________________/^>
   SUBROUTINE read_system(unit, S)
@@ -128,7 +128,7 @@ MODULE ph_system
     ! generate at, bg, volume
     IF (S%ibrav /= 0) THEN
       CALL latgen(S%ibrav, S%celldm, S%at(:,1), S%at(:,2), S%at(:,3), S%omega)
-      S%at = S%at / S%celldm(1)  !  bring at from bohr to units of alat 
+      S%at = S%at / S%celldm(1)  !  bring at from bohr to units of alat
     ENDIF
     CALL volume(S%celldm, S%at(:,1), S%at(:,2), S%at(:,3), S%omega)
     CALL recips(S%at(:,1), S%at(:,2), S%at(:,3), S%bg(:,1), S%bg(:,2), S%bg(:,3))
@@ -176,7 +176,7 @@ MODULE ph_system
        ioWRITE(stdout,*) "Importing old force constant file: setting periodicity along ALL directions."
        ioWRITE(stdout,*) "If system is isolated along one direction, please regenerate FCs with option '-n'."
     ENDIF
-    
+
     !print*, "lrigid", S%lrigid
     IF(ios/=0) CALL errore(sub,"reading rigid", 1)
     IF(S%lrigid)THEN
@@ -193,7 +193,7 @@ MODULE ph_system
         IF(ios/=0) CALL errore(sub,"reading zeu (2)", na)
 !         READ(unit,*) cdummy
       ENDDO
-     
+
 !     ELSE
 !       ALLOCATE(S%zeu(0,0,0))
     ENDIF
@@ -205,7 +205,7 @@ MODULE ph_system
     IMPLICIT NONE
     TYPE(ph_system_info),INTENT(in)   :: S ! = System
     INTEGER,INTENT(in) :: unit
-    LOGICAL,OPTIONAL,INTENT(in) :: matdyn 
+    LOGICAL,OPTIONAL,INTENT(in) :: matdyn
     !
     CHARACTER(len=11),PARAMETER :: sub = "write_system"
     !
@@ -235,10 +235,10 @@ MODULE ph_system
       WRITE(unit,'(2i9,3f25.16)',iostat=ios) na, S%ityp(na), S%tau(:,na)
       IF(ios/=0) CALL errore(sub,"writing na, S%atm(nt), S%amass(nt)", nt)
     ENDDO
-   
-!    WRITE(*,*) "present matdyn", present(matdyn), matdyn, default_if_not_present(matdyn,.false.) 
+
+!    WRITE(*,*) "present matdyn", present(matdyn), matdyn, default_if_not_present(matdyn,.false.)
     IF(.not. default_if_not_present(.false.,matdyn)) THEN
-    WRITE(unit,'(5x,l,3x,3l)',iostat=ios) S%lrigid, S%nopbc
+    WRITE(unit,'(5x,l,3x,x,l,x,l,x,l)',iostat=ios) S%lrigid, S%nopbc
     IF(ios/=0) CALL errore(sub,"writing rigid", 1)
     IF(S%lrigid)THEN
       WRITE(unit,'(3(3f25.16,/))',iostat=ios) S%epsil
@@ -276,7 +276,7 @@ MODULE ph_system
     S%nat3 = 3*S%nat
     S%nat32 = S%nat3**2
     S%nat33 = S%nat3**3
-    
+
     IF(allocated(S%sqrtmm1)) CALL errore("aux_system","should not be called twice",1)
     ALLOCATE(S%sqrtmm1(S%nat3))
     DO i = 1,S%nat3
@@ -324,6 +324,6 @@ MODULE ph_system
     WRITE(stdout,*) "dZ* read from file."
     !
   END SUBROUTINE read_dzeu
-  
 
-END MODULE 
+
+END MODULE

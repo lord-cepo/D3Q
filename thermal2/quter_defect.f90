@@ -31,6 +31,10 @@ module quter_defect
     !! tau of the defect atom
     integer :: iR1 = 0
     !! used for q2r
+    integer, allocatable :: defects(:,:)
+    !! indices : (3, n_defects) (nat, R, isc)
+    !!
+    real(dp), allocatable :: mass_ratios(:)
     !
     complex(dp), allocatable :: inclusion_Dnx_out(:,:,:)
     !! only for inclusion, they are Dnx in (Dnn Dnx Dxn Dxx), where x is inclusion and n is normal atom.
@@ -60,10 +64,10 @@ module quter_defect
 contains
   !
   !> map_atm_sc(inat, iR) = inat_sc
-  function map_uc2sc(S, S_sc, sc_grid, taudef)
+  function map_uc2sc(S, S_sc, sc_grid)
     TYPE(ph_system_info), intent(in) :: S, S_sc
     integer, intent(in) :: sc_grid(3)
-    real(dp), intent(out), optional :: taudef(3)
+    ! real(dp), intent(out), optional :: taudef(3)
     integer :: ndef
     !
     logical :: idef(S_sc%nat)
@@ -74,23 +78,23 @@ contains
     map_uc2sc = -1
     idef = .false.
     ndef = 0
-    if(present(taudef)) taudef = 0._dp
+    ! if(present(taudef)) taudef = 0._dp
     do i = 1, S%nat
       do isc = 1, S_sc%nat
         r_cryst = S_sc%tau(:,isc)*sc_grid-S%tau(:,i)
         call cryst_to_cart(1, r_cryst, S_sc%bg, -1)
-        if (NORM2(r_cryst - NINT(r_cryst))<3e-1_dp) then
+        if (NORM2(r_cryst - NINT(r_cryst))<1e-1_dp) then
           iR = v2index(NINT(r_cryst), sc_grid)
           if (map_uc2sc(i, iR) > -1) CALL errore("map_uc2sc", "found same atom in same R", 1)
           if (iR < 1 .or. iR > PRODUCT(sc_grid)) CALL errore("map_uc2sc", "R is out of bound", ABS(iR))
           map_uc2sc(i, iR) = isc
-          if(present(taudef)) taudef = taudef + S_sc%tau(:,isc)
-          ndef = ndef + 1
           ! if(S%atm(S%ityp(i)) /= S_sc%atm(S_sc%ityp(isc))) idef(isc) = .true.
+          ! if(present(taudef)) taudef = taudef + S_sc%tau(:,isc)
+          ! ndef = ndef + 1
         endif
       enddo
     enddo
-    if(present(taudef)) taudef = taudef / REAL(ndef, DP)
+    ! if(present(taudef)) taudef = taudef / REAL(ndef, DP)
     ! print"(A,I3.3,A)", "found ", ndef, " defect atoms in the supercell"
     n_vac = COUNT(map_uc2sc == -1)
     if (n_vac + S_sc%nat /= S%nat * product(sc_grid)) then
@@ -100,6 +104,52 @@ contains
 
   end function
 !
+  subroutine find_defects(S, S_sc, fc, sites)
+    TYPE(ph_system_info), intent(in) :: S, S_sc
+    CLASS(forceconst2_sc), intent(inout) :: fc
+    integer, allocatable, intent(in) :: sites(:)
+    !
+    integer :: map(S%nat, product(fc%nq))
+    integer :: i, iR, ndef
+    integer, allocatable :: defects_tmp(:,:)
+    real(dp), allocatable :: mass_ratios_tmp(:)
+    !
+    map = map_uc2sc(S, S_sc, fc%nq)
+    !
+    allocate(fc%defects(3, S%nat * product(fc%nq)))
+    allocate(fc%mass_ratios(S%nat * product(fc%nq)))
+    !
+    ndef = 0
+    do concurrent(iR=1:product(fc%nq), i=1:S%nat, &
+      S_sc%amass(S_sc%ityp(map(i,iR))) /= S%amass(S%ityp(i)))
+      ndef = ndef + 1
+      fc%defects(:, ndef) = [i, iR, map(i,iR)]
+      fc%mass_ratios(ndef) = - (S_sc%amass(S_sc%ityp(map(i,iR))) - S%amass(S%ityp(i))) / S%amass(S%ityp(i))
+    enddo
+    !
+    if(allocated(sites) .and. ndef == 1) then
+      do i = 1, size(sites)
+        ndef = ndef + 1
+        fc%defects(:, ndef) = [sites(i), fc%defects(2,1), map(sites(i), fc%defects(2,1))]
+        fc%mass_ratios(ndef) = fc%mass_ratios(1)
+      enddo
+    endif
+    !
+    allocate(defects_tmp(3, ndef))
+    allocate(mass_ratios_tmp(ndef))
+    defects_tmp = fc%defects(:, :ndef)
+    mass_ratios_tmp = fc%mass_ratios(:ndef)
+    call move_alloc(defects_tmp, fc%defects)
+    call move_alloc(mass_ratios_tmp, fc%mass_ratios)
+    !
+    fc%taudef = 0._dp
+    do i = 1, ndef
+      fc%taudef = fc%taudef + S%tau(:, fc%defects(1,i))
+    enddo
+    fc%taudef = fc%taudef / REAL(ndef, DP)
+    !
+  end subroutine
+  !
   function map_sc2uc(S, S_sc, sc_grid, which)
     TYPE(ph_system_info), intent(in) :: S, S_sc
     integer, intent(in) :: sc_grid(3)
@@ -140,7 +190,7 @@ contains
     endif
   end function
   !
-  SUBROUTINE allocate_fc2_sc(fc, S, grid)
+  SUBROUTINE allocate_fc2_nodef(fc, S, grid)
     use thutils, only : grid_vec
     IMPLICIT NONE
     INTEGER,INTENT(in) :: grid(3)
@@ -171,6 +221,44 @@ contains
     fc%nq = grid
     fc%stage = -1
     fc%fc = 0._dp
+    !
+  END SUBROUTINE
+  !
+  SUBROUTINE allocate_fc2_sc(fc, S, S_sc, grid, sites)
+    use thutils, only : grid_vec
+    IMPLICIT NONE
+    INTEGER,INTENT(in) :: grid(3)
+    type(ph_system_info),INTENT(in) :: S
+    type(ph_system_info),INTENT(in) :: S_sc
+    integer, allocatable, intent(in) :: sites(:)
+    CLASS(forceconst2_sc),INTENT(inout) :: fc
+    CHARACTER(len=16),PARAMETER :: sub = "allocate_fc2_sc"
+    integer :: n_R, iR
+    !
+    IF(allocated(fc%yR2) .or. allocated(fc%FC) &
+      .or. allocated(fc%xR2) .or. allocated(fc%mix)) &
+      CALL errore(sub, 'some element is already allocated', 1)
+    !
+    n_R = PRODUCT(grid)
+    fc%n_R2 = n_R
+    allocate(fc%n_R1(n_R))
+    fc%n_R1 = n_R
+    !
+    ALLOCATE(fc%yR1(3,n_R,n_R), fc%yR2(3,n_R))
+    fc%yR2 = grid_vec(grid)
+    do iR = 1, n_R
+      fc%yR1(:,:,iR) = fc%yR2
+    enddo
+    !
+    ALLOCATE(fc%xR1(3,n_R,n_R), fc%xR2(3,n_R))
+    call fc%cart(S, 1)
+    call fc%cart(S, 2)
+    ALLOCATE(fc%FC(S%nat3,S%nat3,n_R,n_R))
+    fc%nq = grid
+    fc%stage = -1
+    fc%fc = 0._dp
+    !
+    call find_defects(S, S_sc, fc, sites)
     !
   END SUBROUTINE
   !
@@ -438,8 +526,8 @@ contains
     !
     integer :: na2, na1, j1, j2, nR, R2, R1, R2_big, R1_big
     integer :: map_sc(S%nat, PRODUCT(grid))
-    integer :: far_grid_cryst(3,(2*nfar+1)**3)
-    real(dp) :: far_grid_cart(3,(2*nfar+1)**3)
+    integer, allocatable :: far_grid_cryst(:,:)
+    real(dp), allocatable :: far_grid_cart(:,:)
     integer :: nRbig, counter
     integer :: iperi, nxR2, ixR2, ixR1
     integer, allocatable :: R2_list(:), R1_list(:,:), yR2_list(:,:), yR1_list(:,:,:), nxR1(:)
@@ -473,7 +561,7 @@ contains
     allocate(yR1_list(3, nR*nRbig, nR*nRbig))
     allocate(nxR1(nR*nRbig))
     !
-    map_sc = map_uc2sc(S, S_sc, grid, fc%taudef)
+    map_sc = map_uc2sc(S, S_sc, grid)
     !
     new_fc = 0._dp
     R2_list = -1
@@ -768,8 +856,8 @@ contains
     far_mesh = 2*nfar+1
     nRbig = PRODUCT(far_mesh)
     !
-    allocate(sum_grid_cart(3, 8*nRbig*nR))
-    allocate(diff_grid_cart(3, nRbig*nR))
+    ! allocate(sum_grid_cart(3, 8*nRbig*nR))
+    ! allocate(diff_grid_cart(3, nRbig*nR))
     ! allocate(far_grid_cryst(3, nRbig))
     sum_grid_cart = grid_vec_cart(far_mesh*grid*2, S%at, center=.true.)/2
     diff_grid_cart = grid_vec_cart(far_mesh*grid, S%at, center=.true.)
@@ -792,7 +880,7 @@ contains
     do na1 = 1, S%nat
       do na2 = 1, S%nat
         d2 = S%tau(:,na1) - S%tau(:,na2)
-        d1 = (S%tau(:,na1) + S%tau(:,na2)) / 2._dp
+        d1 = (S%tau(:,na1) + S%tau(:,na2)) / 2._dp - fc%taudef
         call inside_ws(diff_grid_cart, d2, nrws, rws, weights2, inds2)
         call inside_ws(sum_grid_cart, d1, nrws, rws, weights1, inds1)
         do iR2_big = 1, size(weights2)
@@ -809,6 +897,7 @@ contains
             if(any(abs(NINT(R2) - R2) > 1e-10_dp)) cycle
             iR1 = iR_of(NINT(R1), grid)
             iR2 = iR_of(NINT(R2), grid)
+            if (any(abs(nint(R1)) >= grid-1) .or. any(abs(nint(R2)) >= grid-1)) cycle
             call add_ind(R2_list, iR_of(NINT(R2), grid*far_mesh), nxR2, ixR2)
             yR2_list(:,ixR2) = NINT(R2)
             call add_ind(R1_list(:,ixR2), iR_of(NINT(R1), grid*far_mesh), nxR1(ixR2), ixR1)
@@ -852,27 +941,127 @@ contains
     !
     call print_message("end of centering  R1-R2 && R1+R2")
     deallocate(new_fc, yR2_list, yR1_list, nxR1)
-  contains
+  end subroutine
+  !
+  function iR_of(R, sc_grid) result(iR)
+    integer, intent(in) :: R(3)
+    integer, intent(in) :: sc_grid(3)
     !
-    function iR_of(R, sc_grid) result(iR)
-      integer, intent(in) :: R(3)
-      integer, intent(in) :: sc_grid(3)
-      !
-      integer :: i, iR
-      integer :: Rplus(3)
-      !
-      Rplus = R
-      do i = 1, 3
-        do while (Rplus(i) < 0)
-          Rplus(i) = Rplus(i) + sc_grid(i)
-        enddo
-        do while (Rplus(i) >= sc_grid(i))
-          Rplus(i) = Rplus(i) - sc_grid(i)
+    integer :: i, iR
+    integer :: Rplus(3)
+    !
+    Rplus = R
+    do i = 1, 3
+      do while (Rplus(i) < 0)
+        Rplus(i) = Rplus(i) + sc_grid(i)
+      enddo
+      do while (Rplus(i) >= sc_grid(i))
+        Rplus(i) = Rplus(i) - sc_grid(i)
+      enddo
+    enddo
+    !
+    iR = v2index(Rplus, sc_grid)
+  end function iR_of
+  !
+  SUBROUTINE minimal_image(S, sc_grid, diffs, n_weights, weights)
+    use thutils, only: e_iqr, grid_vec_cart, cryst2cart
+    type(ph_system_info), intent(in) :: S
+    integer, intent(in) :: sc_grid(3)
+    !
+    real(dp) :: big_at(3,3)
+    integer :: iR, j, na1, na2
+    real(dp), allocatable :: big_R(:,:), R_grid(:,:)
+    integer :: far_grid(3)
+    real(dp) :: diff(3)
+    real(dp), allocatable :: ws_weights(:)
+    integer, allocatable :: inds(:)
+    !
+    ! Stuff used to compute Wigner-Seitz weights:
+    INTEGER, PARAMETER:: nrwsx=2000
+    INTEGER :: nrws
+    REAL(DP) :: rws(0:3,nrwsx)
+    REAL(DP),EXTERNAL :: wsweight
+    !
+    real(dp), allocatable, intent(out) :: diffs(:,:,:,:,:), weights(:,:,:,:)
+    integer, allocatable, intent(out):: n_weights(:,:,:)
+    !
+    allocate(diffs(3,10,product(sc_grid),S%nat,S%nat))
+    allocate(n_weights(product(sc_grid),S%nat,S%nat))
+    allocate(weights(10,product(sc_grid),S%nat,S%nat))
+    !
+    far_grid = 2*nfar+1
+    ! initialize WS r-vectors
+    forall(j = 1:3) big_at(:,j) = S%at(:,j) * sc_grid(j)
+    CALL wsinit(rws,nrwsx,nrws,big_at)
+    !
+    big_R = grid_vec_cart(far_grid, big_at, center=.true.)
+    R_grid = grid_vec_cart(sc_grid, S%at)
+    do iR = 1, product(sc_grid)
+      do na2 = 1, S%nat
+        do na1 = 1, S%nat
+          diff = R_grid(:,iR) + S%tau(:,na1) - S%tau(:,na2)
+          call inside_ws(big_R, diff, nrws, rws, ws_weights, inds)
+          n_weights(iR,na1,na2) = size(ws_weights)
+          do j = 1, size(ws_weights)
+            diffs(:,j,ir,na1,na2) = - R_grid(:,iR) - big_R(:,inds(j))
+            ! print*, cryst2cart(diffs(:,j,na1,na2,ir), S%bg, -1)
+            weights(j,ir,na1,na2) = ws_weights(j)
+          enddo
         enddo
       enddo
-      !
-      iR = v2index(Rplus, sc_grid)
-    end function iR_of
+    enddo
+  end subroutine
+  !
+  SUBROUTINE minimal_image_2(S, sc_grid, diffs, n_weights, weights)
+    use thutils, only: e_iqr, grid_vec_cart, cryst2cart
+    type(ph_system_info), intent(in) :: S
+    integer, intent(in) :: sc_grid(3)
+    !
+    real(dp) :: big_at(3,3)
+    integer :: iR, j, na1, na2
+    real(dp), allocatable :: big_R(:,:), R_grid(:,:)
+    integer :: far_grid(3)
+    real(dp) :: diff(3)
+    real(dp), allocatable :: ws_weights(:)
+    integer, allocatable :: inds(:)
+    !
+    ! Stuff used to compute Wigner-Seitz weights:
+    INTEGER, PARAMETER:: nrwsx=2000
+    INTEGER :: nrws
+    REAL(DP) :: rws(0:3,nrwsx)
+    REAL(DP),EXTERNAL :: wsweight
+    integer :: n_ir(product(sc_grid))
+    integer :: R_int(3)
+    !
+    real(dp), allocatable, intent(out) :: diffs(:,:,:,:,:), weights(:,:,:,:)
+    integer, allocatable, intent(out):: n_weights(:,:,:)
+    !
+    allocate(diffs(3,10,product(sc_grid),S%nat,S%nat))
+    allocate(n_weights(product(sc_grid), S%nat,S%nat))
+    allocate(weights(10,product(sc_grid),S%nat,S%nat))
+    !
+    far_grid = 2*nfar+1
+    ! initialize WS r-vectors
+    forall(j = 1:3) big_at(:,j) = S%at(:,j) * sc_grid(j)
+    CALL wsinit(rws,nrwsx,nrws,big_at)
+    !
+    R_grid = grid_vec_cart(far_grid*sc_grid, S%at, center=.true.)
+    do na2 = 1, S%nat
+      do na1 = 1, S%nat
+        diff = S%tau(:,na1) - S%tau(:,na2)
+        call inside_ws(R_grid, diff, nrws, rws, ws_weights, inds)
+        n_ir = 0
+        do j = 1, size(ws_weights)
+          R_int = NINT(cryst2cart(R_grid(:,inds(j)), S%bg, -1))
+          iR = iR_of(R_int, sc_grid)
+          n_iR(iR) = n_iR(iR) + 1
+          diffs(:,n_ir(ir),ir,na1,na2) = - R_grid(:,inds(j))
+          ! print*, cryst2cart(diffs(:,j,na1,na2,ir), S%bg, -1)
+          weights(n_ir(ir),ir,na1,na2) = ws_weights(j)
+        enddo
+        n_weights(:,na1,na2) = n_ir
+      enddo
+    enddo
   end subroutine
   !
   subroutine center3(fc, grid, S, S_sc)
@@ -890,9 +1079,8 @@ contains
     !
     integer :: na1, na2, j1, j2, nR, iR1, iR2, iR_diff, iR_sum
     integer :: map_sc(S%nat, PRODUCT(grid))
-    integer :: far_grid_cryst(3,(2*nfar+1)**3)
-    real(dp) :: far_grid_cart(3,(2*nfar+1)**3)
-    real(dp) :: grid_cart(3,PRODUCT(grid))
+    integer, allocatable :: far_grid_cryst(:,:)
+    real(dp), allocatable :: far_grid_cart(:,:), grid_cart(:,:)
     integer :: nRbig
     integer :: nxR2, ixR2, ixR1
     integer, allocatable :: yR1_list(:,:,:), yR2_list(:,:), yR_diff(:,:), yR_sum(:,:,:), nxR1(:)
@@ -926,7 +1114,7 @@ contains
     allocate(yR1_list(3, SAFE_ALLOCATION, SAFE_ALLOCATION))
     allocate(nxR1(SAFE_ALLOCATION))
     !
-    map_sc = map_uc2sc(S, S_sc, grid, fc%taudef)
+    map_sc = map_uc2sc(S, S_sc, grid)
     !
     new_fc = 0._dp
     yR1_list = -1
@@ -1205,6 +1393,30 @@ contains
     enddo
   end function
   !
+  function fc_sc2RR_cmplx(grid, S, S_sc, fc)
+    integer, intent(in) :: grid(3)
+    type(ph_system_info), intent(in) :: S, S_sc
+    complex(dp), intent(in) :: FC(S_sc%nat3,S_sc%nat3)
+    !
+    complex(dp) :: fc_sc2RR_cmplx(S%nat3, S%nat3, product(grid), product(grid))
+    integer :: sc_na1, sc_na2, j1, j2
+    integer, dimension(S_sc%nat) :: map_R, map_nat
+    !
+    map_R = map_sc2uc(S, S_sc, grid, "R")
+    map_nat = map_sc2uc(S, S_sc, grid, "nat")
+    fc_sc2RR_cmplx = 0._dp
+    do sc_na1 = 1, S_sc%nat
+      do sc_na2 = 1, S_sc%nat
+        do j1 = 1, 3
+          do j2 = 1, 3
+            fc_sc2RR_cmplx(j1+(map_nat(sc_na1)-1)*3, j2+(map_nat(sc_na2)-1)*3, map_R(sc_na1), map_R(sc_na2)) = &
+              FC(j1+(sc_na1-1)*3, j2+(sc_na2-1)*3)
+          enddo
+        enddo
+      enddo
+    enddo
+  end function
+  !
   function fc_uc2sc(S, S_sc, sc_grid, fc)
     TYPE(ph_system_info), intent(in) :: S, S_sc
     integer, intent(in) :: sc_grid(3)
@@ -1342,8 +1554,8 @@ contains
 !     !
 !   END SUBROUTINE
 
+  !
   SUBROUTINE r2q_1st_step(fc, xq)
-    USE input_fc, ONLY : ph_system_info, forceconst2_grid
     USE constants, ONLY : tpi
     IMPLICIT NONE
     !
@@ -1559,53 +1771,24 @@ contains
     end do
   end function
   !
-  subroutine build_mass_ratios(S, Sd, grid, mass_def, iR_def, na_def)
-    type(ph_system_info), intent(in):: S, Sd
-    integer, intent(in) :: grid(3)
-    real(dp), intent(out) :: mass_def
-    integer, intent(out) :: iR_def, na_def
+  SUBROUTINE div_mass0_fcsc(S, fc)
+    USE kinds, only : DP
+    use thutils, only: bz2simple
+    IMPLICIT NONE
+    TYPE(forceconst2_sc) :: fc
+    TYPE(ph_system_info)   :: S
     !
-    integer :: which_iR(S%nat)
-    real(dp):: mass_ratio(S%nat)
-    integer :: minority, majority, tot_defects
-    integer :: map(S%nat, product(grid)), typ(product(grid))
-    integer :: na, iR, nR
+    INTEGER :: i, j, iR1, iR2
     !
-    nR = product(grid)
-    map = map_uc2sc(S, Sd, grid)
-    mass_ratio = 0._dp
-    do na = 1, S%nat
-      do iR = 1, nR
-        typ(iR) = Sd%ityp(map(na, iR))
-      enddo
-      if (all(typ == typ(1))) then
-        which_iR(na) = -1
-        cycle
-      endif
-      minority = typ(1)
-      which_iR(na) = 1
-      do iR = 2, nR-1
-        if (Sd%ityp(map(na, iR)) == minority) then
-          minority = typ(iR+1)
-          which_iR(na) = iR+1
-        endif
-      enddo
-      majority = (SUM(typ)-minority)/(nR-1)
-      mass_ratio(na) = (Sd%amass(minority) - Sd%amass(majority)) / &
-        (Sd%amass(majority))
-    enddo
+    DO iR2 = 1, fc%n_R2
+      do iR1 = 1, fc%n_R1(iR2)
+        do concurrent(i=1:S%nat3, j=1:S%nat3)
+          fc%FC(i, j, iR1, iR2) = fc%FC(i, j, iR1, iR2) * S%sqrtmm1(i) * S%sqrtmm1(j)
+        ENDDO
+      ENDDO
+    ENDDO
     !
-    tot_defects = 0
-    do na = 1, S%nat
-      if (which_iR(na) < 0) cycle
-      tot_defects = tot_defects + 1
-      iR_def = which_iR(na)
-      na_def = na
-      mass_def = mass_ratio(na)
-    enddo
-    if (tot_defects /= 1) &
-      CALL errore("build_mass_ratios", "there should be only one defect", ABS(tot_defects))
-  end subroutine
+  END SUBROUTINE
   !
   ! SUBROUTINE div_mass_fcsc(S, Sd,fc)
   !   USE kinds, only : DP

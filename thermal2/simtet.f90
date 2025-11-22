@@ -32,6 +32,8 @@ module simtet
   !! equivalence points in symmetrized grid
   integer :: nvalid
   !! number of VALID tetrahedra
+  real(dp) :: TETRA_MULTIPLIER
+  !! brings ek to unity to avoid float overflow
   !
   PUBLIC
 contains
@@ -145,6 +147,8 @@ contains
       enddo
     ENDDO ! itettot
     !
+    ! TETRA_MULTIPLIER = real(size(ek), dp) / sum(ek)
+    ! ek_sort = ek_sort * TETRA_MULTIPLIER
   END SUBROUTINE
   !
   function bz_integral(e, S, grid, ek)
@@ -330,6 +334,8 @@ contains
       endif
     ENDDO ! itettot
     !
+    TETRA_MULTIPLIER = real(size(ek), dp) / ABS(sum(ek))
+    ek_sort = ek_sort * TETRA_MULTIPLIER
     nvalid = itvalid
   END SUBROUTINE
   !
@@ -349,11 +355,13 @@ contains
     INTEGER :: ik, nt, ibnd, ii,  ii_
     complex(DP) :: e(4)
     complex(dp) :: w(4), dummy(4)
+    complex(dp) :: ef_
 
     ! for real part calc
     ! REAL(DP) :: wR0(4), ef_e(4), log_ef_e(4), prod_a(4), sum_a(4), second_term(4)
     ! INTEGER :: i3, j3
     !
+    ef_ = ef * TETRA_MULTIPLIER
     wg_sym = 0._dp
     !
     DO nt = 1+my_id, nvalid, num_procs
@@ -361,7 +369,7 @@ contains
       DO ibnd = 1, nbnd
         !
         e = ek_sort(:,ibnd,nt)
-        call SIM0TWOI(w, dummy, ef - e)
+        call SIM0TWOI(w, dummy, ef_ - e)
         !
         DO ii_ = 1, iisize_tetra(nt)
           !
@@ -374,7 +382,7 @@ contains
       !
     ENDDO ! nt
     ! wg = wg / REAL(ntetra, dp)
-    wg_sym = wg_sym / 6.0_dp
+    wg_sym = wg_sym / ntetra * TETRA_MULTIPLIER
     !
     ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
     CALL mpi_bsum(nbnd, nqs, wg_sym)

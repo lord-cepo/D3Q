@@ -106,6 +106,7 @@ MODULE code_input
     REAL(DP) :: optimize_grid_thr
 !
     LOGICAL :: restart
+    integer, allocatable :: sites(:)
 !
   END TYPE code_input_type
 
@@ -171,6 +172,8 @@ CONTAINS
     LOGICAL            :: print_all = .true.      ! for tk-sma calculation, store the lw and velocity operator
     LOGICAL            :: workaround_print_v=.false.
     LOGICAL            :: use_symm = .true.
+    integer,allocatable :: temp(:)
+    integer :: n
     !
     ! The following variables are used for spectre and final state calculations
     INTEGER  :: ne = -1                 ! number of energies on which to sample the spectral decomposition
@@ -874,6 +877,16 @@ CONTAINS
         S%amass_variance(1:S%ntyp) = auxs(1:S%ntyp)
         DEALLOCATE(auxs, auxm)
         ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+       CASE ("SITES")
+        allocate(temp(S%nat))
+        temp = 0
+        read(input_unit,'(A)') line
+        read(line, *, iostat=ios) temp
+        n = count(temp /= 0.0)
+        allocate(input%sites(n))
+        input%sites = temp(:n)
+        deallocate(temp)
+        !
        CASE DEFAULT
         IF(TRIM(line) /= '') THEN
           ioWRITE(*,*) "Skip:", TRIM(line)

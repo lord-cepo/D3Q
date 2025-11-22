@@ -222,6 +222,28 @@ MODULE input_fc
     ENDDO
     !
   END SUBROUTINE div_mass_fc2
+  !
+    SUBROUTINE multiply_mass_fc2 (S,fc)
+    USE kinds, only : DP
+    IMPLICIT NONE
+    TYPE(forceconst2_grid) :: fc
+    TYPE(ph_system_info)   :: S
+    !
+    INTEGER :: i, j, i_R
+    !
+    IF(.not.ALLOCATED(S%sqrtmm1)) &
+      call errore('multiply_mass_fc2', 'missing sqrtmm1, call aux_system first', 1)
+
+    DO i_R = 1, fc%n_R
+      DO j = 1, S%nat3
+      DO i = 1, S%nat3
+        fc%FC(i, j, i_R) = fc%FC(i, j, i_R) / (S%sqrtmm1(i)*S%sqrtmm1(j))
+      ENDDO
+      ENDDO
+    ENDDO
+    !
+  END SUBROUTINE multiply_mass_fc2
+  !
   FUNCTION multiply_mass_dyn (S,dyn) RESULT(dyn_mass)
     USE kinds, only : DP
     !USE input_fc,         ONLY : ph_system_info

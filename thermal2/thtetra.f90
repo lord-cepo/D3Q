@@ -1,4 +1,3 @@
-!
 ! This module is rewritten from the tetra.f90 in PW/src
 !
 MODULE thtetra
@@ -15,6 +14,10 @@ MODULE thtetra
   ! they multiply ni with Jik in the first article, then they transform (fit) through wlsm matrices
   USE kinds, ONLY: DP
   USE mpi_thermal, ONLY: my_id, num_procs, mpi_bsum
+  use input_fc, only: ph_system_info, allocate_fc2_grid
+  use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
+  use fc2_interpolate, only: forceconst2_grid, freq_phq_safe
+  use thutils, only : freq_in_grid
   !
   IMPLICIT NONE
   !
@@ -61,7 +64,7 @@ MODULE thtetra
   ! INTEGER, allocatable :: which_tetra(:,:,:)
   !! inverse of tetra: given a q point, it gives all the tetrahedra that contain it
 
-  REAL(DP), PARAMETER :: tet_cutoff = 1.0E-2_DP
+  REAL(DP), PARAMETER :: tet_cutoff = 1.0E-3_DP
   REAL(DP), PARAMETER :: min_relative_distance = 1.0E-9_DP
   LOGICAL :: opt_flag
   !
@@ -69,6 +72,7 @@ MODULE thtetra
   PUBLIC :: tetra_init, deallocate_tetra, tetra_weights_delta
   PUBLIC :: tetra_weights_delta_sym, rm_degen_vertices
   PUBLIC :: equiv_grid, ek_sort, nqtot, tetra_output
+  PUBLIC :: set_wg
 
   EXTERNAL :: errore, hpsort
 
@@ -84,9 +88,83 @@ MODULE thtetra
     !! equivalence points in symmetrized grid
     real(dp), allocatable :: qw(:)
     !! q point weight, copied from the symmetrized grid
+    real(dp), allocatable :: f(:,:)
+    !! symmetrized frequencies
+    real(dp), allocatable :: en(:)
+    !! energies in the real axis
+    real(dp) :: max_f
   end type tetra_output
 
 CONTAINS
+  !
+  subroutine tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult, grid_sym_, U_sym)
+    type(q_grid), intent(in) :: grid
+    type(ph_system_info), intent(in) :: S
+    type(forceconst2_grid), intent(in) :: fc2
+    type(tetra_output), intent(out) :: wg
+    integer, intent(in) :: n_omega
+    real(dp), intent(in) :: mult
+    type(q_grid), intent(out), optional :: grid_sym_
+    complex(dp), allocatable, intent(out), optional :: U_sym(:,:,:)
+    !
+    type(q_grid) :: grid_sym
+    real(dp), allocatable :: freqs_sym(:,:)
+    real(dp) :: max_freq
+    integer :: iw
+    !
+    call q_grid_copy(grid, grid_sym)
+    if( .not. grid_sym%symmetrized) &
+      call grid_sym%symmetrize(S)
+    !
+    allocate(freqs_sym(S%nat3, grid_sym%nqtot))
+    if(present(U_sym)) then
+      allocate(U_sym(S%nat3, S%nat3, grid_sym%nqtot))
+      call freq_in_grid(S, fc2, grid_sym, freqs_sym, U_sym)
+    else
+      call freq_in_grid(S, fc2, grid_sym, freqs_sym)
+    endif
+    call tetra_init_sym(grid_sym, S, freqs_sym**2, .false., wg)
+    if (present(grid_sym_)) &
+      call q_grid_copy(grid_sym, grid_sym_)
+    allocate(wg%w(S%nat3, wg%nsym, n_omega))
+    call move_alloc(freqs_sym, wg%f)
+    wg%max_f = maxval(wg%f) * mult
+    allocate(wg%en(n_omega))
+    do iw = 1, n_omega
+      wg%en(iw) = (iw-1) * wg%max_f / REAL(n_omega, dp)
+    enddo
+    !
+  end subroutine
+  !
+  subroutine set_wg(S, fc2, grid, n_omega, mult, wg)
+    use thutils, only : freq_in_grid
+    use merge_degenerate, only: merge_degen
+    !
+    type(ph_system_info), intent(in) :: S
+    type(forceconst2_grid), intent(in) :: fc2
+    type(q_grid), intent(in) :: grid
+    integer, intent(in) :: n_omega
+    type(tetra_output), intent(out) :: wg
+    real(dp), intent(in) :: mult
+    !
+    integer :: iq, ibnd, iw
+    real(dp) :: freqs(S%nat3,grid%nqtot)
+    !
+    call tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult)
+    call freq_in_grid(S, fc2, grid, freqs)
+    !
+    do iw = 1, n_omega
+      wg%w(:,:,iw) = tetra_weights_green(wg%en(iw)**2)
+      do iq = 1, grid%nqtot
+        do ibnd = 1, S%nat3
+          if(isnan(ABS(wg%w(ibnd,wg%e(iq),iw)))) wg%w(ibnd,wg%e(iq),iw) = 0._dp
+        enddo
+      enddo
+      do iq = 1, grid%nqtot
+        call merge_degen(S%nat3, wg%w(:,wg%e(iq),iw), freqs(:,iq))
+      enddo
+    enddo
+  end subroutine
   !
   subroutine equiv_grid(grid, S, equiv_, first_point)
     use symm_base, only : symms => s, nsym, time_reversal, t_rev
@@ -417,6 +495,7 @@ CONTAINS
     MULTIPLIER = SUM(ek_sort)/REAL(SIZE(ek_sort), dp)
     ! print*, "multiplier", MULTIPLIER
     ek_sort = ek_sort / MULTIPLIER
+    MIN_DISTANCE = MULTIPLIER * min_relative_distance
     nvalid = itvalid
     ! print*, "number of tetra to be used", nvalid, "out of", ntetra
     ! print*, "tetra", nqtot, nqs, symmetry
@@ -788,23 +867,15 @@ CONTAINS
     endif
     DAV = (D(1) + D(2))/2.0_dp
     if (abs((D(1) - D(2))/(DAV + hw)) < tet_cutoff) then
-      if (D(2) > 0) then
-        D(1) = D(2)*(2.0_dp - tet_cutoff)/(2.0_dp + tet_cutoff)
-      else
-        D(1) = D(2)*(2.0_dp + tet_cutoff)/(2.0_dp - tet_cutoff)
-      endif
+        D(1) = DAV - 0.5_dp*abs(DAV + hw)*tet_cutoff
     endif
     DAV = (D(3) + D(4))/2.0_dp
     if (abs((D(3) - D(4))/(DAV + hw)) < tet_cutoff) then
-      if (D(3) > 0) then
-        D(4) = D(3)*(2.0_dp + tet_cutoff)/(2.0_dp - tet_cutoff)
-      else
-        D(4) = D(3)*(2.0_dp - tet_cutoff)/(2.0_dp + tet_cutoff)
-      endif
+        D(4) = DAV - 0.5_dp*abs(DAV + hw)*tet_cutoff
     endif
   end subroutine
   !
-  PURE FUNCTION real_vertices(hw, D) result(wR0)
+  FUNCTION real_vertices(hw, D) result(wR0)
     !
     real(dp), INTENT(IN) :: hw
     real(dp), INTENT(IN) :: D(4)
@@ -841,6 +912,16 @@ CONTAINS
     enddo
     !
     wR0 = wR0 * ff
+    if(any(abs(wR0)>1e10_dp)) then
+      print*, hw, D
+      print*, wR0
+      print*, dd
+      print*, ll
+      print*, bb
+      print*, cc
+      print*, ff
+      call errore("real_vertices", "weight too large", 1)
+    endif
   END FUNCTION
 
   FUNCTION delta_vertices(ef, e) result(wI0)
@@ -963,10 +1044,10 @@ CONTAINS
         !
         e = ek_sort(:,ibnd,nt)
         !
-        D = -e
-        CALL rm_degen_vertices(ef_mult, D)
-        wR0 = real_vertices(ef_mult, D)
         wI0 = delta_vertices(ef_mult, e)
+        CALL rm_degen_vertices(ef_mult, e)
+        D = -e
+        wR0 = real_vertices(ef_mult, D)
         !
         !
         if(symmetry) then
