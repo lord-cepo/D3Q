@@ -1,0 +1,106 @@
+---------------------------------------------------------------------------------
+ file: 0README 
+ date: 2011-08-26 
+ who:  S.Kaprzyk 
+ what: To compile MainA, or MainB with the gfortran compiler use commands: 
+
+gfortran -O MainA.f qtets.f sim1d.f sim2d.f sim3d.f -o MainA 
+
+gfortran -O MainB.f qtets.f sim1d.f sim2d.f sim3d.f -o MainB 
+
+No input is needed. To run the sample tests:
+
+ ./MainA
+ Program will output OUTPUTA (in AppendixA)
+
+ ./MainB 
+ Program will output OUTPUTB (in AppendixB), and OUTMATB (input data for plots)
+--------------------------------------------------------------------------------
+Contents:
+MainA.f - test for SC Lattice Green's Function
+MainB.f - test for nondiagonal SC Lattice Green's Function
+qtets.f - splits the tetrahedron TET(3,4) into small tetrahedrea
+sim3d.f - subroutines for integrals over 3d-simplex (tetrahedron)
+sim2d.f - subroutines for integrals over 2d-simplex (triangle)
+sim1d.f - subroutines for integrals over 1d-simplex (interval)
+--------------------------------------------------------------------------------
+\section{Description of the main subroutines}
+\label{sec04}
+\setcounter{equation}{0}
+\setcounter{figure}{0}
+The SIMTET package constitutes two main subroutines SIM0ONEI and SIM0TWOI. 
+Similar subroutines are provided for the one-dimensional and two-dimensional integrals.
+These subroutines, which are  to be called from the main program, have the following 
+structure: %
+\begin{itemize}
+%
+\item  SUBROUTINE SIM0ONEI(SIM0, SIM0I, VERM) .\\
+       SIM0ONEI computes the integrals $r_0$ and  $s_0$ which  
+       are given by (\ref{equ:2.17}) and  (\ref{equ:2.21}), respectively. \\
+\begin{tabular}{rl}
+ {\it input}: VERM(4) = & four complex numbers $(z_i,i=1,...,4)$ for the \\ 
+              &         values of the denominator function at each of four \\
+              &         tetrahedron corners, as shown in Figure~\ref{fig:2.1}. \\
+ {\it output}: \ \ \ \ SIM0 = &   complex number for the value of integral $r_0$. \\
+              SIM0I = &   complex number for the value of integral $s_0$. \\
+\end{tabular}
+ At the start, the input complex numbers in VERM(4) are sent to  
+ SIM0LEPS, where the proper case a), b), c) or d) is 
+ selected and subroutine SIM1ONEI,  SIM2ONEI, 
+ SIM3ONEI or  SIM4ONEI is called, respectively. 
+%
+\item SUBROUTINE SIM0TWOI(VERL, VERLI, VERM). \\
+       SIM0TWOI computes the integrals $r_i$ and $s_i$ (i=1,..,4), given by
+       (\ref{equ:2.27}) and (\ref{equ:2.29}), respectively. \\
+\begin{tabular}{rl}
+ {\it input}:  VERM(4) = & four complex numbers as in SIM0ONEI . \\
+ {\it output}: VERL(4) = & four complex values of 
+                           integrals $r_i (i=1,...,4)$. \\
+              VERLI(4) = & four complex values of 
+                           integrals $s_i (i=1,...,4)$. \\
+\end{tabular}
+ Similarly, as in the case of SIM0ONEI, the four 
+ complex numbers in VERM(4) are first sent to SIM0LEPS, where the proper
+ case a), b), c) or d) is selected, and subroutine 
+ SIM1TWOI,  SIM2TWOI, SIM3TWOI or  SIM4TWOI is called, respectively. \\
+% 
+ The auxiliary subroutines have the following structure:\\
+\item SUBROUTINE SIM0LEPS(VERM, N, W, AS, LONE, EPS, LEPS) \\
+\begin{tabular}{r l}
+ {\it input}: VERM(4) = & four complex numbers as in SIM0ONEI . \\
+ {\it output}: \ \ \ \ \ W(3) = & three complex $w$-numbers resulting from the \\
+                         & transformation defined in (\ref{equ:3.2}) with \\
+                         & the number N=1,..,4. \\
+                 AS(3) = & real array with the three values associated with \\
+                         & the imaginary term in (\ref{equ:3.8}). If any \\ 
+                         &  $w_i$-argument falls out of the unit circle, \\ 
+                         & it must be reflected back to its interior. \\
+%                EPSONE = & critical distance $|w2-ONE|$ or $|w2+ONE|$ \\
+               LONE(4) = & logical array storing the information regarding which case, \\
+                         & as described in Section \ref{sec03}, must be chosen. \\
+                   EPS = &  critical distance $|w1-w2|$ etc. \\
+               LEPS(3) = & logical array keeping the information, of how close \\
+                         & the three $w_i$-numbers are to each other on \\ 
+                         & the complex plane. Control of the selection between \\ 
+                         & the three degenerated cases is kept by setting \\ 
+                         & value of real variable EPS.
+\end{tabular}
+\item  SUBROUTINE S1D0ONEI(SIM0, SIM0I, VERM) .\\
+       S1D0ONEI computes the one-dimensional integral $r^{(1)}_0$ in (\ref{equ:2.7}) 
+       and its $z$-integral. 
+%
+\item SUBROUTINE S1D0TWOI(VERL, VERLI, VERM). \\
+       S1D0TWOI computes the one-dimensional partial integrals $r^{(1)}_i$ 
+       and their $z$-integrals. 
+%
+\item  SUBROUTINE S2D0ONEI(SIM0, SIM0I, VERM) .\\
+       S2D0ONEI computes the two-dimensional integral $r^{(2)}_0$ in (\ref{equ:2.11}) 
+       and its $z$-integral. 
+%
+\item SUBROUTINE S2D0TWOI(VERL, VERLI, VERM). \\
+       S2D0TWOI computes the two-dimensional partial integrals $r^{(2)}_i$ 
+       and their $z$-integrals. 
+%
+\end{itemize}
+
+
