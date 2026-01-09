@@ -323,15 +323,17 @@ contains
     end do
   end function
   !
-  function grid_vec_cart(mesh, at, center)
+  function grid_vec_cart(mesh, at, center, divide)
     !! Generates a grid of wave vectors.
     !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
 
     integer, intent(in) :: mesh(3)
     real(dp) :: at(3,3)
-    logical, intent(in), optional :: center
+    logical, intent(in), optional :: center, divide
     real(dp), allocatable :: grid_vec_cart(:,:)
-    logical :: center_
+    logical :: center_, divide_
+
+    integer :: i
     integer, allocatable :: grid_vec_cryst_(:,:)
     !
     if(present(center)) then
@@ -340,12 +342,24 @@ contains
       center_ = .false.
     end if
     !
+    if(present(divide)) then
+      divide_ = divide
+    else
+      divide_ = .false.
+    end if
+    !
     allocate(grid_vec_cryst_(3,product(mesh)))
     allocate(grid_vec_cart(3,product(mesh)))
     grid_vec_cryst_ = grid_vec_cryst(mesh, center_)
     grid_vec_cart = REAL(grid_vec_cryst_, DP)
     deallocate(grid_vec_cryst_)
     call cryst_to_cart(product(mesh), grid_vec_cart, at, 1)
+    !
+    if (divide_) then
+      do i = 1, size(grid_vec_cart,2)
+        grid_vec_cart(:,i) = grid_vec_cart(:,i) / REAL(mesh, DP)
+      end do
+    endif
   end function
   !
   function minus_ind(q, mesh)
@@ -515,6 +529,17 @@ contains
     diag = 0._dp
     do i = 1, size(s)
       diag(i,i) = s(i)
+    enddo
+  end function
+  !
+  function diag_cmplx(s)
+    complex(dp), intent(in) :: s(:)
+    complex(dp) :: diag_cmplx(size(s), size(s))
+    integer :: i
+    !
+    diag_cmplx = 0._dp
+    do i = 1, size(s)
+      diag_cmplx(i,i) = s(i)
     enddo
   end function
   !

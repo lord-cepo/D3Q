@@ -28,8 +28,6 @@ MODULE q_grids
     REAL(DP) :: xq0(3) = 0._dp ! the shift applied to the grid (if shifted)
     REAL(DP),ALLOCATABLE :: xq(:,:) ! coordinates of the q-point
     REAL(DP),ALLOCATABLE :: w(:)    ! weight for integral of the BZ
-    integer, allocatable :: yq(:,:) ! grid in crystalline coordinate, to be divided by n(3)
-    real(dp), allocatable :: sxq(:,:) ! serial grid in cartesian coordinates
   CONTAINS
     procedure :: scatter => q_grid_scatter
     procedure :: destroy => q_grid_destroy
@@ -92,6 +90,7 @@ CONTAINS
     USE symm_base,        ONLY : set_sym, nsym, s_symm_base => s, time_reversal, t_rev
     USE ph_system,        ONLY : ph_system_info
     use constants,       ONLY : eps12
+    use ions_base, only : atm
 
     IMPLICIT NONE
     class(q_grid), INTENT(inout) :: grid
@@ -104,13 +103,15 @@ CONTAINS
     at = S%at
     ! bg is needed as global variable by symmatrix (to resimmetrize)
     bg = S%bg
+    atm = S%atm
     IF(.not.allocated(m_loc))  THEN
       ALLOCATE(m_loc(3,S%nat))
       m_loc = 0._dp
     ENDIF
+    if(grid%scattered) call errore("q_grid_symmetrize", "it's better to symmetrize before scattering", 1)
+    !
     IF(.not. allocated(xq)) ALLOCATE(xq(3,grid%nqtot))
     IF(.not. allocated(wq)) ALLOCATE(wq(grid%nqtot))
-
     CALL set_sym(S%nat, S%tau, S%ityp, 1, m_loc) ! 1 = nspin I think
     xq0 = grid%xq0
     call cryst_to_cart(1, xq0, S%at, -1)
@@ -130,7 +131,7 @@ CONTAINS
     grid%nq = nxq
     grid%nqtot = nxq
     grid%symmetrized = .true.
-    print"(A,I4.3,A)", "Symmetrized grid now has ", nxq, " points"
+    ioWRITE(stdout, "(A,I4.3,A)") "Symmetrized grid now has ", nxq, " points"
   END SUBROUTINE
 
   SUBROUTINE q_grid_scatter(grid, quiet)
@@ -419,6 +420,44 @@ CONTAINS
     !
   END SUBROUTINE setup_bz_grid
   !
+  subroutine revert_grid(grid)
+    IMPLICIT NONE
+    TYPE(q_grid),INTENT(inout) :: grid
+    real(dp) :: temp(3,grid%nq)
+    INTEGER :: iq, iq_n
+    !
+    if (grid%scattered) &
+      call errore("revert_grid", "grid should not be scattered", 1)
+    DO iq = 1,grid%nq
+      iq_n = v2index_n(index2v(iq, grid%n), grid%n)
+      temp(:,iq_n) = grid%xq(:,iq)
+    ENDDO
+    !
+    grid%xq = temp
+    !
+  contains
+    pure subroutine int_div(num, denom, q, r)
+      integer, intent(in) :: num, denom
+      integer, intent(out) :: q, r
+      q = num/denom
+      r = mod(num, denom)
+    end subroutine int_div
+    !
+    pure function v2index_n(v, mesh)
+      integer, intent(in) :: v(3), mesh(3)
+      integer :: v2index_n
+      v2index_n = (v(3)*mesh(2) + v(2))*mesh(1) + v(1) + 1
+    end function
+    !
+    pure function index2v(i, mesh)
+      integer, intent(in) :: i, mesh(3)
+      integer :: index2v(3)
+      integer :: aux
+      call int_div(i - 1, mesh(3), aux, index2v(3))
+      call int_div(aux, mesh(2), index2v(1), index2v(2))
+    end function
+    !
+  END SUBROUTINE revert_grid
   ! \/o\________\\\_________________________________________/^>
   SUBROUTINE setup_simple_grid(bg, n1,n2,n3, grid, xq0)
     USE input_fc, ONLY : ph_system_info
@@ -447,9 +486,9 @@ CONTAINS
         DO k = 0, n3-1
           !
           idx = idx+1
-          grid%xq(1,idx) = REAL(k,kind=DP)/REAL(n3,kind=DP)
+          grid%xq(1,idx) = REAL(i,kind=DP)/REAL(n1,kind=DP)
           grid%xq(2,idx) = REAL(j,kind=DP)/REAL(n2,kind=DP)
-          grid%xq(3,idx) = REAL(i,kind=DP)/REAL(n1,kind=DP)
+          grid%xq(3,idx) = REAL(k,kind=DP)/REAL(n3,kind=DP)
           !
         ENDDO
       ENDDO
@@ -563,25 +602,11 @@ CONTAINS
     !print*, "me", my_id, nqfirst, nqme, nqresidual, nqdiv, num_procs
     !
     IF(allocated(grid%xq)) CALL errore("setup_simple_grid", "grid is already allocated", 1)
-    ALLOCATE(grid%xq(3,grid%nq), grid%yq(3,grid%nq), grid%sxq(3,grid%nqtot))
+    ALLOCATE(grid%xq(3,grid%nq))
     ALLOCATE(grid%w(grid%nq))
     grid%w = 1._dp/grid%nqtot
     grid%scattered = .true.
     !
-
-    idx = 0
-    do i = 0, n1-1
-      do j = 0, n2-1
-        do k = 0, n3-1
-          idx = idx+1
-          grid%sxq(1,idx) = REAL(i,kind=DP)/REAL(n1,kind=DP)
-          grid%sxq(2,idx) = REAL(j,kind=DP)/REAL(n2,kind=DP)
-          grid%sxq(3,idx) = REAL(k,kind=DP)/REAL(n3,kind=DP)
-        enddo
-      enddo
-    enddo
-    call cryst_to_cart(grid%nqtot, grid%sxq, bg, 1)
-
     idx = 0
     NQ_LOOP : &
       DO i = 0, n1-1
@@ -596,9 +621,6 @@ CONTAINS
             grid%xq(1,my_idx) = REAL(i,kind=DP)/REAL(n1,kind=DP)
             grid%xq(2,my_idx) = REAL(j,kind=DP)/REAL(n2,kind=DP)
             grid%xq(3,my_idx) = REAL(k,kind=DP)/REAL(n3,kind=DP)
-            grid%yq(1,my_idx) = i
-            grid%yq(2,my_idx) = j
-            grid%yq(3,my_idx) = k
           ENDIF
           !
         ENDDO

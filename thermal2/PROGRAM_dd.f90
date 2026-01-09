@@ -1,7 +1,7 @@
 program defectp
   use defect
   USE fc3_interpolate,  ONLY : forceconst3
-  use q_grids, only: setup_grid
+  use q_grids, only: setup_grid, revert_grid
   use code_input, only: READ_INPUT
   use mpi_thermal, only: start_mpi, stop_mpi
   use input_fc, only: read_fc2, aux_system, div_mass_fc2, write_fc2, multiply_mass_fc2
@@ -13,22 +13,24 @@ program defectp
   use defect_eig, only : full_diag, norm_gV, norm_V
   use constants, only : RY_TO_CMM1
   use full_born, only : full_born_p, full_born_analytical
+  USE parameters, ONLY : ntypx
+  use defect_proj, only: project
+  use dca, only : dca_selfnrg
   IMPLICIT NONE
   !
   type(ph_system_info) :: S, Sd, S_, S_sc
   type(forceconst2_grid) :: fc2d, fc2d_centered, fc2_centered, fc2_periodic, fc2_treated, fc2_treated_centered
   type(forceconst2_sc) :: fc2_sc
-  type(q_grid) :: in_grid, out_grid, grid_
+  type(q_grid) :: in_grid, out_grid, sym_grid
   type(code_input_type) :: input, input_
   class(forceconst3), pointer :: fc3, fc3_
-  real(dp) :: alpha
   integer :: n_add, new_it, isc
-  integer, allocatable :: map(:,:), R_map(:), i_map(:), new_ityp(:)
-  real(dp), allocatable :: new_tau(:,:), new_fc(:,:,:,:)
+  integer, allocatable :: map(:,:), new_ityp(:), new_ityp0(:)
+  real(dp), allocatable :: new_tau(:,:), DRR(:,:,:,:), new_tau0(:,:), new_fc0(:,:,:)
   real(dp), allocatable :: D_nx_real(:,:,:)
   integer, allocatable :: inclusion_isc(:)
   complex(dp), allocatable :: inclusion_U(:,:)
-
+  real(dp) :: c
   real(dp), dimension(3) :: d1, d2
   integer :: sc_grid(3), i, R1, R2, na1, na2, j1, j2, nR, j, iq, isc1, isc2
   real(dp), allocatable :: p(:)
@@ -43,6 +45,7 @@ program defectp
   integer :: iw, jR, jq, iR
   complex(dp), allocatable :: V_sc(:,:)
   real(dp) :: freq0(9)
+  real(dp) :: tau(3)
   real(dp), allocatable :: R(:,:), q(:,:)
   real(dp), allocatable :: D0(:,:)
   ! integer :: wait_for_debugger
@@ -56,6 +59,7 @@ program defectp
   CALL READ_INPUT("DEF", input, out_grid, S, fc2_periodic)
   CALL fc2_recenter(S, fc2_periodic, fc2_centered, 2)
   S%lrigid = .false.
+  !
   !
   if(all(input%sc_grid == -1)) then
     sc_grid = fc2_periodic%nq
@@ -81,15 +85,25 @@ program defectp
   CALL read_fc2(input%file_mat3, Sd, fc2d)
   ! call S_uc2sc(S, Sd, sc_grid, S_sc)
   CALL aux_system(Sd)
-  fc2d%fc(:,:,1) = (fc2d%fc(:,:,1) + transpose(fc2d%fc(:,:,1))) / 2
-  call impose_asr2(input%asr3, Sd%nat, fc2d)
+  ! fc2d%fc(:,:,1) = (fc2d%fc(:,:,1) + transpose(fc2d%fc(:,:,1))) / 2
+  call impose_asr2(input%asr2, Sd%nat, fc2d)
+  call div_mass_fc2(Sd, fc2d)
   ! call fc2_recenter(S_sc, fc2d, fc2d_centered, 2)
   call print_message("ASR applied to fc2d")
   !
-  CALL fc2_sc%allocate(S, Sd, sc_grid, input%sites)
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&
     in_grid, scatter=.false., xq0=input%xk0_in)
+  call revert_grid(in_grid)
+  !
+  call q_grid_copy(in_grid, sym_grid)
+  call sym_grid%symmetrize(S)
+  CALL fc2_sc%allocate(S, Sd, sc_grid)
+  !
+
+  ! call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
+  ! call project(S, Sd, fc2_centered, fc2d_centered)
+  ! call dca_selfnrg(S, input, fc2_treated, fc2_sc, in_grid, out_grid)
   !
   n_add = Sd%nat - nR*S%nat
   if (n_add < 0) then !> VACANCY ------------------------------------------
@@ -97,13 +111,13 @@ program defectp
     map = map_uc2sc(S, Sd, sc_grid)
     allocate(new_tau(3,nR*S%nat))
     allocate(new_ityp(nR*S%nat))
-    allocate(new_fc(S%nat3, S%nat3, nR, nR))
+    allocate(DRR(S%nat3, S%nat3, nR, nR))
     new_tau(:,:Sd%nat) = Sd%tau
     new_ityp(:Sd%nat) = Sd%ityp
-    new_fc = 0._dp
+    DRR = 0._dp
     new_it = Sd%nat + 1
     do concurrent(j1=1:3, j2=1:3, na1=1:S%nat, na2=1:S%nat, R1=1:nR, R2=1:nR, map(na1,R1) /= -1 .and. map(na2,R2) /= -1)
-      new_fc(j1+3*(na1-1), j2+3*(na2-1), R1, R2) = fc2d%fc(j1 + 3*(map(na1,R1)-1), j2 + 3*(map(na2,R2)-1), 1)
+      DRR(j1+3*(na1-1), j2+3*(na2-1), R1, R2) = fc2d%fc(j1 + 3*(map(na1,R1)-1), j2 + 3*(map(na2,R2)-1), 1)
     enddo
     !
     do concurrent(i=1:S%nat, iR=1:nR, map(i,iR)==-1)
@@ -111,239 +125,112 @@ program defectp
       new_ityp(new_it) = S%ityp(i)
       new_it = new_it + 1
     enddo
-    fc2_sc%fc = new_fc - fc_uc2RR(fc2_treated)
     call move_alloc(new_tau, Sd%tau)
     call move_alloc(new_ityp, Sd%ityp)
     ! call move_alloc(new_fc, fc2d%fc)
     Sd%nat = nR*S%nat
     deallocate(map)
   elseif (n_add > 0) then !> INCLUSION ------------------------------------
-    allocate(R_map(Sd%nat))
-    R_map = map_sc2uc(S, Sd, sc_grid, "R")
-    allocate(map(S%nat, nR))
-    map = map_uc2sc(S, Sd, sc_grid)
-    allocate(i_map(Sd%nat))
-    i_map = map_sc2uc(S, Sd, sc_grid, "nat")
+    ! allocate(R_map(Sd%nat))
+    ! allocate(map(S%nat, nR))
+    ! map = map_uc2sc(S, Sd, sc_grid)
+    ! allocate(i_map(Sd%nat))
     !
-    allocate(D_nx_real(3*S%nat, 3*n_add, nR))
-    allocate(inclusion_isc(n_add))
-    new_it = 1
-    do concurrent(isc=1:Sd%nat, R_map(isc) == -1)
-      inclusion_isc(new_it) = isc
-      new_it = new_it + 1
+    !
+    allocate(new_tau0 (3,S%nat + n_add))
+    allocate(new_ityp0(S%nat + n_add))
+    new_tau0(:,:S%nat) = S%tau
+    new_ityp0(:S%nat) = S%ityp
+    allocate(new_tau (3,(S%nat + n_add)*nR))
+    allocate(new_ityp((S%nat + n_add)*nR))
+    new_tau(:,:Sd%nat) = Sd%tau
+    new_ityp(:Sd%nat) = Sd%ityp
+    S%atm(S%ntyp+1) = "void"
+    Sd%atm(Sd%ntyp+1) = "void"
+    !
+    i = 0
+    ! taudef = 0._dp
+    do concurrent(isc=1:Sd%nat, fc2_sc%R_map(isc) == -1)
+      i = i + 1
+      tau = cryst2cart(Sd%tau(:,isc), S%bg, -1) * sc_grid
+      !
+      new_ityp0(S%nat + i) = S%ntyp+1 !Sd%ityp(isc)
+      iR = v2index(INT(tau), sc_grid)
+      fc2_sc%R_map(isc) = iR
+      fc2_sc%at_map(isc) = S%nat + i
+      new_tau0(:,S%nat + i) = cryst2cart( &
+        (tau - index2v(iR, sc_grid)), S%at, 1)
+      ! taudef = taudef + new_tau0(:,S%nat + i) / n_add
+      j = 0
+      do jR = 1, nR
+        if (iR == jR) cycle
+        j = j + 1
+        new_ityp(Sd%nat + (i-1)*nR + j) = Sd%ntyp+1 !Sd%ityp(isc)
+        new_tau(:,Sd%nat + (i-1)*nR + j) = cryst2cart( &
+          (index2v(jR, sc_grid) + tau - index2v(iR, sc_grid)) / sc_grid, S%at, 1)
+      enddo
     enddo
     !
-    do concurrent(R1=1:nR, na1=1:S%nat, j1=1:3, j2=1:3, new_it=1:n_add)
-      D_nx_real(j1 + 3*(na1 -1), j2 + 3*(new_it-1), R1) = &
-        fc2d%fc(j1 + 3*(map(na1, R1)-1), j2 + 3*(inclusion_isc(new_it)-1), 1)
-    enddo
+    call move_alloc(new_tau0, S%tau)
+    call move_alloc(new_tau, Sd%tau)
+    call move_alloc(new_ityp0, S%ityp)
+    call move_alloc(new_ityp, Sd%ityp)
     !
-    allocate(inclusion_U(3*n_add, 3*n_add))
-    do concurrent(na1=1:n_add, na2=1:n_add, j1=1:3, j2=1:3)
-      inclusion_U(j1 + 3*(na1-1), j2 + 3*(na2-1)) = &
-        fc2d%fc(j1 + 3*(inclusion_isc(na1)-1), j2 + 3*(inclusion_isc(na2)-1), 1)
-    enddo
+    ! map = map_uc2sc(S, Sd, sc_grid)
+    allocate(DRR(S%nat3+n_add*3, S%nat3+n_add*3, nR, nR))
+    allocate(new_fc0(S%nat3+n_add*3, S%nat3+n_add*3, nR))
     !
-    allocate(fc2_sc%inclusion_Dnx_out(3*S%nat, 3*n_add, out_grid%nqtot))
-    allocate(fc2_sc%inclusion_Dnx_in(3*S%nat, 3*n_add, in_grid%nqtot))
-    fc2_sc%inclusion_Dnx_out = 0._dp
-    fc2_sc%inclusion_Dnx_in = 0._dp
-    do concurrent(R1=1:nR, iq=1:out_grid%nqtot)
-      fc2_sc%inclusion_Dnx_out(:,:,iq) = fc2_sc%inclusion_Dnx_out(:,:,iq) + &
-        D_nx_real(:,:,R1) * e_iqr(-out_grid%xq(:,iq), index2v_cart(R1, sc_grid, S%at))
-    enddo !> It's probably possible to center it, but for now I'll leave it like this
-    !> I also don't know if I need to put nR as normalization
-    do concurrent(R1=1:nR, iq=1:in_grid%nqtot)
-      fc2_sc%inclusion_Dnx_in(:,:,iq) = fc2_sc%inclusion_Dnx_in(:,:,iq) + &
-        D_nx_real(:,:,R1) * e_iqr(-in_grid%xq(:,iq), index2v_cart(R1, sc_grid, S%at))
-    enddo !> It's probably possible to center it, but for now I'll leave it like this
-    !> I also don't know if I need to put nR as normalization
-    !
-    allocate(fc2_sc%inclusion_eig(3*n_add))
-    call mat2_diag(3*n_add, inclusion_U, fc2_sc%inclusion_eig)
-    do iq = 1, out_grid%nqtot
-      fc2_sc%inclusion_Dnx_out(:,:,iq) = matmul(fc2_sc%inclusion_Dnx_out(:,:,iq), inclusion_U) / nR
-    enddo
-    do iq = 1, in_grid%nqtot
-      fc2_sc%inclusion_Dnx_in(:,:,iq) = matmul(fc2_sc%inclusion_Dnx_in(:,:,iq), inclusion_U)
-    enddo
-    !
-    allocate(new_fc(S%nat3, S%nat3, nR, nR))
-    do concurrent(j1=1:3, j2=1:3, isc1=1:Sd%nat, isc2=1:Sd%nat, R_map(isc1) /= -1 .and. R_map(isc2) /= -1)
-      new_fc(j1 + 3*(i_map(isc1)-1), j2 + 3*(i_map(isc2)-1), R_map(isc1), R_map(isc2)) = &
+    DRR = 0._dp
+    do concurrent(j1=1:3, j2=1:3, isc1=1:Sd%nat, isc2=1:Sd%nat)
+      DRR(j1 + 3*(fc2_sc%at_map(isc1)-1), j2 + 3*(fc2_sc%at_map(isc2)-1), &
+        fc2_sc%R_map(isc1), fc2_sc%R_map(isc2)) = &
         fc2d%fc(j1 + 3*(isc1-1), j2 + 3*(isc2-1), 1)
     enddo
-    fc2_sc%fc = new_fc - fc_uc2RR(fc2_treated)
-    deallocate(inclusion_isc, inclusion_U, D_nx_real, map, i_map, R_map)
+    !
+    new_fc0 = 0._dp
+    new_fc0(:S%nat3, :S%nat3, :) = fc2_treated%fc
+    call move_alloc(new_fc0, fc2_treated%fc)
+    !
+    allocate(new_fc0(S%nat3 + n_add*3, S%nat3 + n_add*3, size(fc2_centered%fc,3)))
+    new_fc0 = 0._dp
+    new_fc0(:S%nat3, :S%nat3, :) = fc2_centered%fc
+    call move_alloc(new_fc0, fc2_centered%fc)
+    !
+    S%nat = S%nat + n_add
+    S%nat3 = S%nat * 3
+    Sd%nat = Sd%nat + (nR-1) * n_add
+    Sd%nat3 = Sd%nat * 3
+    S%ntyp = S%ntyp +1
+    Sd%ntyp = Sd%ntyp +1
+    !
   else
-    call div_mass_fc2(Sd, fc2d)
-    ! call multiply_mass_fc2(S, fc2_treated)
-    fc2_sc%fc = fc_sc2RR(sc_grid, S, Sd, fc2d%fc) - fc_uc2RR(fc2_treated)
-    ! call div_mass0_fcsc(S, fc2_sc)
+    allocate(DRR(S%nat3, S%nat3, nR, nR))
+    DRR = fc_sc2RR(sc_grid, S, Sd, fc2d%fc)! - fc_uc2RR(fc2_treated)
   endif ! ---------------------------------------------------------------------------------------
   !
-  R = grid_vec_cart(sc_grid, S%at)
-  q = grid_vec_cart(sc_grid, S%bg)
-  do iq = 1, nR
-    q(:,iq) = q(:,iq) / sc_grid
-  enddo
+  ! call multiply_mass_fc2(S, fc2_treated)
+  ! fc2_sc%taudef = taudef
+  fc2_sc%fc = DRR - fc_uc2RR(fc2_treated)
+  deallocate(DRR)
+  ! call div_mass0_fcsc(S, fc2_sc)
   !
-  ! allocate(V_sc(nR*S%nat3, nR*S%nat3))
-  ! do iR = 1, nR
-  !   do jR = 1, nR
-  !     do iq = 1, nR
-  !       do jq = 1, nR
-  !         V_sc((iq-1)*S%nat3+1:iq*S%nat3, (jq-1)*S%nat3+1:jq*S%nat3) = &
-  !         V_sc((iq-1)*S%nat3+1:iq*S%nat3, (jq-1)*S%nat3+1:jq*S%nat3) + &
-  !         fc2_sc%fc(:,:,iR,jR) * e_iqr(-q(:,iq), R(:,iR)) * e_iqr(q(:,jq), R(:,jR))
-  !       enddo
-  !     enddo
-  !   enddo
-  ! enddo
+  call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, in_grid)
 
-  ! call write_fc2_sc_pixels(fc2_sc, "pixels-"//trim(input%file_mat3(11:))//".dat")
-  !
-  ! call in_grid%destroy()
-  ! call impose_asr2('simple', S%nat, fc2_periodic)
-  ! call div_mass_fc2(S, fc2_periodic)
-
-  ! CALL out_grid%destroy()
-  ! CALL setup_grid(input%grid_type, S%bg, input%nk(1), &
-  !   input%nk(2), input%nk(3),&
-  !   out_grid, scatter=.false., xq0=input%xk0)
-  ! ! do iq = 1, out_grid%nq
-  ! !   out_grid%xq(:,iq) = out_grid%xq(:,iq) / 40
-  ! ! enddo
-  ! if(input%use_symm) call out_grid%symmetrize(S)
-
-  ! out_grid%nqtot = 2
-  ! out_grid%nq = 2
-  ! out_grid%xq(:,1) = [0._dp, 0.0_dp, 0.1_dp]
-  ! out_grid%xq(:,2) = [0._dp, -0.5_dp, -0.5_dp]
-  ! call cryst_to_cart(1, out_grid%xq, S%bg, 1)
-  ! call cryst_to_cart(out_grid%nq, out_grid%xq, S%at, -1)
-  ! do iq = 1, out_grid%nq
-  !   ! print"(3F8.2)", out_grid%xq(:,iq)
-  !   do i = 1, 3
-  !     if(out_grid%xq(i,iq) < 0._dp) &
-  !       out_grid%xq(i,iq) = out_grid%xq(i,iq) + 1._dp
-  !   enddo
-  ! enddo
-  ! call cryst_to_cart(out_grid%nq, out_grid%xq, S%bg, 1)
-
-  ! call out_grid%scatter()
-  !
-  ! call in_grid%symmetrize(S)
-  ! call in_grid%scatter()
-
-  ! call impose_asr2("simple", Sd%nat, fc2d)
-
-  ! allocate(dyn(3,3,Sd%nat, Sd%nat), zeu(3,3,Sd%nat))
-  ! zeu = 0.0
-  ! do i = 1, 3
-  !   do j = 1, 3
-  !     do na1 = 1, Sd%nat
-  !       do na2 = 1, Sd%nat
-  !         dyn(i,j,na1,na2) = fc2d%FC(i+3*(na1-1),j+3*(na2-1),1)
-  !       enddo
-  !     enddo
-  !   enddo
-  ! enddo
-  ! call set_asr("crystal   ", 3, Sd%nat, Sd%tau, dyn, zeu)
-
-  ! allocate(freqs_sc(Sd%nat3))
-  ! call freq_phq_safe([0._dp, 0._dp, 0._dp], Sd, fc2d_centered, freqs_sc)
-
-  ! open(10, file="freqs_sc.dat", status='replace')
-  ! do i = 1, size(freqs_sc)
-  !   write(10, "(E15.5)") freqs_sc(i)
-  ! enddo
-  ! close(10)
-
-
-  ! fc2d%fc(:,:,1) = fc2d%fc(:,:,1) - fc_uc2sc(S, S_sc, sc_grid, fc2_periodic%fc)
-  ! call fc2_recenter(S_sc, fc2d, fc2d_centered, 2)
-  ! write(filename, "(A, I1, A)") "distance-diff", sc_grid(1), "p.dat"
-  ! call distance_uc(fc2d_centered, S_sc, filename)
-  ! ! call write_fc2("mat2R_sc_pristine_333", S_sc, fc2d)
-  ! call distance_uc(fc2d_centered, S_sc, "distance-pristine.dat")
-  ! write(filename, "(A, I1, A)") "distance-uc", sc_grid(1), ".dat"
-  ! call distance_uc(fc2_centered, S, filename)
-  ! call fftinterp_mat2()
-  ! fc2_sc%fc = 0._dp
-  ! ! fc2_sc%fc = (fc_sc2RR(sc_grid, S, Sd, fc2d%fc) - fc_uc2RR(fc2_periodic)) * S%sqrtmm1(1)**2
-  ! do i = 1, 3
-  !   fc2_sc%fc(i,i,1,1) = 0.1028_dp !* fc2_periodic%fc(i,i,1)
-  ! enddo
-
-
-  ! Sd%sqrtmm1(1:3) = Sd%sqrtmm1(4:6)
-
-  ! S_sc%ityp(1) = 2
-  ! alpha = 0._dp
-  ! fc2_sc%fc = (1 - alpha) * fc_uc2RR(fc2) + alpha * fc_sc2RR(sc_grid, S, Sd, fc2d%fc)
-  ! CALL green_inversion(S, fc2_centered, fc2d, fc2_sc, out_grid)
-
-  ! call frobenius_triangle(fc2_sc, S, 'center3.dat')
-
-  ! call fc2_sc%deallocate()
-  ! CALL fc2_sc%allocate(S, sc_grid)
-  ! fc2_sc%fc = fc_sc2RR(sc_grid, S, Sd, fc2d%fc) - fc_uc2RR(sc_grid, S, fc2%fc)
-
-  ! CALL center2(fc2_sc, sc_grid, S, Sd)
-  ! call frobenius_triangle(fc2_sc, S, 'center2.dat')
-
-  ! input%n_omega = input%n_omega - 1
-  CALL fc2_sc%center(sc_grid, S)
-  !
-  max_freq = 5e-3
-  allocate(E(input%n_omega))
-  do iw = 1, input%n_omega
-    E(iw) = max_freq * (iw-1) / input%n_omega
-  enddo
-  eta = [5e-9_dp, 1e-8_dp, 5e-8_dp, 1e-7_dp, 5e-7_dp, 1e-6_dp, 5e-6_dp, 1e-5_dp, 5e-5_dp, 1e-4_dp, 5e-4_dp, 1e-3_dp]
-  ! call norm_V(S, fc2_centered, fc2_sc)
-  ! call norm_gV(S, fc2_centered, fc2_sc, in_grid, input%n_omega, eta)
-  ! call full_diag(S, fc2_centered, fc2_sc, in_grid, 630._dp / RY_TO_CMM1)
-  ! fc2_sc%fc = 0._dp
-  ! do i = 1,3
-  !   fc2_sc%fc(i,i,1,1) = 1._dp
-  ! enddo
-  !
-  ! write(filename, "(A, I1, A)") "distance-cent", sc_grid(1), "p.dat"
-  ! max_norm = 0._dp
-  ! open(10, file=filename, status='replace')
-  ! do R2 = 1, fc2_sc%n_r2
-  !   do na2 = 1, S%nat
-  !     d2 = S%tau(:,na2) + fc2_sc%xR2(:,R2)
-  !     do R1 = 1, fc2_sc%n_r1(R2)
-  !       do na1 = 1, S%nat
-  !         d1 = S%tau(:,na1) + fc2_sc%xR1(:,R1,R2)
-  !         max_norm = max(max_norm, norm2(d1 - d2))
-  !         do j1 = 1, 3
-  !           do j2 = 1, 3
-  !             write(10, "(2E20.8)") norm2(d1 - d2), &
-  !               fc2_sc%fc(j1+3*(na1-1), j2+3*(na2-1), R1, R2)
-  !           enddo
-  !         enddo
-  !       enddo
-  !     enddo
-  !   enddo
-  ! enddo
-  ! close(10)
-  ! call print_message("Distances written to "//TRIM(filename))
-  ! print*, "Maximum distance:", max_norm
-  !
-
-  ! call check_derivative_swap(fc2_sc, S%nat3)
   ! CALL main_defect(S, fc2_centered, fc2_sc, in_grid, out_grid, input)
   ! allocate(D0(nR*S%nat3, nR*S%nat3))
   ! D0 = fc_uc2sc(S, Sd, input%sc_grid, fc2_periodic%fc)
   ! call full_born_p(input, S, Sd, fc2_centered, D0, cmplx(D0-fc2d%fc(:,:,1), 0._dp, dp), out_grid)
-  call full_born_center(S, input, fc2_centered, fc2_sc, in_grid, out_grid)
+  c = 0.05_dp
+
+  CALL fc2_sc%center(sc_grid, S)
+
+  call full_born_center(c, S, input, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid)
+  print*, "Defect full Born calculation done."
   ! call full_born_analytical(input, S, fc2_centered, in_grid, out_grid)
   ! call full_born(nR, S, fc2_centered, fc2_sc, input, in_grid, out_grid)
   ! call full_born_real(S, Sd, fc2_centered, input, out_grid, in_grid, fc2d%fc(:,:,1)-fc_uc2sc(S, Sd, sc_grid, fc2_treated%fc))
+  ! call MPI_FINALIZE ( isc )
+  ! print*, "Defect program completed.", isc
   CALL stop_mpi()
 contains
   subroutine distance_uc(fc2_centered, S, filename)

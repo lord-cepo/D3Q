@@ -202,7 +202,7 @@ contains
     complex(dp) :: U_dagger(S%nat3, S%nat3)
     !
     V = D_or_V(S, fc2, fc2_sc, grid, "V")
-    call set_wg(S, fc2, grid, n_omega, 1.5_dp, wg)
+    call set_wg(S, fc2, grid, n_omega, wg)
     allocate(wg_cmplx(size((wg%w),1), size(wg%w,2)))
     call freq_in_grid(S, fc2, grid, freqs, Us)
     !

@@ -1,6 +1,6 @@
 #if defined(__FFTW3)
 
-module fftw_prova
+module thfftw
   ! use kinds, only: dp
 ! #include "fftw3.f03"
   USE, intrinsic :: iso_c_binding

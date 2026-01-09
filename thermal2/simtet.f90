@@ -62,8 +62,6 @@ contains
     ! integer :: tetra_ik(nq(1) * nq(2) * nq(3))
     !
     REAL(DP) :: l(4), bvec2(3,3), bvec3(3,4) !xkg(3, product(nq))
-    integer, allocatable :: equiv(:)
-    integer :: nbnd, nqs, ntetra
     external :: SIM0ONEI
     !
     !

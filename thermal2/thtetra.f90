@@ -97,35 +97,27 @@ MODULE thtetra
 
 CONTAINS
   !
-  subroutine tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult, grid_sym_, U_sym)
+  subroutine tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult, U_sym)
     type(q_grid), intent(in) :: grid
     type(ph_system_info), intent(in) :: S
     type(forceconst2_grid), intent(in) :: fc2
     type(tetra_output), intent(out) :: wg
     integer, intent(in) :: n_omega
     real(dp), intent(in) :: mult
-    type(q_grid), intent(out), optional :: grid_sym_
+    ! type(q_grid), intent(out), optional :: grid_sym_
     complex(dp), allocatable, intent(out), optional :: U_sym(:,:,:)
     !
-    type(q_grid) :: grid_sym
     real(dp), allocatable :: freqs_sym(:,:)
-    real(dp) :: max_freq
     integer :: iw
     !
-    call q_grid_copy(grid, grid_sym)
-    if( .not. grid_sym%symmetrized) &
-      call grid_sym%symmetrize(S)
-    !
-    allocate(freqs_sym(S%nat3, grid_sym%nqtot))
+    allocate(freqs_sym(S%nat3, grid%nqtot))
     if(present(U_sym)) then
-      allocate(U_sym(S%nat3, S%nat3, grid_sym%nqtot))
-      call freq_in_grid(S, fc2, grid_sym, freqs_sym, U_sym)
+      allocate(U_sym(S%nat3, S%nat3, grid%nqtot))
+      call freq_in_grid(S, fc2, grid, freqs_sym, U_sym)
     else
-      call freq_in_grid(S, fc2, grid_sym, freqs_sym)
+      call freq_in_grid(S, fc2, grid, freqs_sym)
     endif
-    call tetra_init_sym(grid_sym, S, freqs_sym**2, .false., wg)
-    if (present(grid_sym_)) &
-      call q_grid_copy(grid_sym, grid_sym_)
+    call tetra_init_sym(grid, S, freqs_sym**2, .false., wg)
     allocate(wg%w(S%nat3, wg%nsym, n_omega))
     call move_alloc(freqs_sym, wg%f)
     wg%max_f = maxval(wg%f) * mult
@@ -136,7 +128,7 @@ CONTAINS
     !
   end subroutine
   !
-  subroutine set_wg(S, fc2, grid, n_omega, mult, wg)
+  subroutine set_wg(S, fc2, grid, n_omega, wg, mult)
     use thutils, only : freq_in_grid
     use merge_degenerate, only: merge_degen
     !
@@ -145,12 +137,19 @@ CONTAINS
     type(q_grid), intent(in) :: grid
     integer, intent(in) :: n_omega
     type(tetra_output), intent(out) :: wg
-    real(dp), intent(in) :: mult
+    real(dp), intent(in), optional :: mult
     !
+    real(dp) :: mult_
     integer :: iq, ibnd, iw
     real(dp) :: freqs(S%nat3,grid%nqtot)
     !
-    call tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult)
+    if(present(mult)) then
+      mult_ = mult
+    else
+      mult_ = 1.2_dp
+    end if
+    !
+    call tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult_)
     call freq_in_grid(S, fc2, grid, freqs)
     !
     do iw = 1, n_omega

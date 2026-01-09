@@ -246,7 +246,7 @@ contains
     complex(dp) :: outer_products(S%nat3,S%nat3,S%nat3,grid%nqtot)
     !
     call freq_in_grid(S, fc2, grid, freqs, Us)
-    call set_wg(S, fc2, grid, input%n_omega, 1.5_dp, wg)
+    call set_wg(S, fc2, grid, input%n_omega, wg)
     !
     print*, "max freq", wg%en(input%n_omega) * RY_TO_CMM1
     Vb = 0.0_dp
@@ -271,7 +271,7 @@ contains
         enddo
       enddo
       V = Vb * epsilon * wg%en(iw)**2
-      I_gV = id_mat(S%nat3) - matmul(g0, V)
+      I_gV = id_mat(S%nat3) - matmul(g0, V) + Vb * (0._dp, 1e-6_dp)
       call invzmat(S%nat3, I_gV )
       T = matmul(V, I_gV)
       do iq = 1, out_grid%nqtot
