@@ -90,6 +90,12 @@ program defectp
   call div_mass_fc2(Sd, fc2d)
   ! call fc2_recenter(S_sc, fc2d, fc2d_centered, 2)
   call print_message("ASR applied to fc2d")
+
+
+  call project(S, Sd, fc2_centered, fc2d)
+  stop 12345
+
+
   !
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&

@@ -25,7 +25,7 @@ contains
     type(ph_system_info), intent(in) :: S, Sd
     type(forceconst2_grid), intent(in) :: fc2, fc2d
     !
-    integer :: iq, N, i, iR, na, j
+    integer :: iq, N, i, na, j
     real(dp), allocatable :: xq(:,:)
     real(dp), allocatable :: R(:,:)
     real(dp), allocatable :: freqs(:,:)
