@@ -26,9 +26,9 @@ contains
     type(ph_system_info), intent(in) :: S, S_sc
     type(code_input_type), intent(in) :: input
     type(forceconst2_grid), intent(in) :: fc2
-    type(forceconst2_sc), intent(in) :: fc2_sc
+    type(forceconst2_sc), intent(inout) :: fc2_sc
     type(q_grid), intent(in) :: grid
-    type(tetra_output) :: wg
+    type(tetra_output) :: wg, wg1
     !
     complex(dp), allocatable :: V(:,:,:,:), phase_mat(:,:,:,:,:)
     ! complex(dp), allocatable :: G0_coarse(:,:,:)
@@ -47,31 +47,31 @@ contains
     complex(dp), allocatable :: delta_in(:)
     complex(dp), allocatable :: delta_out(:)
     complex(dp), allocatable :: df(:,:), dv(:,:)
-    complex(dp), allocatable :: A(:,:)
+    complex(dp), allocatable :: A(:,:), s_avg(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, ndef, &
-      it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ
+      it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq
     real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX
-    integer, allocatable :: pos(:), kq(:,:)
-    real(dp), allocatable :: xq(:,:), R(:,:), small_xq(:,:)
+    integer, allocatable :: pos(:), kq(:,:), big_iq(:)
+    real(dp), allocatable :: xq(:,:), R(:,:)!, small_xq(:,:)
+    logical, allocatable :: eq_done(:)
     !
-    NSAMPLES = 50
+    NSAMPLES = 100
     MAXITER = 100
     ABS_TOLERANCE = 1e-8_dp
-    REL_TOLERANCE = 1e-3_dp
+    REL_TOLERANCE = 1e-2_dp
     ALPHA_MIX = 0.3_dp
-    MEMORY = 8
-    conc = 0.05_dp  ! example concentration
-    ndef = size(fc2_sc%defects,2)
+    MEMORY = 4
+    conc = 0.25_dp  ! example concentration
     Nc = product(fc2%nq) !* size(fc2_sc%defects,2)
-    NQ = grid%nqtot / Nc
-    xq = grid_vec_cart(fc2%nq, S%at, divide=.true.)
-    if (any(mod(grid%nq, fc2%nq) /= 0)) &
+    NQ = product(grid%n) / Nc
+    xq = grid_vec_cart(fc2%nq, S%bg, divide=.true., natural=.true.)
+    if (any(mod(grid%n, fc2%nq) /= 0)) &
       call errore("dca_selfnrg", "grid size not multiple of fc2 grid size", 1)
-    small_xq = grid_vec_cart(grid%n / fc2%nq, S%at)
-    do iq = 1, size(small_xq,2)
-      small_xq(:,iq) = small_xq(:,iq) / real(grid%n, dp)
-    enddo
-    R = grid_vec_cart(fc2%nq, S%at)
+    ! small_xq = grid_vec_cart(grid%n / fc2%nq, S%bg)
+    ! do iq = 1, size(small_xq,2)
+    !   small_xq(:,iq) = small_xq(:,iq) / real(grid%n, dp)
+    ! enddo
+    R = grid_vec_cart(fc2%nq, S%at, natural=.true.)
     call set_wg(S, fc2, grid, input%n_omega, wg)
 
     ! call tetra_init_sym_cmplx(grid, S, cmplx(wg%f, 0._dp, dp))
@@ -91,10 +91,17 @@ contains
     allocate(V(S%nat3, S%nat3, Nc, Nc))
     allocate(A(S%nat3, S%nat3))
     allocate(phase_mat(S%nat3, S%nat3, Nc, Nc, Nc))
-    allocate(kq(NQ, Nc))
-    allocate(den_weights(S%nat3, NQ))
-    allocate(den_U(S%nat3, S%nat3, NQ))
-    allocate(den_eig(S%nat3, NQ))
+    allocate(kq(NQ, Nc), big_iq(grid%nqtot))
+    allocate(den_weights(S%nat3, grid%nqtot))
+    allocate(den_U(S%nat3, S%nat3, grid%nqtot))
+    allocate(den_eig(S%nat3, grid%nqtot))
+    allocate(eq_done(size(wg%e)))
+    allocate(s_avg(Nc*S%nat3))
+    ! deallocate(fc2_sc%defects)
+    ! allocate(fc2_sc%defects(3, 1))
+    ndef = size(fc2_sc%defects,2)
+    ! fc2_sc%defects(:,1) = [1,1,1]
+    print*, fc2_sc%defects
     call center_V(S, S_sc, fc2_sc, Vqqs)
     !
     !> construction of of the phase, used to translate the potential to
@@ -116,6 +123,7 @@ contains
       do jq = 1, NQ
         kq(jq,iq) = v2index_n(index2v_n(jq, grid%n / fc2%nq) + &
           index2v_n(iq, fc2%nq) * grid%n / fc2%nq, grid%n)
+        big_iq(wg%e(kq(jq,iq))) = iq
         ! do kq = 1, grid%nq
         !   if(norm2(small_xq(:,jq) + xq(:,iq) - grid%xq(:,kq)) < 1e-8_dp) then
         ! G0_coarse(:,iq,iw) = G0_coarse(:,iq,iw) + wg%w(:,wg%e(kq(jq,iq)),iw)
@@ -137,32 +145,47 @@ contains
     delta_in = 0._dp
     !
     print*, "Starting DCA self-energy calculation..."
-    do iw = 2, input%n_omega
+    do iw = 50, input%n_omega
       df = 0._dp
       dv = 0._dp
+      open(97, file="self_conv.dat")
       do sc_iter = 1, MAXITER
-        print*, iw, sc_iter, SUM(ABS(self_out(:,:,:,iw)-self_in(:,:,:,iw))) / &
-          sum(ABS(self_in(:,:,:,iw))+1e-20_dp)
+        print*, iw, sc_iter, maxval(ABS(self_out(:,:,:,iw)-self_in(:,:,:,iw))), &
+          sum(self_in(:,:,:,iw)) / S%nat3**2 / Nc * REL_TOLERANCE
+        !  / &
+        ! sum(ABS(self_in(:,:,:,iw))+1e-20_dp)
         if (all(abs(self_out(:,:,:,iw)-self_in(:,:,:,iw)) < REL_TOLERANCE * &
           abs(self_in(:,:,:,iw)) + ABS_TOLERANCE)) exit
         !> construction of G0_cluster from self-energy
         Gi_coarse = 0.0_dp
+        do iq = 1, grid%nqtot
+          den_U(:,:,iq) = diag(wg%f(:,iq)**2) + self_in(:,:,big_iq(iq),iw)
+          call mat2_diag(S%nat3, den_U(:,:,iq), den_eig(:,iq))
+          ! den_eig(:,iq) = wg%f(:,iq)**2
+          ! den_U(:,:,iq) = id_mat(S%nat3)
+          ! A = diag(wg%en(iw)**2 - wg%f(:,wg%e(kq(jq,iq)))**2) - self_in(:,:,iq,iw)
+          ! ! A = diag_cmplx(1._dp/wg%w(:,wg%e(kq(jq,iq)),iw)) - self_in(:,:,iq,iw)
+          ! call invzmat(S%nat3, A)
+          ! Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) + A
+          ! G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_in(:,:,iq,iw)
+        enddo
+        !{ weights of diagonal tetra
+        call tetra_init_sym(grid, S, den_eig, .false., wg1)
+        deallocate(wg1%e, wg1%qw)
+        den_weights = tetra_weights_green(wg%en(iw)**2)
+        where(isnan(abs(den_weights)))
+          den_weights = 0._dp
+        endwhere
+        do iq = 1, grid%nqtot
+          call merge_degen(S%nat3, den_weights(:,iq), wg%f(:,iq))
+        enddo
+        !}
         do iq = 1, Nc
           do jq = 1, NQ
-            den_U(:,:,jq) = diag(wg%f(:,wg%e(kq(jq,iq)))**2) + self_in(:,:,iq,iw)
-            call mat2_diag(S%nat3, den_U(:,:,jq), den_eig(:,jq))
-            ! A = diag(wg%en(iw)**2 - wg%f(:,wg%e(kq(jq,iq)))**2) - self_in(:,:,iq,iw)
-            ! ! A = diag_cmplx(1._dp/wg%w(:,wg%e(kq(jq,iq)),iw)) - self_in(:,:,iq,iw)
-            ! call invzmat(S%nat3, A)
-            ! Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) + A
-            ! G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_in(:,:,iq,iw)
-          enddo
-          call tetra_init(grid%n / fc2%nq, S%bg, den_eig, opt=.false.)
-          den_weights = tetra_weights_green(wg%en(iw)**2)
-          do jq = 1, NQ
+            kkq = wg%e(kq(jq,iq))
             do i = 1, S%nat3
               Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) + &
-                outer_product(den_U(:,i,jq)) * den_weights(i,jq)
+                outer_product(den_U(:,i,kkq)) * den_weights(i,kkq)
             enddo
           enddo
           call invzmat(S%nat3, Gi_coarse(:,:,iq))
@@ -211,6 +234,12 @@ contains
         !>
         !
         delta_out = reshape(self_out(:,:,:,iw), [S%nat3**2*Nc])
+        do iq = 1, Nc
+          do i = 1, S%nat3
+            s_avg(i+S%nat3*(iq-1)) = self_out(i,i,iq,iw)
+        enddo
+        enddo
+        write(97,"(2000E20.8)") s_avg
         !
         call mix_broyden_full(S%nat3**2*Nc, delta_out, delta_in, &
           ALPHA_MIX, sc_iter, MEMORY, df, dv)
@@ -220,6 +249,7 @@ contains
         print*, "DCA not converged for frequency ", iw
     enddo ! frequency loop
     !
+    close(97)
   end subroutine
 !
   subroutine sample_binomial(N, c, pos)
@@ -269,7 +299,7 @@ contains
     call fc_temp%allocate(S, S_sc, fc2_sc%nq)
     !
     N = product(fc2_sc%nq)
-    xq = grid_vec_cart(fc2_sc%nq, S%at, divide=.true.)
+    xq = grid_vec_cart(fc2_sc%nq, S%bg, divide=.true., natural=.true.)
     allocate(Vqqs(S%nat3,S%nat3,N,N,size(fc2_sc%defects,2)))
     allocate(tens4(3,S%nat,3,S%nat, N, N))
     ALLOCATE( work, source=tens4 )

@@ -291,16 +291,21 @@ contains
     end do
   end function
   !
-  function grid_vec_cryst(mesh, center)
+  function grid_vec_cryst(mesh, center, natural)
     !! Generates a grid of wave vectors.
     !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
 
     integer, intent(in) :: mesh(3)
     integer,allocatable :: grid_vec_cryst(:,:)
-    logical, intent(in), optional :: center
+    logical, intent(in), optional :: center, natural
     integer :: i, j, k, n
     integer :: center_
+    logical :: natural_
 
+    !
+    natural_ = .false.
+    if(present(natural)) natural_ = natural
+    !
     allocate(grid_vec_cryst(3,product(mesh)))
     if(present(center)) then
       if(center) then
@@ -317,21 +322,25 @@ contains
       do j = 0, mesh(2)-1
         do k = 0, mesh(3)-1
           n = n + 1
-          grid_vec_cryst(:,n) = [i, j, k] - center_ * mesh / 2
+          if(natural_) then
+            grid_vec_cryst(:,n) = [k, j, i] - center_ * mesh / 2
+          else
+            grid_vec_cryst(:,n) = [i, j, k] - center_ * mesh / 2
+          endif
         end do
       end do
     end do
   end function
   !
-  function grid_vec_cart(mesh, at, center, divide)
+  function grid_vec_cart(mesh, at, center, divide, natural)
     !! Generates a grid of wave vectors.
     !! mesh is the number of wave vectors along the three reciprocal lattice vectors.
 
     integer, intent(in) :: mesh(3)
     real(dp) :: at(3,3)
-    logical, intent(in), optional :: center, divide
+    logical, intent(in), optional :: center, divide, natural
     real(dp), allocatable :: grid_vec_cart(:,:)
-    logical :: center_, divide_
+    logical :: center_, divide_, natural_
 
     integer :: i
     integer, allocatable :: grid_vec_cryst_(:,:)
@@ -342,6 +351,12 @@ contains
       center_ = .false.
     end if
     !
+    if(present(natural)) then
+      natural_ = natural
+    else
+      natural_ = .false.
+    endif
+    !
     if(present(divide)) then
       divide_ = divide
     else
@@ -350,16 +365,16 @@ contains
     !
     allocate(grid_vec_cryst_(3,product(mesh)))
     allocate(grid_vec_cart(3,product(mesh)))
-    grid_vec_cryst_ = grid_vec_cryst(mesh, center_)
+    grid_vec_cryst_ = grid_vec_cryst(mesh, center_, natural_)
     grid_vec_cart = REAL(grid_vec_cryst_, DP)
     deallocate(grid_vec_cryst_)
-    call cryst_to_cart(product(mesh), grid_vec_cart, at, 1)
-    !
     if (divide_) then
       do i = 1, size(grid_vec_cart,2)
         grid_vec_cart(:,i) = grid_vec_cart(:,i) / REAL(mesh, DP)
       end do
     endif
+    call cryst_to_cart(product(mesh), grid_vec_cart, at, 1)
+    !
   end function
   !
   function minus_ind(q, mesh)

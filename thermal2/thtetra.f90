@@ -160,7 +160,7 @@ CONTAINS
         enddo
       enddo
       do iq = 1, grid%nqtot
-        call merge_degen(S%nat3, wg%w(:,wg%e(iq),iw), freqs(:,iq))
+        call merge_degen(S%nat3, wg%w(:,iq,iw), freqs(:,iq))
       enddo
     enddo
   end subroutine
@@ -718,7 +718,10 @@ CONTAINS
     call mpi_bsum(4, nbnd, ntetra, ek_sort)
     call mpi_bsum(4, nbnd, ntetra, itetra)
     !
-    MIN_DISTANCE = SUM(ek_in) / REAL(nbnd * nqs, dp)  * min_relative_distance
+    MULTIPLIER = SUM(ek_sort)/REAL(SIZE(ek_sort), dp)
+    ! print*, "multiplier", MULTIPLIER
+    ek_sort = ek_sort / MULTIPLIER
+    MIN_DISTANCE = MULTIPLIER * min_relative_distance
   END SUBROUTINE
   !
   subroutine tetra_weights_delta(ef, wI)
