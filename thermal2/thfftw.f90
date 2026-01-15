@@ -1,4 +1,4 @@
-#if defined(__FFTW3)
+!#if defined(__FFTW3)
 
 module thfftw
   ! use kinds, only: dp
@@ -84,6 +84,6 @@ contains
   end subroutine
 
 end module
-#endif
+!#endif
 
 
