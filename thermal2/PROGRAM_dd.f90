@@ -91,11 +91,6 @@ program defectp
   ! call fc2_recenter(S_sc, fc2d, fc2d_centered, 2)
   call print_message("ASR applied to fc2d")
 
-
-  call project(S, Sd, fc2_centered, fc2d)
-  stop 12345
-
-
   !
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&
@@ -220,7 +215,7 @@ program defectp
   deallocate(DRR)
   ! call div_mass0_fcsc(S, fc2_sc)
   !
-  call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, in_grid)
+  call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, sym_grid)
 
   ! CALL main_defect(S, fc2_centered, fc2_sc, in_grid, out_grid, input)
   ! allocate(D0(nR*S%nat3, nR*S%nat3))

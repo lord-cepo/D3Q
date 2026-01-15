@@ -34,16 +34,16 @@ module simtet
   !! number of VALID tetrahedra
   real(dp) :: TETRA_MULTIPLIER
   !! brings ek to unity to avoid float overflow
+  integer :: NUM_PROCS_TETRA, MY_ID_TETRA
   !
   PUBLIC
 contains
-  SUBROUTINE tetra_init_sym_nosym(grid, S, ek, ek_tetra)
+  SUBROUTINE tetra_init_sym_nosym(grid, S, ek, ek_tetra, mpi)
     !-----------------------------------------------------------------------------
     !! This rouotine sets the corners and additional points for each tetrahedron.
     !
     use ph_system, only : ph_system_info
     use q_grids,   only : q_grid, setup_grid
-    use mpi_thermal, only : my_id, num_procs
     IMPLICIT NONE
     !
     type(ph_system_info), intent(in) :: S
@@ -54,6 +54,7 @@ contains
     !! accepts symmetrized grids
     complex(dp), intent(out) :: ek_tetra(4,size(ek, 1),product(grid%n)*6)
     !! size (4,nbnd,ntetra)
+    logical, intent(in), optional :: mpi
 
     REAL(DP), PARAMETER :: eps = 1e-5_dp
     !
@@ -64,6 +65,14 @@ contains
     REAL(DP) :: l(4), bvec2(3,3), bvec3(3,4) !xkg(3, product(nq))
     external :: SIM0ONEI
     !
+    NUM_PROCS_TETRA = num_procs
+    MY_ID_TETRA = my_id
+    if(present(mpi)) then
+      if(.not.mpi) then
+        NUM_PROCS_TETRA = 1
+        MY_ID_TETRA = 0
+      endif
+    endif
     !
     nbnd = SIZE(ek,1)
     nqs =  size(ek,2)
@@ -121,7 +130,7 @@ contains
     call equiv_grid(grid, S, equiv)
 
     ! tetra_ik = 0
-    DO itettot = 1+my_id, ntetra, num_procs
+    DO itettot = 1+MY_ID_TETRA, ntetra, NUM_PROCS_TETRA
       itet = mod(itettot,6) + 1
       rest = itettot / 6
       i3 = mod(rest,grid%n(3)) + 1
@@ -171,7 +180,7 @@ contains
     enddo
   end function
   !
-  SUBROUTINE tetra_init_sym_cmplx(grid, S, ek)
+  SUBROUTINE tetra_init_sym_cmplx(grid, S, ek, mpi)
     !-----------------------------------------------------------------------------
     !! This rouotine sets the corners and additional points for each tetrahedron.
     !
@@ -185,6 +194,7 @@ contains
     !! energy in the form ek(ibnd, iq)
     type(q_grid), intent(in) :: grid
     !! accepts symmetrized grids
+    logical, intent(in), optional :: mpi
 
     ! LOGICAL, INTENT(IN) :: is_mpi
     !! if .true., the grid is scattered
@@ -202,6 +212,15 @@ contains
     integer, allocatable :: first_point(:)
     !
     IF(ntetra /= 0) CALL deallocate_tetra()
+    !
+    NUM_PROCS_TETRA = num_procs
+    MY_ID_TETRA = my_id
+    if(present(mpi)) then
+      if(.not.mpi) then
+        NUM_PROCS_TETRA = 1
+        MY_ID_TETRA = 0
+      endif
+    endif
     !
     nbnd = SIZE(ek,1)
     nqs =  size(ek,2)
@@ -283,7 +302,7 @@ contains
     itetra = 0
     tetra = 0
     ! tetra_ik = 0
-    DO itettot = 1+my_id, ntetra, num_procs
+    DO itettot = 1+MY_ID_TETRA, ntetra, NUM_PROCS_TETRA
       itet = mod(itettot,6) + 1
       rest = itettot / 6
       i3 = mod(rest,grid%n(3)) + 1
@@ -362,7 +381,7 @@ contains
     ef_ = ef * TETRA_MULTIPLIER
     wg_sym = 0._dp
     !
-    DO nt = 1+my_id, nvalid, num_procs
+    DO nt = 1+MY_ID_TETRA, nvalid, NUM_PROCS_TETRA
       !
       DO ibnd = 1, nbnd
         !
@@ -383,7 +402,8 @@ contains
     wg_sym = wg_sym / ntetra * TETRA_MULTIPLIER
     !
     ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
-    CALL mpi_bsum(nbnd, nqs, wg_sym)
+    if (NUM_PROCS_TETRA > 1) &
+      CALL mpi_bsum(nbnd, nqs, wg_sym)
     !
   END FUNCTION
   !

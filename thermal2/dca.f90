@@ -10,7 +10,7 @@ module dca
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
   use code_input, only: code_input_type
   use functions, only: invzmat
-  use constants, only: tpi
+  use constants, only: tpi, pi
   use quter_defect
   use functions, only: f_gauss
   use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
@@ -21,6 +21,7 @@ module dca
   use constants, only : RY_TO_CMM1
   use symm_base, only : symm_matrices => s
   use EPW_utilities, only : mix_broyden_full
+  use mpi_thermal, only : mpi_bsum, ionode, num_procs, my_id
 contains
   subroutine dca_selfnrg(S, S_sc, input, fc2, fc2_sc, grid)
     type(ph_system_info), intent(in) :: S, S_sc
@@ -28,13 +29,13 @@ contains
     type(forceconst2_grid), intent(in) :: fc2
     type(forceconst2_sc), intent(inout) :: fc2_sc
     type(q_grid), intent(in) :: grid
-    type(tetra_output) :: wg, wg1
+    type(tetra_output) :: wg
     !
     complex(dp), allocatable :: V(:,:,:,:), phase_mat(:,:,:,:,:)
     ! complex(dp), allocatable :: G0_coarse(:,:,:)
     ! complex(dp), allocatable :: G0i_coarse(:,:,:)
     complex(dp), allocatable :: den_weights(:,:), den_U(:,:,:)
-    real(dp), allocatable :: den_eig(:,:)
+    complex(dp), allocatable :: den_eig(:,:)
     complex(dp), allocatable :: G0i_cluster(:,:,:)
     complex(dp), allocatable :: G_coarse(:,:,:)
     complex(dp), allocatable :: G_avg(:,:,:,:)
@@ -54,11 +55,13 @@ contains
     integer, allocatable :: pos(:), kq(:,:), big_iq(:)
     real(dp), allocatable :: xq(:,:), R(:,:)!, small_xq(:,:)
     logical, allocatable :: eq_done(:)
+    complex(dp) :: dos
+    complex(dp), allocatable :: weights_iw(:,:,:), U_iw(:,:,:,:)
     !
     NSAMPLES = 100
-    MAXITER = 100
+    MAXITER = 50
     ABS_TOLERANCE = 1e-8_dp
-    REL_TOLERANCE = 1e-2_dp
+    REL_TOLERANCE = 1e-3_dp
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = 0.25_dp  ! example concentration
@@ -97,12 +100,14 @@ contains
     allocate(den_eig(S%nat3, grid%nqtot))
     allocate(eq_done(size(wg%e)))
     allocate(s_avg(Nc*S%nat3))
+    allocate(weights_iw(S%nat3, grid%nqtot, input%n_omega))
+    allocate(U_iw(S%nat3, S%nat3, grid%nqtot, input%n_omega))
     ! deallocate(fc2_sc%defects)
     ! allocate(fc2_sc%defects(3, 1))
     ndef = size(fc2_sc%defects,2)
     ! fc2_sc%defects(:,1) = [1,1,1]
-    print*, fc2_sc%defects
     call center_V(S, S_sc, fc2_sc, Vqqs)
+    print*, S%nat3 * Nc
     !
     !> construction of of the phase, used to translate the potential to
     !> random configurations inside the cluster
@@ -144,8 +149,11 @@ contains
     delta_out = 0._dp
     delta_in = 0._dp
     !
+    weights_iw = 0._dp
+    U_iw = 0._dp
+    !
     print*, "Starting DCA self-energy calculation..."
-    do iw = 50, input%n_omega
+    do iw = 50+my_id, input%n_omega, num_procs
       df = 0._dp
       dv = 0._dp
       open(97, file="self_conv.dat")
@@ -158,6 +166,7 @@ contains
           abs(self_in(:,:,:,iw)) + ABS_TOLERANCE)) exit
         !> construction of G0_cluster from self-energy
         Gi_coarse = 0.0_dp
+        !
         do iq = 1, grid%nqtot
           den_U(:,:,iq) = diag(wg%f(:,iq)**2) + self_in(:,:,big_iq(iq),iw)
           call mat2_diag(S%nat3, den_U(:,:,iq), den_eig(:,iq))
@@ -169,10 +178,14 @@ contains
           ! Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) + A
           ! G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_in(:,:,iq,iw)
         enddo
+        where(aimag(den_eig)> 0._dp)
+          den_eig = conjg(den_eig)
+        endwhere
+        !
         !{ weights of diagonal tetra
-        call tetra_init_sym(grid, S, den_eig, .false., wg1)
-        deallocate(wg1%e, wg1%qw)
-        den_weights = tetra_weights_green(wg%en(iw)**2)
+        call tetra_init_sym_cmplx(grid, S, den_eig, mpi=.false.)
+        ! deallocate(wg1%e, wg1%qw)
+        den_weights = tetra_weights_green_cmplx(wg%en(iw)**2)
         where(isnan(abs(den_weights)))
           den_weights = 0._dp
         endwhere
@@ -237,7 +250,7 @@ contains
         do iq = 1, Nc
           do i = 1, S%nat3
             s_avg(i+S%nat3*(iq-1)) = self_out(i,i,iq,iw)
-        enddo
+          enddo
         enddo
         write(97,"(2000E20.8)") s_avg
         !
@@ -245,11 +258,31 @@ contains
           ALPHA_MIX, sc_iter, MEMORY, df, dv)
         self_in(:,:,:,iw) = reshape(delta_in, [S%nat3, S%nat3, Nc])
       enddo ! self-energy SC cycle
-      if (sc_iter == MAXITER + 1) &
-        print*, "DCA not converged for frequency ", iw
+      if (sc_iter == MAXITER + 1) then
+        ! print*, "DCA not converged for frequency ", iw
+        weights_iw(:,:,iw) = den_weights
+        U_iw(:,:,:,iw) = den_U
+      endif
     enddo ! frequency loop
+    call mpi_bsum(S%nat3, grid%nqtot,input%n_omega, weights_iw)
+    call mpi_bsum(S%nat3, S%nat3, grid%nqtot, input%n_omega, U_iw)
     !
+    open(110, file="dos_dca.dat")
+    do iw = 1, input%n_omega
+      do iq = 1, grid%nqtot
+        do i = 1, S%nat3
+          A = outer_product(U_iw(:,i,iq,iw)) * weights_iw(i,iq,iw)
+          do j = 1, S%nat3
+            dos = dos + A(j,j) * wg%qw(iq)
+          enddo
+        enddo
+      enddo
+      if(ionode) WRITE(110, "(3E20.8)") wg%en(iw) * RY_TO_CMM1, &
+        - dos / pi * product(grid%n) * 2 * wg%en(iw) / RY_TO_CMM1
+    enddo
+    close(110)
     close(97)
+    !
   end subroutine
 !
   subroutine sample_binomial(N, c, pos)
