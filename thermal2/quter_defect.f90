@@ -169,7 +169,7 @@ contains
     !
     if(ndef == 1) then
       fc%taudef = S%tau(:, fc%defects(1,1))
-      call get_equiv_sites(S%nat, fc%defects(2,1), sites)
+      call get_equiv_sites(S%nat, fc%defects(1,1), sites)
       do i = 1, size(sites)
         ndef = ndef + 1
         fc%defects(:, ndef) = [sites(i), 0, 0]
@@ -1952,4 +1952,5 @@ contains
     END DO
     if (grid%scattered) CALL mpi_bsum(S%nat3, grid%nqtot, freqs)
   end subroutine
+  !
 end module

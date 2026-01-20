@@ -31,7 +31,7 @@ contains
     type(q_grid), intent(in) :: grid
     type(tetra_output) :: wg
     !
-    complex(dp), allocatable :: V(:,:,:,:), phase_mat(:,:,:,:,:)
+    complex(dp), allocatable :: V(:,:,:,:,:), phase_mat(:,:,:,:,:)
     ! complex(dp), allocatable :: G0_coarse(:,:,:)
     ! complex(dp), allocatable :: G0i_coarse(:,:,:)
     complex(dp), allocatable :: den_weights(:,:), den_U(:,:,:)
@@ -51,20 +51,21 @@ contains
     complex(dp), allocatable :: A(:,:), s_avg(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, ndef, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq
-    real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX
-    integer, allocatable :: pos(:), kq(:,:), big_iq(:)
+    real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff
+    integer, allocatable :: pos(:,:), kq(:,:), big_iq(:), Npos(:)
     real(dp), allocatable :: xq(:,:), R(:,:)!, small_xq(:,:)
     logical, allocatable :: eq_done(:)
     complex(dp) :: dos
+    logical :: conv
     complex(dp), allocatable :: weights_iw(:,:,:), U_iw(:,:,:,:)
     !
     NSAMPLES = 100
     MAXITER = 50
-    ABS_TOLERANCE = 1e-8_dp
+    ABS_TOLERANCE = 1e-12_dp
     REL_TOLERANCE = 1e-3_dp
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
-    conc = 0.25_dp  ! example concentration
+    conc = 0.001_dp  ! example concentration
     Nc = product(fc2%nq) !* size(fc2_sc%defects,2)
     NQ = product(grid%n) / Nc
     xq = grid_vec_cart(fc2%nq, S%bg, divide=.true., natural=.true.)
@@ -91,7 +92,7 @@ contains
     allocate(G0i_cluster(S%nat3, S%nat3, Nc))
     allocate(self_in(S%nat3, S%nat3, Nc, input%n_omega))
     allocate(self_out(S%nat3, S%nat3, Nc, input%n_omega))
-    allocate(V(S%nat3, S%nat3, Nc, Nc))
+    allocate(V(S%nat3, S%nat3, Nc, Nc, NSAMPLES))
     allocate(A(S%nat3, S%nat3))
     allocate(phase_mat(S%nat3, S%nat3, Nc, Nc, Nc))
     allocate(kq(NQ, Nc), big_iq(grid%nqtot))
@@ -102,12 +103,14 @@ contains
     allocate(s_avg(Nc*S%nat3))
     allocate(weights_iw(S%nat3, grid%nqtot, input%n_omega))
     allocate(U_iw(S%nat3, S%nat3, grid%nqtot, input%n_omega))
+    allocate(pos(Nc, NSAMPLES))
+    allocate(Npos(NSAMPLES))
+
     ! deallocate(fc2_sc%defects)
     ! allocate(fc2_sc%defects(3, 1))
-    ndef = size(fc2_sc%defects,2)
     ! fc2_sc%defects(:,1) = [1,1,1]
+    ndef = size(fc2_sc%defects,2)
     call center_V(S, S_sc, fc2_sc, Vqqs)
-    print*, S%nat3 * Nc
     !
     !> construction of of the phase, used to translate the potential to
     !> random configurations inside the cluster
@@ -115,6 +118,17 @@ contains
       do j = 1, Nc
         do k = 1, Nc
           phase_mat(:,:,k,j,i) = e_iqr(xq(:,j)-xq(:,k), R(:,i))
+        enddo
+      enddo
+    enddo
+    !
+    V = 0.0_dp
+    do it = 1, NSAMPLES
+      call sample_binomial(Nc, conc/ndef, pos(:,it), Npos(it))
+      do idef = 1, ndef
+        do ipos = 1, Npos(it)
+          V(:,:,:,:,it) = V(:,:,:,:,it) + &
+            Vqqs(:,:,:,:,idef) * phase_mat(:,:,:,:,pos(ipos,it))
         enddo
       enddo
     enddo
@@ -152,18 +166,33 @@ contains
     weights_iw = 0._dp
     U_iw = 0._dp
     !
+    ! call tetra_init_sym_cmplx(grid, S, cmplx(wg%f**2,0._dp,dp), mpi=.false.)
+
+    ! open(10, file="dos1.dat")
+    ! do iw = 1, input%n_omega
+    !   den_weights = tetra_weights_green_cmplx(wg%en(iw)**2)
+    !   if(ionode) WRITE(10, "(5E20.8)") wg%en(iw) * RY_TO_CMM1, &
+    !     - sum(matmul(wg%w(:,:,iw), wg%qw(:))) / pi * product(grid%n) * 2 * wg%en(iw) / RY_TO_CMM1, &
+    !     - sum(matmul(den_weights, wg%qw(:))) / pi * product(grid%n) * 2 * wg%en(iw) / RY_TO_CMM1
+    ! enddo
+    ! close(10)
     print*, "Starting DCA self-energy calculation..."
     do iw = 50+my_id, input%n_omega, num_procs
       df = 0._dp
       dv = 0._dp
       open(97, file="self_conv.dat")
       do sc_iter = 1, MAXITER
-        print*, iw, sc_iter, maxval(ABS(self_out(:,:,:,iw)-self_in(:,:,:,iw))), &
-          sum(self_in(:,:,:,iw)) / S%nat3**2 / Nc * REL_TOLERANCE
-        !  / &
-        ! sum(ABS(self_in(:,:,:,iw))+1e-20_dp)
-        if (all(abs(self_out(:,:,:,iw)-self_in(:,:,:,iw)) < REL_TOLERANCE * &
-          abs(self_in(:,:,:,iw)) + ABS_TOLERANCE)) exit
+        conv = .true.
+        max_diff = 0._dp
+        do iq = 1, Nc
+          do i = 1, S%nat3
+            max_diff = max(max_diff, ABS(self_out(i,i,iq,iw)-self_in(i,i,iq,iw)))
+            if( ABS(self_out(i,i,iq,iw)-self_in(i,i,iq,iw)) > REL_TOLERANCE * &
+              abs(self_in(i,i,iq,iw)) + ABS_TOLERANCE) conv = .false.
+          enddo
+        enddo
+        print*, iw, sc_iter, max_diff
+        if (conv) exit
         !> construction of G0_cluster from self-energy
         Gi_coarse = 0.0_dp
         !
@@ -210,13 +239,6 @@ contains
         Gf_avg = 0.0_dp
         do it = 1, NSAMPLES
           !> construction of V for a given configuration
-          V = 0.0_dp
-          do idef = 1, ndef
-            call sample_binomial(Nc, conc/ndef, pos)
-            do ipos = 1, size(pos)
-              V = V + Vqqs(:,:,:,:,idef) * phase_mat(:,:,:,:,pos(ipos))
-            enddo
-          enddo
           !>
           !
           !> construction of G_conf for a given configuration
@@ -224,7 +246,7 @@ contains
           do iq = 1, Nc
             G_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
             do jq = 1, Nc
-              G_conf(:,:,iq,jq) = G_conf(:,:,iq,jq) - V(:,:,iq,jq)
+              G_conf(:,:,iq,jq) = G_conf(:,:,iq,jq) - V(:,:,iq,jq,it)
             enddo
           enddo
           !>
@@ -258,17 +280,15 @@ contains
           ALPHA_MIX, sc_iter, MEMORY, df, dv)
         self_in(:,:,:,iw) = reshape(delta_in, [S%nat3, S%nat3, Nc])
       enddo ! self-energy SC cycle
-      if (sc_iter == MAXITER + 1) then
-        ! print*, "DCA not converged for frequency ", iw
-        weights_iw(:,:,iw) = den_weights
-        U_iw(:,:,:,iw) = den_U
-      endif
+      weights_iw(:,:,iw) = den_weights
+      U_iw(:,:,:,iw) = den_U
     enddo ! frequency loop
     call mpi_bsum(S%nat3, grid%nqtot,input%n_omega, weights_iw)
     call mpi_bsum(S%nat3, S%nat3, grid%nqtot, input%n_omega, U_iw)
     !
     open(110, file="dos_dca.dat")
     do iw = 1, input%n_omega
+      dos = 0._dp
       do iq = 1, grid%nqtot
         do i = 1, S%nat3
           A = outer_product(U_iw(:,i,iq,iw)) * weights_iw(i,iq,iw)
@@ -285,26 +305,23 @@ contains
     !
   end subroutine
 !
-  subroutine sample_binomial(N, c, pos)
+  subroutine sample_binomial(N, c, pos, npos)
     integer, intent(in) :: N
     real(dp), intent(in) :: c
-    integer, allocatable, intent(out) :: pos(:)
+    integer, intent(out) :: pos(N)
+    integer, intent(out) :: npos
     !
-    integer :: i, npos
+    integer :: i
     real(dp) :: r
-    integer :: pos_(N)
     !
     npos = 0
     do i = 1, N
       call random_number(r)
       if (r < c) then
         npos = npos + 1
-        pos_(npos) = i
+        pos(npos) = i
       end if
     enddo
-    !
-    allocate(pos(npos))
-    pos = pos_(:npos)
     !
   end subroutine
 !
@@ -313,7 +330,7 @@ contains
     ! Apply ONE symmetry that maps atom1 -> atom2 to center potential there
     !
     USE kinds,     ONLY : DP
-    USE symm_base, ONLY : irt, nsym, ft, symm_mat => s
+    USE symm_base, ONLY : irt, nsym, ft, symm_mat => s, invs
     use symme, only : cart_to_crys, crys_to_cart
     !
     type(ph_system_info), INTENT(IN) :: S, S_sc
@@ -321,10 +338,10 @@ contains
     complex(dp), allocatable, intent(out) :: Vqqs(:,:,:,:,:)
     !
     real(dp):: trans(3)
-    integer :: SM(3,3), SMT(3,3)
+    integer, dimension(3,3) :: SM, SMT, SM1, SMT1
     type(forceconst2_sc) :: fc_temp
-    INTEGER :: isym_map, isym, nai, naj, nbi, nbj, iR1, iR2
-    integer :: site, N, iR, jR, iiR, jjR, iq, jq
+    INTEGER :: isym_map, isym, nai, naj, naii, najj, iR1, iR2
+    integer :: site, N, iR, jR, iiR, jjR, iq, jq, inv_map
     real(dp), allocatable :: tens4(:,:,:,:,:,:)
     REAL(DP), ALLOCATABLE :: work(:,:,:,:,:,:)
     real(dp), allocatable :: xq(:,:)
@@ -345,6 +362,9 @@ contains
       DO isym = 1, nsym
         IF ( irt(isym, fc2_sc%defects(1,1)) == fc2_sc%defects(1,site) ) THEN
           isym_map = isym
+          inv_map = invs(isym_map)
+          SM1 = symm_mat(:,:,inv_map)
+          SMT1 = transpose(SM1)
           SM = symm_mat(:,:,isym_map)
           SMT = transpose(SM)
           trans = cryst2cart(ft(:,isym_map), S%at, 1)
@@ -354,15 +374,15 @@ contains
       !
       work = 0.0_DP
       DO nai = 1, S%nat
-        nbi = irt(isym_map, nai)
+        naii = irt(isym_map, nai)
         DO naj = 1, S%nat
-          nbj = irt(isym_map, naj)
+          najj = irt(isym_map, naj)
           do iR = 1, N
             do jR = 1, N
               iiR = v2index(bz2simple(matmul(SM, index2v(iR, fc2_sc%nq)), fc2_sc%nq), fc2_sc%nq)
               jjR = v2index(bz2simple(matmul(SM, index2v(jR, fc2_sc%nq)), fc2_sc%nq), fc2_sc%nq)
-              work(:,nai,:,naj,iiR,jjR) = work(:,nai,:,naj,iiR,jjR) + matmul( &
-                matmul( SM, tens4(:,nbi,:,nbj,iR,jR) ), SMT )
+              work(:,naii,:,najj,iiR,jjR) = work(:,naii,:,najj,iiR,jjR) + matmul( &
+                matmul( SM1, tens4(:,nai,:,naj,iR,jR) ), SMT1 )
             END DO
           END DO
         END DO
@@ -371,15 +391,16 @@ contains
       call transform_tns4(work, 1)
       !
       fc_temp%fc = reshape( work, [3*S%nat, 3*S%nat, N, N] )
+      call fc_temp%center(fc2_sc%nq, S)
       !
-      call translate_xR(fc_temp, trans)
+      ! call translate_xR(fc_temp, trans)
       do iq = 1, size(xq,2)
         call fc_temp%r2q(xq(:,iq))
         do jq = 1, size(xq,2)
           call fc_temp%r2q(xq(:,jq), Vqqs(:,:,iq,jq,site))
         enddo
       enddo
-      call translate_xR(fc_temp, -trans)
+      ! call translate_xR(fc_temp, -trans)
       !
     enddo
     !
