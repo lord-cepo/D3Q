@@ -10,7 +10,7 @@ module defect
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
   use code_input, only: code_input_type
   use functions, only: invzmat
-  use constants, only: tpi
+  use constants, only: tpi, pi
   use quter_defect
   use functions, only: f_gauss
   use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
@@ -24,12 +24,51 @@ module defect
   !
 contains
   !
+  subroutine tetra_from_self(S, grid, freqs, self, en2, den_weights, den_UL, den_UR, overlap)
+    type(ph_system_info), intent(in) :: S
+    type(q_grid), intent(in) :: grid
+    real(dp), intent(in) :: freqs(S%nat3, grid%nqtot)
+    complex(dp), intent(in) :: self(S%nat3, S%nat3, grid%nqtot)
+    real(dp), intent(in) :: en2
+    !
+    complex(dp), intent(out), dimension(S%nat3, grid%nqtot) :: den_weights
+    complex(dp), optional, intent(out), dimension(S%nat3,S%nat3,grid%nqtot) :: den_UL, den_UR
+    complex(dp), optional, intent(out), dimension(S%nat3, grid%nqtot) :: overlap
+    !
+    integer :: iq, i, idx(S%nat3)
+    complex(dp) :: temp_U_idx(S%nat3, S%nat3)
+    complex(dp) :: den_eig(S%nat3, grid%nqtot)
+    real(dp) :: real_eig(S%nat3)
+    !
+    do iq = 1, grid%nqtot
+      den_UL(:,:,iq) = diag(freqs(:,iq)**2) + self(:,:,iq)
+      call mat2_diag(S%nat3, den_UL(:,:,iq), den_UR(:,:,iq), den_eig(:,iq))
+      real_eig = real(den_eig(:,iq),dp)
+      idx = 0
+      CALL hpsort(S%nat3, real_eig, idx)
+      temp_U_idx = den_UR(:, idx, iq)
+      den_eig(:,iq) = den_eig(idx,iq)
+      den_UR(:, :, iq) = temp_U_idx
+      temp_U_idx = den_UL(:, idx, iq)
+      den_UL(:, :, iq) = temp_U_idx
+      do i = 1, S%nat3
+        overlap(i,iq) = dot_product(den_UL(:,i,iq), den_UR(:,i,iq))
+      enddo
+      ! call merge_degen(S%nat3, den_eig(:,iq), den_eig(:,iq))
+    enddo
+    where(aimag(den_eig)> 0._dp) den_eig = conjg(den_eig)
+    !
+    !{ weights of diagonal tetra
+    call tetra_init_sym_cmplx(grid, S, den_eig, mpi=.false.)
+    den_weights = tetra_weights_green_cmplx(en2)
+    where(isnan(abs(den_weights))) den_weights = 0._dp
+  end subroutine
+  !
   subroutine create_diffs(fc2_sc, diffs)
     type(forceconst2_sc), intent(in) :: fc2_sc
     integer, intent(out), pointer :: diffs(:,:)
     !
     integer :: ir1, ir2, iR, nR, R(3)
-    logical :: is_new
     !
     allocate(diffs(3,1))
     diffs(:,1) = fc2_sc%yR1(:,1,1) - fc2_sc%yR2(:,1)
@@ -100,9 +139,9 @@ contains
     !
   end subroutine
   !
-  subroutine full_born_center(c, S, input, fc2, fc2_sc, grid, sym_grid, out_grid)
+  subroutine full_born_center(S, input, fc2, fc2_sc, grid, sym_grid, out_grid)
     use quter_defect, only: fc_sc2RR, allocate_fc2_sc, minimal_image
-    real(dp), intent(in) :: c
+    use mpi_thermal, only : my_id, num_procs, mpi_bsum, ionode
     type(ph_system_info), intent(in) :: S
     type(code_input_type), intent(in) :: input
     type(forceconst2_grid), intent(in) :: fc2
@@ -110,8 +149,8 @@ contains
     type(q_grid), intent(in) :: grid, sym_grid, out_grid
     !
     integer :: iR1, iR2, iR, nR, nR_large
-    integer :: i, j, iq, x0, ibnd, ii, N, iter
-    real(dp) :: x, dx
+    integer :: i, j, iq, x0, ibnd, ii, N
+    real(dp) :: x, dx, c
     integer, pointer :: R_list(:,:), diff_list(:,:)
     integer :: R(3)
     real(dp), allocatable :: Rij_cart(:,:,:)
@@ -121,7 +160,6 @@ contains
     complex(dp) :: Tq(S%nat3, S%nat3,out_grid%nqtot, input%n_omega)
     complex(dp) :: self_energy(S%nat3, out_grid%nqtot, input%n_omega)
     integer :: iw
-    complex(dp) :: D(S%nat3, S%nat3)
     type(tetra_output) :: wg
     complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
     real(dp) :: freqs(S%nat3, grid%nqtot)
@@ -143,11 +181,15 @@ contains
     integer :: j_list(fc2_sc%n_R2)
     integer, allocatable :: g0_iR(:)
     real(dp), parameter :: alpha = 1.0_dp
+    complex(dp) :: den_weights(S%nat3, out_grid%nqtot)
+    real(dp) :: dos(input%n_omega)
+
     !
     call set_wg(S, fc2, sym_grid, input%n_omega, wg)
     call freq_in_grid(S, fc2, grid, freqs, Us)
     call freq_in_grid(S, fc2, out_grid, out_freqs, out_Us)
 
+    c = input%conc * size(fc2_sc%defects,2)
     do iq = 1, out_grid%nqtot
       out_Us_c(:,:,iq) = conjg(transpose(out_Us(:,:,iq)))
     enddo
@@ -218,6 +260,7 @@ contains
     gV__ = 0._dp
     T__ = 0._dp
     Tq = 0._dp
+    dos = 0._dp
     do iR2 = 1, fc2_sc%n_R2
       do iR1 = 1, fc2_sc%n_R1(iR2)
         call find_where(fc2_sc%yR1(:,iR1,iR2)-fc2_sc%yR2(:,iR2), diff_list, iR_diff(iR1,iR2))
@@ -238,7 +281,7 @@ contains
     enddo
     !
 
-    do iw = 1, input%n_omega
+    do iw = 1+my_id, input%n_omega, num_procs
       print*, "Frequency index: ", iw
       g0 = green_0_c(iw, wg, S, grid, Us, diff_large, g0_iR)
       g0__ = 0._dp
@@ -271,26 +314,38 @@ contains
             phases_out(iR,iq)
         enddo
         Tq(:,:,iq,iw) = matmul(out_Us_c(:,:,iq), matmul(Tq(:,:,iq,iw), out_Us(:,:,iq)))
-        do ibnd = 1, S%nat3
-          self_energy(ibnd,iq,iw) = Tq(ibnd,ibnd,iq,iw)
-        enddo
-        call merge_degen(S%nat3, self_energy(:,iq,iw), out_freqs(:,iq))
+        ! do ibnd = 1, S%nat3
+        !   ! self_energy(ibnd,iq,iw) = Tq(ibnd,ibnd,iq,iw)
+        ! enddo
+        ! call merge_degen(S%nat3, self_energy(:,iq,iw), out_freqs(:,iq))
+      enddo
+      call tetra_from_self(S, out_grid, out_freqs, Tq(:,:,:,iw), wg%en(iw)**2, den_weights)
+      do iq = 1, out_grid%nqtot
+        dos(iw) = dos(iw) + aimag(sum(den_weights(:,iq)) * wg%qw(iq))
       enddo
     enddo
+    call mpi_bsum(input%n_omega, dos)
     !
-    do iq = 1, out_grid%nqtot
-      do ibnd = 1, S%nat3
-        x = out_freqs(ibnd,iq)*input%n_omega/wg%max_f + 1
-        x0 = INT(x)
-        dx = x - x0
-        lws(ibnd,iq) = (1.0_dp - dx) * Tq(ibnd,ibnd,iq,x0) + dx * Tq(ibnd,ibnd,iq,x0+1)
-      enddo
-      call merge_degen(S%nat3, lws(:,iq), out_freqs(:,iq))
+    ! do iq = 1, out_grid%nqtot
+    !   do ibnd = 1, S%nat3
+    !     x = out_freqs(ibnd,iq)*input%n_omega/wg%max_f + 1
+    !     x0 = INT(x)
+    !     dx = x - x0
+    !     lws(ibnd,iq) = (1.0_dp - dx) * Tq(ibnd,ibnd,iq,x0) + dx * Tq(ibnd,ibnd,iq,x0+1)
+    !   enddo
+    !   call merge_degen(S%nat3, lws(:,iq), out_freqs(:,iq))
+    ! enddo
+    ! !
+    ! call write_file(out_freqs, lws, "spectral-full.dat", out_grid%type)
+    ! call write_self("self-energy-def-full.dat", wg%en, self_energy)
+    !
+    ! where(aimag(self_energy) > 0._dp) self_energy = conjg(self_energy)
+    open(17, file="dos_center.dat")
+    do iw = 1, input%n_omega
+      if(ionode) WRITE(17, "(2E20.8)") wg%en(iw) * RY_TO_CMM1, &
+        - dos(iw) / pi * product(grid%n) * 2 * wg%en(iw) / RY_TO_CMM1
     enddo
-    !
-    call write_file(out_freqs, lws, "spectral-full.dat", out_grid%type)
-    call write_self("self-energy-def-full.dat", wg%en, self_energy)
-    !
+    close(17)
   contains
     subroutine t_symmetrize(TRR, iR_list, nR, TR)
       complex(dp), intent(in) :: TRR(:,:)
@@ -385,18 +440,17 @@ contains
     complex(dp), allocatable :: interp(:,:)
     complex(dp), allocatable, dimension(:,:,:,:) :: V
     real(dp) :: omega
-    integer :: iq, iw, ibnd, nR, jq, Nin, Nout, i, jbnd
+    integer :: iq, iw, ibnd, nR, jq, Nin, Nout, jbnd
     complex(dp), allocatable, dimension(:,:,:) :: Vqqs, Vqqs_out, Vms
     character(15) :: filename
     real(dp) :: concentrations(3), mult
     real(dp) :: spectral_function(3,input%n_omega)
     integer :: iconc
     complex(dp) :: self_energy(S%nat3, out_grid%nqtot, input%n_omega)
-    complex(dp) :: pixel(grid%nqtot, out_grid%nqtot)
     CHARACTER (LEN=6), EXTERNAL :: int_to_char
     complex(dp) :: phase_factor(grid%nqtot)
     ! complex(dp) :: vk_plus_vm
-    complex(dp), dimension(S%nat3,S%nat3) :: U_dagger, U_dagger_vm
+    complex(dp), dimension(S%nat3,S%nat3) :: U_dagger
     !
     !> full born quantities in real space
     !
@@ -553,13 +607,12 @@ contains
     close(10)
   end subroutine
   !
-  subroutine write_file_raja(freqs_, lws_, filename_, type)
+  subroutine write_file_raja(freqs_, lws_, filename_)
     real(dp), intent(in) :: freqs_(:,:)
     complex(dp), intent(in) :: lws_(:,:)
     character(*), intent(in) :: filename_
-    character(*), intent(in) :: type
     !
-    integer :: iq_, ibnd_
+    integer :: iq_
     !
     open(10, file=filename_, status='replace', action='write')
     do iq_ = 1, size(lws_, 2)

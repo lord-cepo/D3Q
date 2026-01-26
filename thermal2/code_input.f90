@@ -58,6 +58,7 @@ MODULE code_input
     REAL(DP) :: sigmaq
     CHARACTER(10)   :: delta_approx
     integer :: n_omega
+    real(dp) :: conc
     !! can be "tetra" or "gauss"
 
 !threshold to detect degeneracies between phonons, in cm-1
@@ -150,6 +151,7 @@ CONTAINS
     CHARACTER(8)   :: asr2 = "no"                ! apply sum rule to phonon force constants
     CHARACTER(10)   :: delta_approx = 'tetra'     ! 'gauss': dirac_delta = gaussian, 'tetra' dirac_delta = scattering surface with optimized tetrahedra
     integer :: n_omega = 100
+    real(dp) :: conc = 0._dp
     INTEGER            :: nconf = -1                 ! number of smearing/temperature couples
     INTEGER            :: nq = -1                    ! number of q-point to read, only for lw
     INTEGER            :: skip_q = 0                 ! skip this many points when computing a BZ path
@@ -246,7 +248,7 @@ CONTAINS
     !
     NAMELIST /definput / &
       calculation, file_mat2, file_mat3, outdir, prefix, asr2, asr3, sc_grid, &
-      nk, n_omega, use_symm, delta_approx
+      nk, n_omega, use_symm, delta_approx, conc
     NAMELIST  / lwinput / &
       calculation, outdir, prefix, &
       file_mat2, file_mat3, asr2, &
@@ -404,6 +406,7 @@ CONTAINS
     input%sc_grid                      =  sc_grid
     input%delta_approx                 =  delta_approx
     input%n_omega                      =  n_omega
+    input%conc                         =  conc
     input%skip_q                       =  skip_q
     input%nconf                        =  nconf
     input%nk                           =  nk
@@ -977,6 +980,7 @@ CONTAINS
       CALL mpi_broadcast(grid_type_in)
       CALL mpi_broadcast(delta_approx)
       CALL mpi_broadcast(n_omega)
+      call mpi_broadcast(conc)
       CALL mpi_broadcast(use_symm)
       CALL mpi_broadcast(threshold_f_degeneracy_cmm1)
       CALL mpi_broadcast(intrinsic_scattering)

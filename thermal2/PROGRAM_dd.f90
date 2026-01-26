@@ -44,6 +44,7 @@ program defectp
   real(dp), allocatable :: E(:)
   real(dp) :: eta(12)
   integer :: iw, jR, jq, iR
+  complex(dp) :: mat3(3,3), eig3(3)
   complex(dp), allocatable :: V_sc(:,:)
   real(dp) :: freq0(9)
   real(dp) :: tau(3)
@@ -217,24 +218,27 @@ program defectp
   deallocate(DRR)
   ! call div_mass0_fcsc(S, fc2_sc)
   !
-  print*, "sum of fc2d", sum(fc2d%fc)
-  print*, "sum of fc", sum(fc2_sc%fc), sum(fc2_periodic%fc)
-  print*, "tuadef", fc2_sc%taudef
-  print*, sum(fc2_sc%yR1), sum(fc2_sc%yR2)
   ! open(139, file="fc_sc_1.dat")
   ! write(139, *) fc2_sc%fc
   ! close(139)
+  ! mat3 = 0._dp
+  ! mat3(1,1) = (1._dp, 0._dp)
+  ! mat3(2,2) = (2._dp, 0._dp)
+  ! mat3(3,3) = (3._dp, 0._dp)
+  ! mat3 = mat3 + (1e-5_dp, 1e-5_dp)
+  ! call mat2_diag(3, mat3, eig3)
+  ! print*, "Test diag mat3:", eig3
+  !
   call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, sym_grid)
 
   ! CALL main_defect(S, fc2_centered, fc2_sc, in_grid, out_grid, input)
   ! allocate(D0(nR*S%nat3, nR*S%nat3))
   ! D0 = fc_uc2sc(S, Sd, input%sc_grid, fc2_periodic%fc)
   ! call full_born_p(input, S, Sd, fc2_centered, D0, cmplx(D0-fc2d%fc(:,:,1), 0._dp, dp), out_grid)
-  c = 0.001_dp
 
-  ! CALL fc2_sc%center(sc_grid, S)
+  CALL fc2_sc%center(sc_grid, S)
+  call full_born_center(S, input, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid)
 
-  ! call full_born_center(c, S, input, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid)
   ! print*, "Defect full Born calculation done."
   ! call full_born_analytical(input, S, fc2_centered, in_grid, out_grid)
   ! call full_born(nR, S, fc2_centered, fc2_sc, input, in_grid, out_grid)

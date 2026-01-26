@@ -38,6 +38,7 @@ MODULE fc2_interpolate
 !     MODULE PROCEDURE mat2_diag_save     ! temporary space is reused (save)
     MODULE PROCEDURE mat2_diag_pure       ! temporary space is reallocated every time
     module procedure mat2_diag_cmplx
+    module procedure mat2_diag_cmplx_LR
 !     MODULE PROCEDURE mat2_diag_pure_dac ! same, using Divide & Conquer algorithm
   END INTERFACE
 
@@ -378,6 +379,43 @@ CONTAINS
     DEALLOCATE(work)
     !
   END SUBROUTINE mat2_diag_pure
+  !
+  SUBROUTINE mat2_diag_cmplx_LR(n, VL, VR, w2)
+    IMPLICIT NONE
+    !
+    INTEGER, INTENT(in) :: n
+    COMPLEX(DP), INTENT(inout) :: VL(n, n)
+    COMPLEX(DP), INTENT(out) :: VR(n, n)
+    COMPLEX(DP), INTENT(out) :: w2(n)
+    !
+    INTEGER :: lwork, info
+    COMPLEX(DP), ALLOCATABLE :: work(:), D(:,:)
+    real(dp) :: rwork(2*n)
+    !
+    ! Workspace size query
+    COMPLEX(DP) :: work_query(1)
+    !
+    ! Query optimal workspace size
+    lwork = -1
+    ALLOCATE(D(n,n)) ! Right eigenvectors; you can remove if not needed
+    D = VL
+    CALL ZGEEV('V', 'V', n, D, n, w2, VL, n, VR, n, work_query(1), lwork, rwork, info)
+    lwork = INT(REAL(work_query(1), DP))
+    ALLOCATE(work(lwork))
+    !
+    ! Compute eigenvalues and right eigenvectors
+    CALL ZGEEV('V', 'V', n, D, n, w2, VL, n, VR, n, work, lwork, rwork, info)
+    if(ABS(info) /= 0) then
+      print*, D
+      CALL errore ('mat2_diag','ZHEEV info =/= 0',ABS(info))
+    endif
+    !
+    ! Eigenvalues are now in w2(:)
+    ! Right eigenvectors are in vr(:,i) if you need them
+    !
+    DEALLOCATE(work, D)
+    !
+  END SUBROUTINE
   !
   SUBROUTINE mat2_diag_cmplx(n, D, w2)
     IMPLICIT NONE
