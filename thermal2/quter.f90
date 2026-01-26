@@ -12,7 +12,7 @@ MODULE quter_module
   USE kinds, ONLY : DP
 
   PUBLIC  :: quter
-  PRIVATE :: R_list_idx, expand_matR
+  PUBLIC :: R_list_idx, expand_matR
 
   CONTAINS
 

@@ -139,7 +139,7 @@ contains
     dos = 0._dp
     !
     print*, "Starting DCA self-energy calculation..."
-    do iw = 70+my_id, input%n_omega, num_procs
+    do iw = 1+my_id, input%n_omega, num_procs
       df = 0._dp
       dv = 0._dp
       delta_in = 0._dp
