@@ -35,25 +35,29 @@ contains
     complex(dp), optional, intent(out), dimension(S%nat3,S%nat3,grid%nqtot) :: den_UL, den_UR
     complex(dp), optional, intent(out), dimension(S%nat3, grid%nqtot) :: overlap
     !
+    complex(dp), dimension(S%nat3, S%nat3) :: DL, DR, temp_U_idx
     integer :: iq, i, idx(S%nat3)
-    complex(dp) :: temp_U_idx(S%nat3, S%nat3)
     complex(dp) :: den_eig(S%nat3, grid%nqtot)
     real(dp) :: real_eig(S%nat3)
     !
     do iq = 1, grid%nqtot
-      den_UL(:,:,iq) = diag(freqs(:,iq)**2) + self(:,:,iq)
-      call mat2_diag(S%nat3, den_UL(:,:,iq), den_UR(:,:,iq), den_eig(:,iq))
-      real_eig = real(den_eig(:,iq),dp)
-      idx = 0
-      CALL hpsort(S%nat3, real_eig, idx)
-      temp_U_idx = den_UR(:, idx, iq)
-      den_eig(:,iq) = den_eig(idx,iq)
-      den_UR(:, :, iq) = temp_U_idx
-      temp_U_idx = den_UL(:, idx, iq)
-      den_UL(:, :, iq) = temp_U_idx
-      do i = 1, S%nat3
-        overlap(i,iq) = dot_product(den_UL(:,i,iq), den_UR(:,i,iq))
-      enddo
+      DL = diag(freqs(:,iq)**2) + self(:,:,iq)
+      call mat2_diag(S%nat3, DL, DR, den_eig(:,iq))
+      if(present(den_UL)) then
+        den_UL(:,:,iq) = DL
+        den_UR(:,:,iq) = DR
+        real_eig = real(den_eig(:,iq),dp)
+        idx = 0
+        CALL hpsort(S%nat3, real_eig, idx)
+        temp_U_idx = den_UR(:, idx, iq)
+        den_eig(:,iq) = den_eig(idx,iq)
+        den_UR(:, :, iq) = temp_U_idx
+        temp_U_idx = den_UL(:, idx, iq)
+        den_UL(:, :, iq) = temp_U_idx
+        do i = 1, S%nat3
+          overlap(i,iq) = dot_product(den_UL(:,i,iq), den_UR(:,i,iq))
+        enddo
+      endif
       ! call merge_degen(S%nat3, den_eig(:,iq), den_eig(:,iq))
     enddo
     where(aimag(den_eig)> 0._dp) den_eig = conjg(den_eig)
