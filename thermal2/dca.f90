@@ -36,30 +36,36 @@ contains
     complex(dp), allocatable, dimension(:,:) :: den_weights, &
       den_eig, Gf_conf, Gf_avg, df, dv, overlap
     complex(dp), allocatable, dimension(:,:,:) :: den_UL, den_UR, &
-      G0i_cluster, G_coarse, Gi_coarse, self_fine, self_R
+      G0i_cluster, G_coarse, Gi_coarse, self_fine, self_R, phase_mat
     complex(dp), allocatable, dimension(:,:,:,:) :: G_avg, Gi_conf, &
       Gi_avg, self_in, self_out
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, &
-      self_uf, V, phase_mat
+      self_uf, V
     real(dp), allocatable, dimension(:,:) :: self_xR, xq, R
-    integer, allocatable :: pos(:,:), kq(:,:), big_iq(:), Npos(:)
+    integer, allocatable :: pos(:), kq(:,:), big_iq(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
-      it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, cluster_mesh(3)
+      it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, &
+      cluster_mesh(3), Npos, ntot
     real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff
-    real(dp) :: dos(input%n_omega)
+    real(dp) :: dos(input%n_omega), shift(3)
     logical :: conv
     !
-    NSAMPLES = 300
     MAXITER = 50
     ABS_TOLERANCE = 1e-13_dp
     REL_TOLERANCE = 1e-4_dp
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
-    conc = 1e-3_dp  ! example concentration
-    cluster_mesh = fc2%nq
+    conc = input%conc ! example concentration
+    cluster_mesh = input%sc_grid
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
+    n_eq_sites = size(fc2_sc%defects,2)
+    NSAMPLES = 1000 / (nint(Nc * conc * n_eq_sites))
     NQ = product(grid%n) / Nc
     xq = grid_vec_cart(cluster_mesh, S%bg, divide=.true., natural=.true.)
+    shift = xq(:,v2index_n([1,1,1],cluster_mesh)) / 2
+    do iq = 1, size(xq,2)
+      xq(:,iq) = xq(:,iq) + shift
+    enddo
     if (any(mod(grid%n, cluster_mesh) /= 0)) &
       call errore("dca_selfnrg", "grid size not multiple of fc2 grid size", 1)
     R = grid_vec_cart(cluster_mesh, S%at, natural=.true.)
@@ -79,42 +85,51 @@ contains
     allocate(self_fine(S%nat3, S%nat3, grid%nqtot))
     allocate(self_out(S%nat3, S%nat3, Nc, input%n_omega))
     allocate(V(S%nat3, S%nat3, Nc, Nc, NSAMPLES))
-    allocate(phase_mat(S%nat3, S%nat3, Nc, Nc, Nc))
+    allocate(phase_mat(Nc, Nc, Nc))
     allocate(kq(NQ, Nc), big_iq(grid%nqtot))
     allocate(den_weights(S%nat3, grid%nqtot))
     allocate(den_UL(S%nat3, S%nat3, grid%nqtot))
     allocate(den_UR(S%nat3, S%nat3, grid%nqtot))
     allocate(overlap(S%nat3, grid%nqtot))
     allocate(den_eig(S%nat3, grid%nqtot))
-    allocate(pos(Nc, NSAMPLES))
-    allocate(Npos(NSAMPLES))
+    allocate(pos(Nc))
+    ! allocate(Npos(NSAMPLES))
 
     ! deallocate(fc2_sc%defects)
     ! allocate(fc2_sc%defects(3, 1))
     ! fc2_sc%defects(:,1) = [1,1,1]
-    n_eq_sites = size(fc2_sc%defects,2)
-    call center_V(S, S_sc, fc2_sc, cluster_mesh, Vqqs)
+
+    print*, NSAMPLES, "DCA samples to be used"
+    call center_V(xq, S, S_sc, fc2_sc, cluster_mesh, Vqqs)
     !
-    !> construction of of the phase, used to translate the potential to
-    !> random configurations inside the cluster
+    ! !> construction of of the phase, used to translate the potential to
+    ! !> random configurations inside the cluster
     do i = 1, Nc
       do j = 1, Nc
         do k = 1, Nc
-          phase_mat(:,:,k,j,i) = e_iqr(xq(:,j)-xq(:,k), R(:,i))
+          phase_mat(k,j,i) = e_iqr(xq(:,j)-xq(:,k), R(:,i))
         enddo
       enddo
     enddo
 
     V = 0.0_dp
+    ntot = 0
     do it = 1, NSAMPLES
       do idef = 1, n_eq_sites
-        call sample_binomial(Nc, conc/n_eq_sites, pos(:,it), Npos(it))
-        do ipos = 1, Npos(it)
-          V(:,:,:,:,it) = V(:,:,:,:,it) + &
-            Vqqs(:,:,:,:,idef) * phase_mat(:,:,:,:,pos(ipos,it)) / Nc
+        call sample_binomial(Nc, conc, pos, Npos)
+        ntot = ntot + Npos
+        do ipos = 1, Npos
+          do j = 1, Nc
+            do k = 1, Nc
+              V(:,:,k,j,it) = V(:,:,k,j,it) + Vqqs(:,:,k,j,idef) * &
+                phase_mat(k,j,pos(ipos)) / Nc
+              ! e_iqr(xq(:,j)-xq(:,k), R(:,pos(ipos))) / Nc
+            enddo
+          enddo
         enddo
       enddo
     enddo
+    print"(A,E15.4)", "simulated concentration:", real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
     !
     !
     !> construction of G0_coarse and G0i_coarse, which are averaged over the small
@@ -189,48 +204,48 @@ contains
         !>
         !
         !> construction of the flatten average Gf_avg over niter configurations
-        ! Gf_avg = 0.0_dp
-        ! do it = 1, NSAMPLES
-        !   !> construction of V for a given configuration
-        !   !>
-        !   !
-        !   !> construction of G_conf for a given configuration
-        !   G_conf = 0.0_dp
-        !   do iq = 1, Nc
-        !     G_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
-        !     do jq = 1, Nc
-        !       G_conf(:,:,iq,jq) = G_conf(:,:,iq,jq) - V(:,:,iq,jq,it)
-        !     enddo
-        !   enddo
-        !   !>
-        !   !
-        !   Gf_conf = flatten_RR_cmplx(G_conf)
-        !   call invzmat(S%nat3*Nc, Gf_conf)
-        !   !
-        !   Gf_avg = Gf_avg + Gf_conf
-        !   !
-        ! enddo
-        ! Gf_avg = Gf_avg / real(NSAMPLES, dp)
         Gf_avg = 0.0_dp
-        Gi_conf = 0.0_dp
-        do iq = 1, Nc
-          Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
-        enddo
-        Gf_conf = flatten_RR_cmplx(Gi_conf)
-        call invzmat(S%nat3*Nc, Gf_conf)
-        Gf_avg = Gf_avg + Gf_conf * (1 - n_eq_sites * Nc * conc)
-        do idef = 1, n_eq_sites
+        do it = 1, NSAMPLES
+          !> construction of V for a given configuration
+          !>
+          !
+          !> construction of G_conf for a given configuration
           Gi_conf = 0.0_dp
           do iq = 1, Nc
             Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
             do jq = 1, Nc
-              Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef) / Nc
+              Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - V(:,:,iq,jq,it)
             enddo
           enddo
+          !>
+          !
           Gf_conf = flatten_RR_cmplx(Gi_conf)
           call invzmat(S%nat3*Nc, Gf_conf)
-          Gf_avg = Gf_avg + Gf_conf * (conc * Nc)
+          !
+          Gf_avg = Gf_avg + Gf_conf
+          !
         enddo
+        Gf_avg = Gf_avg / real(NSAMPLES, dp)
+        ! Gf_avg = 0.0_dp
+        ! Gi_conf = 0.0_dp
+        ! do iq = 1, Nc
+        !   Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
+        ! enddo
+        ! Gf_conf = flatten_RR_cmplx(Gi_conf)
+        ! call invzmat(S%nat3*Nc, Gf_conf)
+        ! Gf_avg = Gf_avg + Gf_conf * (1 - n_eq_sites * Nc * conc)
+        ! do idef = 1, n_eq_sites
+        !   Gi_conf = 0.0_dp
+        !   do iq = 1, Nc
+        !     Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
+        !     do jq = 1, Nc
+        !       Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef) / Nc
+        !     enddo
+        !   enddo
+        !   Gf_conf = flatten_RR_cmplx(Gi_conf)
+        !   call invzmat(S%nat3*Nc, Gf_conf)
+        !   Gf_avg = Gf_avg + Gf_conf * (conc * Nc)
+        ! enddo
         !>
         !
         !> self energy is G0_cluster^-1 - <G>^-1
@@ -282,7 +297,7 @@ contains
     !
   end subroutine
 !
-  SUBROUTINE center_V( S, S_sc, fc2_sc, cluster_mesh, Vqqs)
+  SUBROUTINE center_V(xq, S, S_sc, fc2_sc, cluster_mesh, Vqqs)
     !-----------------------------------------------------------------------
     ! Apply ONE symmetry that maps atom1 -> atom2 to center potential there
     !
@@ -290,6 +305,7 @@ contains
     USE symm_base, ONLY : irt, nsym, ft, symm_mat => s, invs
     use symme, only : cart_to_crys, crys_to_cart
     !
+    real(dp), intent(in) :: xq(:,:)
     type(ph_system_info), INTENT(IN) :: S, S_sc
     type(forceconst2_sc), INTENT(IN) :: fc2_sc
     integer, dimension(3), intent(in) :: cluster_mesh
@@ -302,13 +318,11 @@ contains
     integer :: site, N, iR, jR, iiR, jjR, iq, jq, inv_map, Nq
     real(dp), allocatable :: tens4(:,:,:,:,:,:)
     REAL(DP), ALLOCATABLE :: work(:,:,:,:,:,:)
-    real(dp), allocatable :: xq(:,:)
     !
     call fc_temp%allocate(S, S_sc, fc2_sc%nq)
     !
     Nq = product(cluster_mesh)
     N = product(fc2_sc%nq)
-    xq = grid_vec_cart(cluster_mesh, S%bg, divide=.true., natural=.true.)
     allocate(Vqqs(S%nat3,S%nat3,Nq,Nq,size(fc2_sc%defects,2)))
     allocate(tens4(3,S%nat,3,S%nat, N, N))
     ALLOCATE( work, source=tens4 )
