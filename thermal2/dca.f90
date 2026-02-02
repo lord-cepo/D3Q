@@ -32,37 +32,40 @@ contains
     type(q_grid), intent(in) :: grid
     type(tetra_output) :: wg
     !
-    complex(dp), allocatable, dimension(:) :: delta_in, delta_out
+    complex(dp), allocatable, dimension(:) :: delta_in, delta_out, G__
     complex(dp), allocatable, dimension(:,:) :: den_weights, &
-      den_eig, Gf_conf, Gf_avg, df, dv, overlap
+      den_eig, Gf_conf, Gf_avg, df, dv, overlap, V__, I_gV__, G_avg__
     complex(dp), allocatable, dimension(:,:,:) :: den_UL, den_UR, &
-      G0i_cluster, G_coarse, Gi_coarse, self_fine, self_R, phase_mat
+      G0i_cluster, G_coarse, Gi_coarse, self_fine, self_R, U
     complex(dp), allocatable, dimension(:,:,:,:) :: G_avg, Gi_conf, &
-      Gi_avg, self_in, self_out
+      Gi_avg, self_in, self_out, phase_mat, V
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, &
-      self_uf, V
-    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R
-    integer, allocatable :: pos(:), kq(:,:), big_iq(:)
+      self_uf
+    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f
+    integer, allocatable :: pos(:), kq(:,:)!, big_iq(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, &
       cluster_mesh(3), Npos, ntot
     real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff
     real(dp) :: dos(input%n_omega), shift(3)
     logical :: conv
+    complex(dp) :: U_dagger(S%nat3,S%nat3)
     !
+
     MAXITER = 50
     ABS_TOLERANCE = 1e-13_dp
-    REL_TOLERANCE = 1e-4_dp
+    REL_TOLERANCE = 1e-3_dp
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
     cluster_mesh = input%sc_grid
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
-    NSAMPLES = 1000 / (nint(Nc * conc * n_eq_sites))
+    NSAMPLES = max(nint(1e2_dp / Nc / conc / n_eq_sites), 1)
     NQ = product(grid%n) / Nc
     xq = grid_vec_cart(cluster_mesh, S%bg, divide=.true., natural=.true.)
     shift = xq(:,v2index_n([1,1,1],cluster_mesh)) / 2
+    if (NQ == 1) shift = 0.0_dp
     do iq = 1, size(xq,2)
       xq(:,iq) = xq(:,iq) + shift
     enddo
@@ -70,7 +73,11 @@ contains
       call errore("dca_selfnrg", "grid size not multiple of fc2 grid size", 1)
     R = grid_vec_cart(cluster_mesh, S%at, natural=.true.)
     call set_wg(S, fc2, grid, input%n_omega, wg)
-
+    !
+    allocate(f(S%nat3,Nc), U(S%nat3,S%nat3,Nc))
+    do iq = 1, Nc
+      call freq_phq_safe(xq(:,iq), S, fc2, f(:,iq), U(:,:,iq))
+    enddo
     !
     allocate(G_avg(S%nat3, S%nat3, Nc, Nc))
     allocate(Gi_conf(S%nat3, S%nat3, Nc, Nc))
@@ -84,15 +91,20 @@ contains
     allocate(self_uf(3, 3, S%nat, S%nat, Nc))
     allocate(self_fine(S%nat3, S%nat3, grid%nqtot))
     allocate(self_out(S%nat3, S%nat3, Nc, input%n_omega))
-    allocate(V(S%nat3, S%nat3, Nc, Nc, NSAMPLES))
-    allocate(phase_mat(Nc, Nc, Nc))
-    allocate(kq(NQ, Nc), big_iq(grid%nqtot))
+    allocate(V(S%nat3, S%nat3, Nc, Nc))
+    allocate(phase_mat(Nc, Nc, n_eq_sites, NSAMPLES))
+    allocate(kq(NQ, Nc))!, big_iq(grid%nqtot))
     allocate(den_weights(S%nat3, grid%nqtot))
     allocate(den_UL(S%nat3, S%nat3, grid%nqtot))
     allocate(den_UR(S%nat3, S%nat3, grid%nqtot))
     allocate(overlap(S%nat3, grid%nqtot))
     allocate(den_eig(S%nat3, grid%nqtot))
     allocate(pos(Nc))
+    allocate(G__(S%nat3*Nc))
+    allocate(V__(S%nat3*Nc, S%nat3*Nc))
+    allocate(I_gV__(S%nat3*Nc, S%nat3*Nc))
+    allocate(G_avg__(S%nat3*Nc, S%nat3*Nc))
+
     ! allocate(Npos(NSAMPLES))
 
     ! deallocate(fc2_sc%defects)
@@ -101,29 +113,35 @@ contains
 
     print*, NSAMPLES, "DCA samples to be used"
     call center_V(xq, S, S_sc, fc2_sc, cluster_mesh, Vqqs)
-    !
-    ! !> construction of of the phase, used to translate the potential to
-    ! !> random configurations inside the cluster
-    do i = 1, Nc
-      do j = 1, Nc
-        do k = 1, Nc
-          phase_mat(k,j,i) = e_iqr(xq(:,j)-xq(:,k), R(:,i))
+    do idef = 1, n_eq_sites
+      do iq = 1, Nc
+        U_dagger = conjg(transpose(U(:,:,iq)))
+        do jq = 1, Nc
+          Vqqs(:,:,iq,jq,idef) = matmul(U_dagger, matmul(Vqqs(:,:,iq,jq,idef),U(:,:,jq))) / Nc
         enddo
       enddo
     enddo
+    V__ = flatten_RR_cmplx(Vqqs(:,:,:,:,1))
 
-    V = 0.0_dp
+    !
+    ! !> construction of of the phase, used to translate the potential to
+    ! !> random configurations inside the cluster
+
     ntot = 0
+    phase_mat = 0.0_dp
+    !
     do it = 1, NSAMPLES
       do idef = 1, n_eq_sites
         call sample_binomial(Nc, conc, pos, Npos)
         ntot = ntot + Npos
         do ipos = 1, Npos
-          do j = 1, Nc
-            do k = 1, Nc
-              V(:,:,k,j,it) = V(:,:,k,j,it) + Vqqs(:,:,k,j,idef) * &
-                phase_mat(k,j,pos(ipos)) / Nc
-              ! e_iqr(xq(:,j)-xq(:,k), R(:,pos(ipos))) / Nc
+          do k = 1, Nc
+            do j = 1, Nc
+              phase_mat(j,k,idef,it) = phase_mat(j,k,idef,it) + &
+                e_iqr(xq(:,k)-xq(:,j), R(:,pos(ipos)))
+              !       V(:,:,k,j,it) = V(:,:,k,j,it) + Vqqs(:,:,k,j,idef) * &
+              !         phase_mat(k,j,pos(ipos)) / Nc
+              !       ! e_iqr(xq(:,j)-xq(:,k), R(:,pos(ipos))) / Nc
             enddo
           enddo
         enddo
@@ -138,9 +156,10 @@ contains
       do jq = 1, NQ
         kq(jq,iq) = v2index_n(index2v_n(jq, grid%n / cluster_mesh) + &
           index2v_n(iq, cluster_mesh) * grid%n / cluster_mesh, grid%n)
-        big_iq(wg%e(kq(jq,iq))) = iq
+        ! big_iq(wg%e(kq(jq,iq))) = iq
       enddo
     enddo
+    !
     !>
     !
     self_out = 1._dp
@@ -155,6 +174,12 @@ contains
     !
     print*, "Starting DCA self-energy calculation..."
     do iw = 1+my_id, input%n_omega, num_procs
+      ! do iq = 1, Nc
+      !   do i = 1, S%nat3
+      !     g__(i+S%nat3*(iq-1)) = wg%w(i, wg%e(kq(1,iq)), iw) * Nc
+      !   enddo
+      !   ! print*, sum(abs(wg%en(iw)**2 - f(:,iq)**2 - 1/g__(S%nat3*(iq-1)+1:S%nat3*iq))) / sum(abs(wg%en(iw)**2 - f(:,iq)**2))
+      ! enddo
       df = 0._dp
       dv = 0._dp
       delta_in = 0._dp
@@ -184,16 +209,19 @@ contains
         call tetra_from_self(S, grid, wg%f, self_fine, wg%en(iw)**2, &
           den_weights, den_UL, den_UR, overlap)
         !}
+        do iq = 1, grid%nqtot
+          call merge_degen(S%nat3, den_weights(:,iq), wg%f(:,iq))
+        enddo
         Gi_coarse = 0.0_dp
         do iq = 1, Nc
           do jq = 1, NQ
             kkq = wg%e(kq(jq,iq))
-            do i = 1, S%nat3
+            do k = 1, S%nat3
               do j = 1, S%nat3
-                do k = 1, S%nat3
+                do i = 1, S%nat3
                   Gi_coarse(i,j,iq) = Gi_coarse(i,j,iq) + &
                     den_UR(i,k,kkq) * conjg(den_UL(j,k,kkq)) * &
-                    den_weights(k,kkq) / overlap(k,kkq)
+                    den_weights(k,kkq) / overlap(k,kkq) * Nc
                 enddo
               enddo
             enddo
@@ -206,15 +234,21 @@ contains
         !> construction of the flatten average Gf_avg over niter configurations
         Gf_avg = 0.0_dp
         do it = 1, NSAMPLES
-          !> construction of V for a given configuration
-          !>
-          !
-          !> construction of G_conf for a given configuration
+          ! > construction of G_conf for a given configuration
           Gi_conf = 0.0_dp
-          do iq = 1, Nc
-            Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
+          V = 0.0_dp
+          do idef = 1, n_eq_sites
             do jq = 1, Nc
-              Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - V(:,:,iq,jq,it)
+              do iq = 1, Nc
+                V(:,:,iq,jq) = Vqqs(:,:,iq,jq,idef) * phase_mat(iq,jq,idef,it)
+              enddo
+            enddo
+          enddo
+          !
+          do jq = 1, Nc
+            Gi_conf(:,:,jq,jq) = G0i_cluster(:,:,jq)
+            do iq = 1, Nc
+              Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - V(:,:,iq,jq)
             enddo
           enddo
           !>
@@ -226,33 +260,43 @@ contains
           !
         enddo
         Gf_avg = Gf_avg / real(NSAMPLES, dp)
-        ! Gf_avg = 0.0_dp
         ! Gi_conf = 0.0_dp
         ! do iq = 1, Nc
         !   Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
         ! enddo
         ! Gf_conf = flatten_RR_cmplx(Gi_conf)
         ! call invzmat(S%nat3*Nc, Gf_conf)
-        ! Gf_avg = Gf_avg + Gf_conf * (1 - n_eq_sites * Nc * conc)
-        ! do idef = 1, n_eq_sites
+        ! Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
+        ! ! Gf_avg = diag_cmplx(g__ * (1 - n_eq_sites * Nc * conc))
+        ! do idef = 1, 1
         !   Gi_conf = 0.0_dp
         !   do iq = 1, Nc
         !     Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
         !     do jq = 1, Nc
-        !       Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef) / Nc
+        !       Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef)
         !     enddo
         !   enddo
         !   Gf_conf = flatten_RR_cmplx(Gi_conf)
         !   call invzmat(S%nat3*Nc, Gf_conf)
-        !   Gf_avg = Gf_avg + Gf_conf * (conc * Nc)
+        !   Gf_avg = Gf_avg + Gf_conf * (conc * Nc * n_eq_sites)
         ! enddo
+        ! I_gV__ = id_mat(Nc*S%nat3) - spread(g__, dim=2, ncopies=size(V__,2)) * V__ !* (1-conc * n_eq_sites)
+        ! call invzmat(Nc*S%nat3, I_gV__)
+        ! ! G_avg__ = diag_cmplx((1 - conc * n_eq_sites * Nc) * g__) + &
+        ! !   I_gV__ * spread(g__, dim=1, ncopies=size(V__,1)) * conc * n_eq_sites * Nc
+        ! ! T__ = matmul(V__, I_gV__) * Nc * conc * n_eq_sites
+
+        ! print*, "diff", sum(abs(I_gV__ - G_avg__)) / sum(abs(I_gV__))
+
         !>
         !
         !> self energy is G0_cluster^-1 - <G>^-1
-        call invzmat(S%nat3*Nc, Gf_avg)
+        ! call invzmat(S%nat3*Nc, Gf_avg)
         Gi_avg = unflatten_RR_cmplx(Gf_avg, Nc, Nc)
         do iq = 1, Nc
+          call invzmat(S%nat3, Gi_avg(:,:,iq,iq))
           self_out(:,:,iq,iw) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
+          !diag(wg%en(iw)**2 - f(:,iq)**2) - Gi_avg(:,:,iq,iq)
         enddo
         !>
         !
@@ -262,6 +306,7 @@ contains
           ALPHA_MIX, sc_iter, MEMORY, df, dv)
         self_in(:,:,:,iw) = reshape(delta_in, [S%nat3, S%nat3, Nc])
       enddo ! self-energy SC cycle
+      ! print*, self_out(4,4,1,iw), self_out(5,5,2,iw)
       do iq = 1, grid%nqtot
         dos(iw) = dos(iw) + aimag(sum(den_weights(:,iq))) * wg%qw(iq)
       enddo

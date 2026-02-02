@@ -43,14 +43,14 @@ contains
     do iq = 1, grid%nqtot
       DL = diag(freqs(:,iq)**2) + self(:,:,iq)
       call mat2_diag(S%nat3, DL, DR, den_eig(:,iq))
+      real_eig = real(den_eig(:,iq),dp)
+      idx = 0
+      CALL hpsort(S%nat3, real_eig, idx)
+      den_eig(:,iq) = den_eig(idx,iq)
       if(present(den_UL)) then
         den_UL(:,:,iq) = DL
         den_UR(:,:,iq) = DR
-        real_eig = real(den_eig(:,iq),dp)
-        idx = 0
-        CALL hpsort(S%nat3, real_eig, idx)
         temp_U_idx = den_UR(:, idx, iq)
-        den_eig(:,iq) = den_eig(idx,iq)
         den_UR(:, :, iq) = temp_U_idx
         temp_U_idx = den_UL(:, idx, iq)
         den_UL(:, :, iq) = temp_U_idx
@@ -164,7 +164,7 @@ contains
     complex(dp) :: Tq(S%nat3, S%nat3,out_grid%nqtot, input%n_omega)
     complex(dp) :: self_energy(S%nat3, out_grid%nqtot, input%n_omega)
     integer :: iw
-    type(tetra_output) :: wg
+    type(tetra_output) :: wg, wg_out
     complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
     real(dp) :: freqs(S%nat3, grid%nqtot)
     complex(dp) :: out_Us(S%nat3, S%nat3, out_grid%nqtot)
@@ -190,6 +190,7 @@ contains
 
     !
     call set_wg(S, fc2, sym_grid, input%n_omega, wg)
+    call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
     call freq_in_grid(S, fc2, grid, freqs, Us)
     call freq_in_grid(S, fc2, out_grid, out_freqs, out_Us)
 
@@ -240,10 +241,7 @@ contains
             call find_where(R_list(:,i) - R_list(:,j), diff_list_large, iR)
             iR_large(i,j) = iR
             R = diff_list_large(:,iR)
-            do ii = 1, 3
-              if (R(ii) < 0) R(ii) = R(ii) + grid%n(ii)
-            enddo
-            g0_iR(iR) = v2index_n(R, grid%n)
+            g0_iR(iR) = v2index_n(bz2simple(R, grid%n), grid%n)
           endif
           phases_out(iR_large(i,j),iq) = e_iqr(out_grid%xq(:,iq), -Rij_cart(:,i,j))
         enddo
@@ -323,9 +321,9 @@ contains
         ! enddo
         ! call merge_degen(S%nat3, self_energy(:,iq,iw), out_freqs(:,iq))
       enddo
-      call tetra_from_self(S, out_grid, out_freqs, Tq(:,:,:,iw), wg%en(iw)**2, den_weights)
+      call tetra_from_self(S, out_grid, out_freqs, Tq(:,:,:,iw), wg_out%en(iw)**2, den_weights)
       do iq = 1, out_grid%nqtot
-        dos(iw) = dos(iw) + aimag(sum(den_weights(:,iq)) * wg%qw(iq))
+        dos(iw) = dos(iw) + aimag(sum(den_weights(:,iq)) * wg_out%qw(iq))
       enddo
     enddo
     call mpi_bsum(input%n_omega, dos)
