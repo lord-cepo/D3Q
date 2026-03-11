@@ -853,12 +853,13 @@ CONTAINS
     !
   END subroutine
   !
-  subroutine rm_degen_vertices(hw, D)
-    real(dp), INTENT(IN) :: hw
+  subroutine rm_degen_vertices(hwe, D)
+    real(dp), INTENT(IN) :: hwe
     real(dp), INTENT(INOUT) :: D(4)
     !
-    real(dp) :: DAV, D_small_prev, D_large_prev
+    real(dp) :: DAV, D_small_prev, D_large_prev, hw
     !
+    hw = hwe! + 1e-2_dp
     DAV = (D(2) + D(3))/2.0_dp
     if (abs((D(2) - D(3))/(DAV + hw)) < tet_cutoff) then
       D_small_prev = D(2); D_large_prev = D(3)
@@ -869,25 +870,27 @@ CONTAINS
     endif
     DAV = (D(1) + D(2))/2.0_dp
     if (abs((D(1) - D(2))/(DAV + hw)) < tet_cutoff) then
-        D(1) = DAV - 0.5_dp*abs(DAV + hw)*tet_cutoff
+      D(1) = DAV - 0.5_dp*abs(DAV + hw)*tet_cutoff
     endif
     DAV = (D(3) + D(4))/2.0_dp
     if (abs((D(3) - D(4))/(DAV + hw)) < tet_cutoff) then
-        D(4) = DAV - 0.5_dp*abs(DAV + hw)*tet_cutoff
+      D(4) = DAV - 0.5_dp*abs(DAV + hw)*tet_cutoff
     endif
   end subroutine
   !
-  FUNCTION real_vertices(hw, D) result(wR0)
+  FUNCTION real_vertices(hwe, D) result(wR0)
     !
-    real(dp), INTENT(IN) :: hw
+    real(dp), INTENT(IN) :: hwe
     real(dp), INTENT(IN) :: D(4)
     !
-    real(dp) :: wR0(4)
+    real(dp) :: wR0(4), hw
     real(dp) :: dd(3), ll(3), ff, bb(4), cc(4, 3)
     integer :: a, b, c, i
     !
     ! intermediate variables for case 1 and 3
     !
+    hw = hwe
+    if(any(D + hw == 0._dp)) hw = 1e-5_dp
     do i = 1, 3
       dd(i) = (D(4) - D(i))/(D(i) + hw)
       ll(i) = tetrahedron_log1p(dd(i))

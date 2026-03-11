@@ -339,8 +339,12 @@ contains
     ! enddo
     ! !
     ! call write_file(out_freqs, lws, "spectral-full.dat", out_grid%type)
-    ! call write_self("self-energy-def-full.dat", wg%en, self_energy)
+    if(input%calculation == 'self') &
+      call write_self("self-energy-def-full.dat", wg%en, self_energy)
     !
+    if(input%calculation == 'spf') &
+      call write_spf('spf-fb.dat', wg%en, self_energy, out_freqs, out_grid)
+
     ! where(aimag(self_energy) > 0._dp) self_energy = conjg(self_energy)
     open(17, file="dos_center.dat")
     do iw = 1, input%n_omega
@@ -679,6 +683,28 @@ contains
     open(10, file=filename, status='replace', action='write')
     do iq = 1, size(xq, 2)
       write(10, "(100E20.8)") xq(:, iq), freqs(:, iq)
+    enddo
+    close(10)
+  end subroutine
+  !
+  subroutine write_spf(filename, en, self_energy, freqs, out_grid)
+    character(*), intent(in) :: filename
+    real(dp), intent(in) :: en(:)
+    complex(dp), intent(in) :: self_energy(:,:,:)
+    real(dp), intent(in) :: freqs(:,:)
+    type(q_grid), intent(in) :: out_grid
+    !
+    real(dp), dimension(size(self_energy,1)) :: r,s
+    integer :: iw, iq
+    !
+    open(10, file=filename, status='replace', action='write')
+    do iw = 1, size(self_energy,3)
+      do iq = 1, size(self_energy,2)
+        r = real(self_energy(:,iq,iw), dp)
+        s = AIMAG(self_energy(:,iq,iw))
+        write(10, "(1000E20.8)") en(iw), out_grid%xq(:,iq), -2 / pi * en(iw) * s / &
+          ((freqs(:,iq)**2 - en(iw)**2 - r)**2 + s**2)
+      enddo
     enddo
     close(10)
   end subroutine

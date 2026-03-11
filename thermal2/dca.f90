@@ -24,32 +24,34 @@ module dca
   use EPW_utilities, only : mix_broyden_full
   use mpi_thermal, only : mpi_bsum, ionode, num_procs, my_id
 contains
-  subroutine dca_selfnrg(S, S_sc, input, fc2, fc2_sc, grid)
+  subroutine dca_selfnrg(S, S_sc, input, fc2, fc2_sc, grid, out_grid)
     type(ph_system_info), intent(in) :: S, S_sc
     type(code_input_type), intent(in) :: input
     type(forceconst2_grid), intent(in) :: fc2
     type(forceconst2_sc), intent(inout) :: fc2_sc
-    type(q_grid), intent(in) :: grid
+    type(q_grid), intent(in) :: grid, out_grid
     type(tetra_output) :: wg
     !
     complex(dp), allocatable, dimension(:) :: delta_in, delta_out, G__
     complex(dp), allocatable, dimension(:,:) :: den_weights, &
       den_eig, Gf_conf, Gf_avg, df, dv, overlap, V__, I_gV__, G_avg__
     complex(dp), allocatable, dimension(:,:,:) :: den_UL, den_UR, &
-      G0i_cluster, G_coarse, Gi_coarse, self_fine, self_R, U
+      G0i_cluster, G_coarse, Gi_coarse, self_fine, self_R, U, UT, &
+      UT_fine, U_fine, UT_out, U_out
     complex(dp), allocatable, dimension(:,:,:,:) :: G_avg, Gi_conf, &
       Gi_avg, self_in, self_out, phase_mat, V
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, &
       self_uf
-    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f
+    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f, freqs_out
     integer, allocatable :: pos(:), kq(:,:)!, big_iq(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, &
-      cluster_mesh(3), Npos, ntot
+      cluster_mesh(3), Npos, ntot, iR
     real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff
     real(dp) :: dos(input%n_omega), shift(3)
     logical :: conv
-    complex(dp) :: U_dagger(S%nat3,S%nat3)
+    complex(dp) :: A(S%nat3,S%nat3)
+    character(100) :: filename
     !
 
     MAXITER = 50
@@ -74,10 +76,17 @@ contains
     R = grid_vec_cart(cluster_mesh, S%at, natural=.true.)
     call set_wg(S, fc2, grid, input%n_omega, wg)
     !
-    allocate(f(S%nat3,Nc), U(S%nat3,S%nat3,Nc))
+    allocate(UT_fine(S%nat3,S%nat3,grid%nqtot), U_fine(S%nat3,S%nat3,grid%nqtot))
+    allocate(f(S%nat3,Nc), U(S%nat3,S%nat3,Nc), UT(S%nat3,S%nat3,Nc))
+    do iq = 1, grid%nqtot
+      call freq_phq_safe(grid%xq(:,iq), S, fc2, f(:,1), U_fine(:,:,iq))
+      UT_fine(:,:,iq) = conjg(transpose(U_fine(:,:,iq)))
+    enddo
     do iq = 1, Nc
       call freq_phq_safe(xq(:,iq), S, fc2, f(:,iq), U(:,:,iq))
+      UT(:,:,iq) = conjg(transpose(U(:,:,iq)))
     enddo
+    print*, "DCA cluster size:", Nc, "number of configurations to be averaged:", NSAMPLES
     !
     allocate(G_avg(S%nat3, S%nat3, Nc, Nc))
     allocate(Gi_conf(S%nat3, S%nat3, Nc, Nc))
@@ -115,9 +124,8 @@ contains
     call center_V(xq, S, S_sc, fc2_sc, cluster_mesh, Vqqs)
     do idef = 1, n_eq_sites
       do iq = 1, Nc
-        U_dagger = conjg(transpose(U(:,:,iq)))
         do jq = 1, Nc
-          Vqqs(:,:,iq,jq,idef) = matmul(U_dagger, matmul(Vqqs(:,:,iq,jq,idef),U(:,:,jq))) / Nc
+          Vqqs(:,:,iq,jq,idef) = matmul(UT(:,:,iq), matmul(Vqqs(:,:,iq,jq,idef),U(:,:,jq))) / Nc
         enddo
       enddo
     enddo
@@ -198,12 +206,26 @@ contains
         !> construction of G0_cluster from self-energy
         !
         do iq = 1, Nc
-          self_uf(:,:,:,:,iq) = unflatten_RR_cmplx(self_in(:,:,iq,iw), S%nat, S%nat)
+          A = matmul(U(:,:,iq), matmul(self_in(:,:,iq,iw), UT(:,:,iq)))
+          self_uf(:,:,:,:,iq) = unflatten_RR_cmplx(A, S%nat, S%nat)
         enddo
         CALL quter_cmplx(input%sc_grid(1), input%sc_grid(2), input%sc_grid(3), &
           S%nat, S%tau, S%at, S%bg, self_uf, xq, self_R, self_xR, 2)
+        !
+        ! write(filename, "(A,I2.2,A)") "self_R_", iw, ".dat"
+        ! open(10, file=filename)
+        ! do iR = 1, size(self_xR,2)
+        !   do i = 1, S%nat
+        !     do j = 1, S%nat
+        !       write(10, "(3E20.8)") norm2(self_xR(:,iR) + S%tau(:,i) - S%tau(:,j)), &
+        !         sum(abs(self_R((i-1)*3+1:i*3,(j-1)*3+1:j*3,iR)))
+        !     enddo
+        !   enddo
+        ! enddo
+        ! close(10)
         do iq = 1, grid%nqtot
           call fftinterp_mat2_cmplx(grid%xq(:,iq), S, self_R, self_xR, self_fine(:,:,iq))
+          self_fine(:,:,iq) = matmul(UT_fine(:,:,iq), matmul(self_fine(:,:,iq), U_fine(:,:,iq)))
         enddo
         !
         call tetra_from_self(S, grid, wg%f, self_fine, wg%en(iw)**2, &
@@ -307,18 +329,33 @@ contains
         self_in(:,:,:,iw) = reshape(delta_in, [S%nat3, S%nat3, Nc])
       enddo ! self-energy SC cycle
       ! print*, self_out(4,4,1,iw), self_out(5,5,2,iw)
-      do iq = 1, grid%nqtot
-        dos(iw) = dos(iw) + aimag(sum(den_weights(:,iq))) * wg%qw(iq)
-      enddo
+      ! do iq = 1, grid%nqtot
+      !   dos(iw) = dos(iw) + aimag(sum(den_weights(:,iq))) * wg%qw(iq)
+      ! enddo
     enddo ! frequency loop
     call mpi_bsum(input%n_omega, dos)
     !
-    open(110, file="dos_dca.dat")
+    deallocate(self_out)
+    allocate(UT_out(S%nat3,S%nat3,out_grid%nqtot), U_out(S%nat3,S%nat3,out_grid%nqtot))
+    allocate(freqs_out(S%nat3,out_grid%nqtot), self_out(S%nat3,S%nat3,out_grid%nqtot,input%n_omega))
     do iw = 1, input%n_omega
-      if(ionode) WRITE(110, "(3E20.8)") wg%en(iw) * RY_TO_CMM1, &
-        - dos(iw) / pi * product(grid%n) * 2 * wg%en(iw) / RY_TO_CMM1
+      do iq = 1, out_grid%nqtot
+        if(iw == 1) then
+          call freq_phq_safe(out_grid%xq(:,iq), S, fc2, freqs_out(:,iq), U_out(:,:,iq))
+          UT_out(:,:,iq) = conjg(transpose(U_out(:,:,iq)))
+        endif
+        call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, self_out(:,:,iq,iw))
+        self_out(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out(:,:,iq,iw), U_out(:,:,iq)))
+      enddo
     enddo
-    close(110)
+    if (input%calculation == 'spf') &
+      call write_spf_ndiag('spf-dca.dat', wg%en, self_out, freqs_out, out_grid)
+    ! open(110, file="dos_dca.dat")
+    ! do iw = 1, input%n_omega
+    !   if(ionode) WRITE(110, "(3E20.8)") wg%en(iw) * RY_TO_CMM1, &
+    !     - dos(iw) / pi * product(grid%n) * 2 * wg%en(iw) / RY_TO_CMM1
+    ! enddo
+    ! close(110)
     !
   end subroutine
 !
@@ -460,5 +497,31 @@ contains
       mat = matmul( U, matmul( mat, transpose(U) ) )
     end subroutine
   END SUBROUTINE
-!
+  !
+  subroutine write_spf_ndiag(filename, en, self_energy, freqs, grid)
+    character(*), intent(in) :: filename
+    real(dp), intent(in) :: en(:)
+    complex(dp), intent(in) :: self_energy(:,:,:,:)
+    real(dp), intent(in) :: freqs(:,:)
+    type(q_grid), intent(in) :: grid
+    !
+    integer :: iq, i, j, iw
+    complex(dp) :: M(size(self_energy,1), size(self_energy,2))
+    complex(dp) :: spf(size(self_energy,1))
+    open(10, file=filename)
+    do iw = 1, size(en)
+      do iq = 1, grid%nqtot
+        M = - self_energy(:,:,iq,iw)
+        do i = 1, size(self_energy,1)
+          M(i,i) = M(i,i) + en(iw)**2 - freqs(i,iq)**2
+        enddo
+        call invzmat(size(M,1), M)
+        do i = 1, size(self_energy,1)
+          spf(i) = -1/pi * aimag(M(i,i))
+        enddo
+        write(10, "(1000E20.8)") en(iw), grid%xq(:,iq), spf
+      enddo
+    enddo
+    close(10)
+  end subroutine
 end module

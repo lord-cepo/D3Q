@@ -7,6 +7,10 @@ module quter_defect
   !
   integer, parameter :: nfar = 2
   !
+  type :: list1
+    integer, pointer :: list(:,:)
+  end type
+  !
   type forceconst2_sc
     INTEGER :: n_R2 = 0
     INTEGER, allocatable :: n_R1(:)
@@ -804,6 +808,7 @@ contains
     nxR1 = 0
     nxR2 = 0
     !
+    ! open(110, file='fc2_distance-5.dat')
     do na1 = 1, S%nat
       do na2 = 1, S%nat
         d2 = S%tau(:,na1) - S%tau(:,na2)
@@ -837,6 +842,7 @@ contains
                 new_fc(jn1, jn2, ixR1, ixR2) = &
                   fc%FC(jn1, jn2, iR1, iR2) * &
                   weights1(iR1_big) * weights2(iR2_big)
+                ! write(110, "(3E20.8)") norm2(R1 - R2 + d2*2), norm2(R1 + R2 + d1), new_fc(jn1, jn2, ixR1, ixR2)
               enddo
             enddo
             !
@@ -844,6 +850,7 @@ contains
         enddo
       enddo
     enddo
+    close(110)
     !
     deallocate(weights1, weights2)
     deallocate(fc%yR2, fc%xR2, fc%FC, fc%xR1, fc%yR1, fc%n_R1)
@@ -870,6 +877,7 @@ contains
     deallocate(new_fc, yR2_list, yR1_list, nxR1)
   end subroutine
   !
+  !
   function iR_of(R, sc_grid) result(iR)
     integer, intent(in) :: R(3)
     integer, intent(in) :: sc_grid(3)
@@ -889,6 +897,174 @@ contains
     !
     iR = v2index(Rplus, sc_grid)
   end function iR_of
+  !
+  subroutine center6(fc, grid, S)
+    use functions, only : refold_bz
+    use quter_module, only: R_list_idx
+    use thutils, only: grid_vec_cart, grid_vec_cryst, print_message, cryst2cart
+    class(forceconst2_sc), intent(inout) :: fc
+    integer, intent(in) :: grid(3)
+    type(ph_system_info), intent(in) :: S
+    !
+    ! type(forceconst2_grid) :: fsc
+    real(dp), dimension(3) :: d_plus, d_minus
+    real(dp), parameter :: eps_peri = 1e-3
+    integer, parameter :: nperix = (2*nfar+1)**3
+    integer :: SAFE_ALLOCATION
+    !
+    integer :: na1, na2, j1, j2, nR, iR1, iR2, iR_plus, iR_minus, jn1, jn2
+    real(dp), allocatable :: far_grid_cart(:,:), R_cart(:,:)
+    integer, allocatable :: far_grid_cryst(:,:)
+    integer :: nRbig
+    integer :: nxR2, ixR2, ixR1
+    integer, pointer :: R2_list(:,:)
+    type(list1), allocatable :: R1_list(:)
+    integer, allocatable :: nxR1(:)
+    integer, allocatable :: yR2_list(:,:), yR1_list(:,:,:)
+    real(dp), allocatable :: weights_minus(:), weights_plus(:)
+    integer, allocatable :: inds_plus(:), inds_minus(:)
+    integer, dimension(3) :: far_mesh
+    real(dp) :: big_at(3,3)
+    real(dp), dimension(3) :: T1, T2, T1_try
+    integer, dimension(3) :: R1, R2
+    !
+    real(dp), allocatable :: new_fc(:,:,:,:)
+    character(100) :: filename
+    !
+    ! Stuff used to compute Wigner-Seitz weights:
+    INTEGER, PARAMETER:: nrwsx=2000
+    INTEGER :: nrws, nrws2
+    REAL(DP) :: rws(0:3,nrwsx), rws2(0:3,nrwsx)
+    REAL(DP),EXTERNAL :: wsweight
+    ! initialize WS r-vectors
+    forall(j1 = 1:3) big_at(:,j1) = S%at(:,j1) * grid(j1)
+    CALL wsinit(rws,nrwsx,nrws,big_at)
+    CALL wsinit(rws2,nrwsx,nrws2,big_at*2)
+    !
+    fc%stage = 0
+    nR = PRODUCT(grid)
+    if (nfar == 0) return
+    far_mesh = 2*nfar+1
+    nRbig = PRODUCT(far_mesh)
+    !
+    ! allocate(sum_grid_cart(3, 8*nRbig*nR))
+    ! allocate(diff_grid_cart(3, nRbig*nR))
+    ! allocate(far_grid_cryst(3, nRbig))
+    far_grid_cart = grid_vec_cart(far_mesh, big_at, center=.true.)
+    R_cart = grid_vec_cart(grid, S%at)
+    ! far_grid_cryst = grid_vec_cryst(far_mesh, center=.true.)
+    !
+    SAFE_ALLOCATION = 20 * nR
+    allocate(R1_list(SAFE_ALLOCATION))
+    allocate(new_fc(S%nat3, S%nat3, SAFE_ALLOCATION, SAFE_ALLOCATION))
+    allocate(yR1_list(3, SAFE_ALLOCATION, SAFE_ALLOCATION))
+    allocate(yR2_list(3, SAFE_ALLOCATION))
+    allocate(nxR1(SAFE_ALLOCATION))
+    !
+    new_fc = 0._dp
+    nxR1 = 0
+    nxR2 = 0
+    !
+    open(110, file='fc2_distance-6.dat')
+    do na1 = 1, S%nat
+      do na2 = 1, S%nat
+        do iR1 = 1, nR
+          do iR2 = 1, nR
+            d_minus = S%tau(:,na1) + R_cart(:,iR1) - S%tau(:,na2) - R_cart(:,iR2)
+            d_plus = S%tau(:,na1) + R_cart(:,iR1) + S%tau(:,na2) + R_cart(:,iR2)
+            call inside_ws(far_grid_cart, d_minus, nrws, rws, weights_minus, inds_minus)
+            call inside_ws(far_grid_cart, d_plus, nrws2, rws2, weights_plus, inds_plus)
+            do iR_minus = 1, size(weights_minus)
+              do iR_plus = 1, size(weights_plus)
+                T1 = (far_grid_cart(:,inds_plus(iR_plus)) + far_grid_cart(:,inds_minus(iR_minus)))/2._dp
+                T2 = (far_grid_cart(:,inds_plus(iR_plus)) - far_grid_cart(:,inds_minus(iR_minus)))/2._dp
+                T1_try = cryst2cart(T1, S%bg, -1)
+                if (any(abs(NINT(T1_try) - T1_try) > 1e-5_dp)) cycle
+                R1 = NINT(cryst2cart(R_cart(:,iR1) + T1, S%bg, -1))
+                R2 = NINT(cryst2cart(R_cart(:,iR2) + T2, S%bg, -1))
+                ixR2 = R_list_idx_int(nxR2, R2_list, R2)
+                yR2_list(:,ixR2) = R2
+                ixR1 = R_list_idx_int(nxR1(ixR2), R1_list(ixR2)%list, R1)
+                yR1_list(:,ixR1,ixR2) = R1
+                !
+                do j1 = 1, 3
+                  jn1 = 3*(na1-1) + j1
+                  do j2 = 1, 3
+                    jn2 = 3*(na2-1) + j2
+                    new_fc(jn1, jn2, ixR1, ixR2) = &
+                      fc%FC(jn1, jn2, iR1, iR2) * &
+                      weights_plus(iR_plus) * weights_minus(iR_minus)
+                    ! if(abs(norm2(d_plus + T1 + T2) - 0.5_dp) < 1e-3_dp) print*, d_plus, T1, T2
+                    write(110, "(3E20.8)") norm2(d_minus + T1 - T2), norm2(d_plus + T1 + T2), new_fc(jn1, jn2, ixR1, ixR2)
+                  enddo
+                enddo
+                !
+              enddo
+            enddo
+          enddo
+        enddo
+      enddo
+    enddo
+    close(110)
+    !
+    deallocate(weights_plus, weights_minus)
+    deallocate(fc%yR2, fc%xR2, fc%FC, fc%xR1, fc%yR1, fc%n_R1)
+    !> the yR list is populated until nxR(which), but the size can be larger.
+    !> the values after nxR(which) are not even initialized (they are garbage).
+    ALLOCATE(fc%yR2(3,nxR2))
+    ALLOCATE(fc%xR2(3,nxR2))
+    ALLOCATE(fc%yR1(3,maxval(nxR1),nxR2))
+    ALLOCATE(fc%xR1(3,maxval(nxR1),nxR2))
+    ALLOCATE(fc%FC(S%nat3,S%nat3,maxval(nxR1),nxR2))
+    ALLOCATE(fc%n_R1(nxR2))
+    fc%n_R1 = nxR1(:nxR2)
+    fc%n_R2 = nxR2
+    fc%nq = grid
+    do ixR2 = 1, nxR2
+      fc%yR2(:,ixR2) = yR2_list(:,ixR2)
+      fc%yR1(:,:nxR1(ixR2),ixR2) = yR1_list(:,:nxR1(ixR2),ixR2)
+      fc%FC(:,:,:nxR1(ixR2),ixR2) = new_fc(:,:,:nxR1(ixR2),ixR2)
+    enddo
+    call fc%cart(S, 1)
+    call fc%cart(S, 2)
+    !
+    call print_message("end of centering  R1-R2 && R1+R2")
+    deallocate(new_fc, yR2_list, yR1_list, nxR1)
+  end subroutine
+  !
+  INTEGER FUNCTION R_list_idx_int(NR, listR, R) RESULT(idx)
+    IMPLICIT NONE
+    INTEGER, INTENT(inout)  :: NR
+    integer, INTENT(inout),POINTER :: listR(:,:)
+    integer, INTENT(in)    :: R(3)
+    !
+    INTEGER :: i
+    integer, POINTER :: tmpR(:,:)
+    !
+    IF(NR == 0)THEN
+!       print*, "new list of R initialized"
+      ALLOCATE(listR(3,1))
+      idx=1
+      listR(:,1) = R
+      NR = 1
+      RETURN
+    ENDIF
+    !
+    DO i = 1,NR
+      IF(all(R-listR(:,i) == 0))THEN
+        idx = i
+        RETURN
+      ENDIF
+    ENDDO
+    !
+    tmpR => listR
+    ALLOCATE(listR(3,NR+1))
+    listr(1:3,1:NR) = tmpR(1:3,1:NR)
+    DEALLOCATE(tmpR)
+    NR = NR + 1
+    idx = NR
+    listR(1:3,idx)   = R
+  END FUNCTION
   !
   SUBROUTINE minimal_image(S, sc_grid, diffs, n_weights, weights)
     use thutils, only: e_iqr, grid_vec_cart, cryst2cart
@@ -1047,7 +1223,7 @@ contains
     nxR1 = 0
     nxR2 = 0
     !
-
+    open(110, file='fc2_distance-c.dat')
     do na2 = 1, S%nat
       do na1 = 1, S%nat
         do iR2 = 1, nR
@@ -2001,32 +2177,32 @@ contains
     !
     ! Construct a big enough lattice of Supercell vectors
     IF(far_>0)THEN
-        nRbig = (2*far_*nq1+1)*(2*far_*nq2+1)*(2*far_*nq3+1)
-        ALLOCATE(Rbig(3,nRbig))
-        nRbig=0
-        DO l1=-far_*nq1,far_*nq1
+      nRbig = (2*far_*nq1+1)*(2*far_*nq2+1)*(2*far_*nq3+1)
+      ALLOCATE(Rbig(3,nRbig))
+      nRbig=0
+      DO l1=-far_*nq1,far_*nq1
         DO l2=-far_*nq2,far_*nq2
-        DO l3=-far_*nq3,far_*nq3
-        nRbig=nRbig+1
-        Rbig(:, nRbig) = at(:,1)*l1 +at(:,2)*l2 +at(:,3)*l3
+          DO l3=-far_*nq3,far_*nq3
+            nRbig=nRbig+1
+            Rbig(:, nRbig) = at(:,1)*l1 +at(:,2)*l2 +at(:,3)*l3
+          END DO
         END DO
-        END DO
-        END DO
-        IF(nRbig/=size(Rbig)/3) call errore('main','wrong nRbig',1)
- !       WRITE(*,*) "seeking over ", nRbig," vectors"
+      END DO
+      IF(nRbig/=size(Rbig)/3) call errore('main','wrong nRbig',1)
+      !       WRITE(*,*) "seeking over ", nRbig," vectors"
     ELSE
-        nRbig = nq1*nq2*nq3
-        ALLOCATE(Rbig(3,nRbig))
-        nRbig=0
-        DO l1=0,nq1-1
+      nRbig = nq1*nq2*nq3
+      ALLOCATE(Rbig(3,nRbig))
+      nRbig=0
+      DO l1=0,nq1-1
         DO l2=0,nq2-1
-        DO l3=0,nq3-1
-        nRbig=nRbig+1
-        Rbig(:, nRbig) = at(:,1)*l1 +at(:,2)*l2 +at(:,3)*l3
+          DO l3=0,nq3-1
+            nRbig=nRbig+1
+            Rbig(:, nRbig) = at(:,1)*l1 +at(:,2)*l2 +at(:,3)*l3
+          END DO
         END DO
-        END DO
-        END DO
-        IF(nRbig/=size(Rbig)/3) call errore('main','wrong nRbig',1)
+      END DO
+      IF(nRbig/=size(Rbig)/3) call errore('main','wrong nRbig',1)
 !        WRITE(*,*) "nfar==0 => standard FT over ", nRbig," vectors"
     ENDIF
     !
@@ -2034,66 +2210,66 @@ contains
     !
     nRout=0
     DO na1=1,nat
-    DO na2=1,nat
-      DO j1=1,3
-      DO j2=1,3
-        totalweight = 0._dp
-        DO iR= 1,nRbig
-          !
-          aus= 0._dp
-          IF(far_>0)THEN
-            dist(:) = Rbig(:,iR) + tau(:,na1) - tau(:,na2)
-            wg = wsweight(dist,rws,nrws)
-            wg = wg/DFLOAT(nqt)
-          ELSE
-            wg = 1._dp/DFLOAT(nqt)
-          ENDIF
-          IF(wg /= 0) THEN
-            !
-            DO iiq=1,nqt
+      DO na2=1,nat
+        DO j1=1,3
+          DO j2=1,3
+            totalweight = 0._dp
+            DO iR= 1,nRbig
               !
-              arg=tpi*SUM(gridq(:,iiq)*Rbig(:,iR))
-              aus = aus + CMPLX(cos(arg),sin(arg),kind=DP)*matq(j1,j2,na1,na2,iiq)
-              !
+              aus= 0._dp
+              IF(far_>0)THEN
+                dist(:) = Rbig(:,iR) + tau(:,na1) - tau(:,na2)
+                wg = wsweight(dist,rws,nrws)
+                wg = wg/DFLOAT(nqt)
+              ELSE
+                wg = 1._dp/DFLOAT(nqt)
+              ENDIF
+              IF(wg /= 0) THEN
+                !
+                DO iiq=1,nqt
+                  !
+                  arg=tpi*SUM(gridq(:,iiq)*Rbig(:,iR))
+                  aus = aus + CMPLX(cos(arg),sin(arg),kind=DP)*matq(j1,j2,na1,na2,iiq)
+                  !
+                END DO
+                !
+                Rx = Rbig(:,iR)
+                CALL cryst_to_cart(1,Rx,bg,-1)
+                ! find if we have already used this R point ...
+                iout = R_list_idx(nRout,Rout,Rx)
+                ! ... if not, increase storage
+                CALL expand_matR(iout,nRout,nat,matR)
+                matR(j1,j2,na1,na2,iout) = aus * wg
+                !
+                totalweight=totalweight+wg
+                !
+              END IF
             END DO
-            !
-            Rx = Rbig(:,iR)
-            CALL cryst_to_cart(1,Rx,bg,-1)
-            ! find if we have already used this R point ...
-            iout = R_list_idx(nRout,Rout,Rx)
-            ! ... if not, increase storage
-            CALL expand_matR(iout,nRout,nat,matR)
-            matR(j1,j2,na1,na2,iout) = aus * wg
-            !
-            totalweight=totalweight+wg
-            !
-          END IF
-        END DO
-        IF(ABS(totalweight-1._dp)>eps) THEN
-          print*, totalweight, na1, na2
-          CALL errore('main','wrong totalweight',1)
-        ENDIF
+            IF(ABS(totalweight-1._dp)>eps) THEN
+              print*, totalweight, na1, na2
+              CALL errore('main','wrong totalweight',1)
+            ENDIF
+          ENDDO
+        ENDDO
       ENDDO
-      ENDDO
-    ENDDO
     ENDDO
     !
     if(allocated(fc)) deallocate(fc)
     ALLOCATE( fc(3*nat,3*nat,nRout) )
     DO na1=1,nat
-    DO na2=1,nat
-      DO j1=1,3
-      jn1 = j1 + (na1-1)*3
-      DO j2=1,3
-      jn2 = j2 + (na2-1)*3
-          !
-          DO i = 1, nRout
-            fc(jn1,jn2,i) = matR(j1,j2,na1,na2,i)
+      DO na2=1,nat
+        DO j1=1,3
+          jn1 = j1 + (na1-1)*3
+          DO j2=1,3
+            jn2 = j2 + (na2-1)*3
             !
+            DO i = 1, nRout
+              fc(jn1,jn2,i) = matR(j1,j2,na1,na2,i)
+              !
+            ENDDO
           ENDDO
+        ENDDO
       ENDDO
-      ENDDO
-    ENDDO
     ENDDO
     !
     if(allocated(xR)) deallocate(xR)
