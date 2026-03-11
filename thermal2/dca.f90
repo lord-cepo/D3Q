@@ -348,7 +348,7 @@ contains
         self_out(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out(:,:,iq,iw), U_out(:,:,iq)))
       enddo
     enddo
-    if (input%calculation == 'spf') &
+    if (input%calculation == 'spf-def') &
       call write_spf_ndiag('spf-dca.dat', wg%en, self_out, freqs_out, out_grid)
     ! open(110, file="dos_dca.dat")
     ! do iw = 1, input%n_omega

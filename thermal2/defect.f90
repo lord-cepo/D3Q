@@ -342,7 +342,7 @@ contains
     if(input%calculation == 'self') &
       call write_self("self-energy-def-full.dat", wg%en, self_energy)
     !
-    if(input%calculation == 'spf') &
+    if(input%calculation == 'spf-def') &
       call write_spf('spf-fb.dat', wg%en, self_energy, out_freqs, out_grid)
 
     ! where(aimag(self_energy) > 0._dp) self_energy = conjg(self_energy)
