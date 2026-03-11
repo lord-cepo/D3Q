@@ -316,9 +316,9 @@ contains
             phases_out(iR,iq)
         enddo
         Tq(:,:,iq,iw) = matmul(out_Us_c(:,:,iq), matmul(Tq(:,:,iq,iw), out_Us(:,:,iq)))
-        ! do ibnd = 1, S%nat3
-        !   ! self_energy(ibnd,iq,iw) = Tq(ibnd,ibnd,iq,iw)
-        ! enddo
+        do ibnd = 1, S%nat3
+          self_energy(ibnd,iq,iw) = Tq(ibnd,ibnd,iq,iw)
+        enddo
         ! call merge_degen(S%nat3, self_energy(:,iq,iw), out_freqs(:,iq))
       enddo
       call tetra_from_self(S, out_grid, out_freqs, Tq(:,:,:,iw), wg_out%en(iw)**2, den_weights)
@@ -343,7 +343,7 @@ contains
       call write_self("self-energy-def-full.dat", wg%en, self_energy)
     !
     if(input%calculation == 'spf-def') &
-      call write_spf('spf-fb.dat', wg%en, self_energy, out_freqs, out_grid)
+      call write_spf_ndiag('spf-fb.dat', wg%en, Tq, out_freqs, out_grid)
 
     ! where(aimag(self_energy) > 0._dp) self_energy = conjg(self_energy)
     open(17, file="dos_center.dat")
@@ -704,6 +704,33 @@ contains
         s = AIMAG(self_energy(:,iq,iw))
         write(10, "(1000E20.8)") en(iw), out_grid%xq(:,iq), -2 / pi * en(iw) * s / &
           ((freqs(:,iq)**2 - en(iw)**2 - r)**2 + s**2)
+      enddo
+    enddo
+    close(10)
+  end subroutine
+  !
+  subroutine write_spf_ndiag(filename, en, self_energy, freqs, grid)
+    character(*), intent(in) :: filename
+    real(dp), intent(in) :: en(:)
+    complex(dp), intent(in) :: self_energy(:,:,:,:)
+    real(dp), intent(in) :: freqs(:,:)
+    type(q_grid), intent(in) :: grid
+    !
+    integer :: iq, i, iw
+    complex(dp) :: M(size(self_energy,1), size(self_energy,2))
+    real(dp) :: spf(size(self_energy,1))
+    open(10, file=filename)
+    do iw = 2, size(en)
+      do iq = 1, grid%nqtot
+        M = - self_energy(:,:,iq,iw)
+        do i = 1, size(self_energy,1)
+          M(i,i) = M(i,i) + cmplx(en(iw)**2 - freqs(i,iq)**2, 2*en(iw)*1e-6_dp, dp)
+        enddo
+        call invzmat(size(M,1), M)
+        do i = 1, size(self_energy,1)
+          spf(i) = -1/pi * aimag(M(i,i))
+        enddo
+        write(10, "(1000E20.8)") en(iw), grid%xq(:,iq), spf
       enddo
     enddo
     close(10)

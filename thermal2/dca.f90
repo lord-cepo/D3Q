@@ -5,7 +5,7 @@ module dca
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
     fc2_recenter, fftinterp_mat2, mat2_diag
   use thutils
-  use defect, only : tetra_from_self
+  use defect, only : tetra_from_self, write_spf_ndiag
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
@@ -498,30 +498,4 @@ contains
     end subroutine
   END SUBROUTINE
   !
-  subroutine write_spf_ndiag(filename, en, self_energy, freqs, grid)
-    character(*), intent(in) :: filename
-    real(dp), intent(in) :: en(:)
-    complex(dp), intent(in) :: self_energy(:,:,:,:)
-    real(dp), intent(in) :: freqs(:,:)
-    type(q_grid), intent(in) :: grid
-    !
-    integer :: iq, i, j, iw
-    complex(dp) :: M(size(self_energy,1), size(self_energy,2))
-    complex(dp) :: spf(size(self_energy,1))
-    open(10, file=filename)
-    do iw = 1, size(en)
-      do iq = 1, grid%nqtot
-        M = - self_energy(:,:,iq,iw)
-        do i = 1, size(self_energy,1)
-          M(i,i) = M(i,i) + en(iw)**2 - freqs(i,iq)**2
-        enddo
-        call invzmat(size(M,1), M)
-        do i = 1, size(self_energy,1)
-          spf(i) = -1/pi * aimag(M(i,i))
-        enddo
-        write(10, "(1000E20.8)") en(iw), grid%xq(:,iq), spf
-      enddo
-    enddo
-    close(10)
-  end subroutine
 end module
