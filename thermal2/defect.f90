@@ -699,12 +699,12 @@ contains
     integer :: iw, iq
     !
     open(10, file=filename, status='replace', action='write')
-    do iw = 1, size(self_energy,3)
+    do iw = 2, size(self_energy,3)
       do iq = 1, size(self_energy,2)
         r = real(self_energy(:,iq,iw), dp)
         s = AIMAG(self_energy(:,iq,iw))
         write(10, "(1000E20.8)") en(iw), out_grid%xq(:,iq), -2 / pi * en(iw) * s / &
-          ((freqs(:,iq)**2 - en(iw)**2 - r)**2 + s**2)
+          ((en(iw)**2 - freqs(:,iq)**2 - r)**2 + s**2)
       enddo
     enddo
     close(10)
@@ -725,11 +725,11 @@ contains
       do iq = 1, grid%nqtot
         M = - self_energy(:,:,iq,iw)
         do i = 1, size(self_energy,1)
-          M(i,i) = M(i,i) + cmplx(en(iw)**2 - freqs(i,iq)**2, 2*en(iw)*1e-6_dp, dp)
+          M(i,i) = M(i,i) + en(iw)**2 - freqs(i,iq)**2
         enddo
         call invzmat(size(M,1), M)
         do i = 1, size(self_energy,1)
-          spf(i) = -1/pi * aimag(M(i,i))
+          spf(i) = -2 / pi * en(iw) * aimag(M(i,i))
         enddo
         write(10, "(1000E20.8)") en(iw), grid%xq(:,iq), spf
       enddo

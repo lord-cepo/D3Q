@@ -5,7 +5,7 @@ module dca
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
     fc2_recenter, fftinterp_mat2, mat2_diag
   use thutils
-  use defect, only : tetra_from_self, write_spf_ndiag
+  use defect, only : tetra_from_self, write_spf_ndiag, write_spf
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
@@ -37,7 +37,7 @@ contains
       den_eig, Gf_conf, Gf_avg, df, dv, overlap, V__, I_gV__, G_avg__
     complex(dp), allocatable, dimension(:,:,:) :: den_UL, den_UR, &
       G0i_cluster, G_coarse, Gi_coarse, self_fine, self_R, U, UT, &
-      UT_fine, U_fine, UT_out, U_out
+      UT_fine, U_fine, UT_out, U_out, self_out_diag
     complex(dp), allocatable, dimension(:,:,:,:) :: G_avg, Gi_conf, &
       Gi_avg, self_in, self_out, phase_mat, V
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, &
@@ -336,6 +336,7 @@ contains
     call mpi_bsum(input%n_omega, dos)
     !
     deallocate(self_out)
+    allocate(self_out_diag(S%nat3,out_grid%nqtot,input%n_omega))
     allocate(UT_out(S%nat3,S%nat3,out_grid%nqtot), U_out(S%nat3,S%nat3,out_grid%nqtot))
     allocate(freqs_out(S%nat3,out_grid%nqtot), self_out(S%nat3,S%nat3,out_grid%nqtot,input%n_omega))
     do iw = 1, input%n_omega
@@ -346,10 +347,15 @@ contains
         endif
         call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, self_out(:,:,iq,iw))
         self_out(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out(:,:,iq,iw), U_out(:,:,iq)))
+        do i = 1, S%nat3
+          self_out_diag(i, iq, iw) = self_out(i,i,iq,iw)
+        enddo
       enddo
     enddo
-    if (input%calculation == 'spf-def') &
-      call write_spf_ndiag('spf-dca.dat', wg%en, self_out, freqs_out, out_grid)
+    if (input%calculation == 'spf-def') then
+      call write_spf_ndiag('spf-dca-ndiag.dat', wg%en, self_out, freqs_out, out_grid)
+      call write_spf('spf-dca.dat', wg%en, self_out_diag, freqs_out, out_grid)
+    endif
     ! open(110, file="dos_dca.dat")
     ! do iw = 1, input%n_omega
     !   if(ionode) WRITE(110, "(3E20.8)") wg%en(iw) * RY_TO_CMM1, &
