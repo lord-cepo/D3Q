@@ -342,9 +342,10 @@ contains
     if(input%calculation == 'self') &
       call write_self("self-energy-def-full.dat", wg%en, self_energy)
     !
-    if(input%calculation == 'spf-def') &
-      call write_spf_ndiag('spf-fb.dat', wg%en, Tq, out_freqs, out_grid)
-
+    if(input%calculation == 'spf-def') then
+      call write_spf_ndiag('spf-fb-ndiag.dat', wg%en, Tq, out_freqs, out_grid)
+      call write_spf('spf-fb.dat', wg%en, self_energy, out_freqs, out_grid)
+    endif
     ! where(aimag(self_energy) > 0._dp) self_energy = conjg(self_energy)
     open(17, file="dos_center.dat")
     do iw = 1, input%n_omega
