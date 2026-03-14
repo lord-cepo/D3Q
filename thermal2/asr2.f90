@@ -60,32 +60,29 @@ CONTAINS
       enddo
       print*, "DEBUG impose_asr2, second method, delta_force=", SUM(delta_force)/nat/3
     elseIF(method=="diff") then
+      delta1= 0._dp
       do i = 1, nat
-        do b = 1, 3
-          do a = 1, 3
-            delta1(a,b,i) = 0._dp
-            delta2(a,b,i) = 0._dp
-            do j = 1, nat
-              do iR = 1, fc%n_R
-                delta1(a,b,i) = delta1(a,b,i) + fc%FC(3*(i-1)+a,3*(j-1)+b,iR)
-                delta2(a,b,i) = delta2(a,b,i) + fc%FC(3*(i-1)+b,3*(j-1)+a,iR)
+        do a = 1, 3
+          do b = 1, 3
+            do iR = 1, fc%n_R
+              do j = 1, nat
+                delta1(a,b,i) = delta1(a,b,i) + &
+                  fc%FC(a + 3*(i-1), b + 3*(j-1), iR) + fc%FC(b + 3*(i-1), a + 3*(j-1), iR)
               enddo
             enddo
           enddo
         enddo
       enddo
-      delta1 = delta1 / 2 / nat
-      delta2 = delta2 / 2 / nat
+      !
       do i = 1, nat
-        do b = 1, 3
-          do a = 1, 3
-            do j = 1, nat
-              fc%FC(3*(i-1)+a,3*(j-1)+b,fc%i_0) = &
-                fc%FC(3*(i-1)+a,3*(j-1)+b,fc%i_0) - delta1(a,b,i) - delta2(a,b,j)
-            enddo
+        do a = 1, 3
+          do b = 1, 3
+            fc%FC(a + 3*(i-1), b + 3*(i-1), fc%i_0) = &
+              fc%FC(a + 3*(i-1), b + 3*(i-1), fc%i_0) - delta1(a,b,i)/2
           enddo
         enddo
       enddo
+      !
     ELSEIF(method=="simple")THEN
       DO a = 1,3
         DO i = 1,nat

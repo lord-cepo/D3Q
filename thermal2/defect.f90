@@ -144,7 +144,7 @@ contains
   end subroutine
   !
   subroutine full_born_center(S, input, fc2, fc2_sc, grid, sym_grid, out_grid)
-    use quter_defect, only: fc_sc2RR, allocate_fc2_sc, minimal_image
+    use quter_defect, only: fc_sc2RR, allocate_fc2_sc
     use mpi_thermal, only : my_id, num_procs, mpi_bsum, ionode
     type(ph_system_info), intent(in) :: S
     type(code_input_type), intent(in) :: input
@@ -153,8 +153,8 @@ contains
     type(q_grid), intent(in) :: grid, sym_grid, out_grid
     !
     integer :: iR1, iR2, iR, nR, nR_large
-    integer :: i, j, iq, x0, ibnd, ii, N
-    real(dp) :: x, dx, c
+    integer :: i, j, iq, ibnd, N
+    real(dp) :: c
     integer, pointer :: R_list(:,:), diff_list(:,:)
     integer :: R(3)
     real(dp), allocatable :: Rij_cart(:,:,:)
@@ -176,7 +176,6 @@ contains
     integer, allocatable :: iR_large(:,:)
     complex(dp), allocatable :: phases_out(:,:)
     complex(dp), allocatable :: TRR__(:,:,:)
-    complex(dp) :: lws(S%nat3, out_grid%nqtot)
     !
     complex(dp), allocatable :: V__(:,:), gV__(:,:), g0__(:,:), T__(:,:), I_gV__(:,:)
     complex(dp), allocatable :: S__(:,:), S1__(:,:), Sg__(:,:), &
@@ -194,7 +193,7 @@ contains
     call freq_in_grid(S, fc2, grid, freqs, Us)
     call freq_in_grid(S, fc2, out_grid, out_freqs, out_Us)
 
-    c = input%conc * size(fc2_sc%defects,2)
+    c = input%conc !* size(fc2_sc%defects,2)
     do iq = 1, out_grid%nqtot
       out_Us_c(:,:,iq) = conjg(transpose(out_Us(:,:,iq)))
     enddo
@@ -263,6 +262,7 @@ contains
     T__ = 0._dp
     Tq = 0._dp
     dos = 0._dp
+    self_energy = 0._dp
     do iR2 = 1, fc2_sc%n_R2
       do iR1 = 1, fc2_sc%n_R1(iR2)
         call find_where(fc2_sc%yR1(:,iR1,iR2)-fc2_sc%yR2(:,iR2), diff_list, iR_diff(iR1,iR2))
@@ -430,12 +430,12 @@ contains
     enddo
   end subroutine
   !
-  subroutine main_defect(S, fc2, fc2_sc, grid, out_grid, input)
+  subroutine main_defect(S, fc2, fc2_sc, grid, sym_grid, out_grid, input)
     use constants, only: BOHR_RADIUS_CM, RY_TO_CMM1
     type(ph_system_info), intent(in) :: S
     type(forceconst2_sc), intent(inout) :: fc2_sc
     type(forceconst2_grid), intent(in) :: fc2
-    type(q_grid), intent(in) :: grid, out_grid
+    type(q_grid), intent(in) :: grid, sym_grid, out_grid
     type(code_input_type), intent(in) :: input
     type(tetra_output) :: w_in
     !
@@ -482,7 +482,7 @@ contains
     ! call freq_in_grid_degen(S, fc2, fc2_sc, grid, freqs, Us, freqs1)
 
     !
-    call set_wg(S, fc2, grid, input%n_omega, w_in)
+    call set_wg(S, fc2, sym_grid, input%n_omega, w_in)
     call print_message("end of tetra initialization")
     !
     do iq = 1, out_grid%nq
@@ -490,7 +490,8 @@ contains
       call fc2_sc%r2q(out_grid%xq(:,iq), Vqqs_out(:,:,iq))
     enddo
     !
-    allocate(interp(S%nat3, grid%nqtot))
+    self_energy = 0._dp
+    allocate(interp(S%nat3, sym_grid%nqtot))
     do iq = 1, out_grid%nq
       phase_factor = 0._dp
       call fc2_sc%r2q(out_grid%xq(:,iq))
@@ -514,9 +515,9 @@ contains
       enddo
       !
       do iw = 1, input%n_omega
-        if(mod(iw, input%n_omega/10) == 0) &
-          print"(A,A,I3,A)", input%calculation, " progress ", NINT(100 * REAL(iw,DP) / input%n_omega), "%"
-        omega = w_in%max_f*(iw-1)/input%n_omega
+        ! if(mod(iw, input%n_omega/10) == 0) &
+        ! print"(A,A,I3,A)", input%calculation, " progress ", NINT(100 * REAL(iw,DP) / input%n_omega), "%"
+        omega = w_in%en(iw)
         if (trim(input%calculation) /= 'lw') interp = w_in%w(:,:,iw)
         if (iw > 1 .and. trim(input%calculation) == 'lw') exit
         lws_out(:,iq) = 0._dp
@@ -545,7 +546,7 @@ contains
             enddo
           enddo
         enddo
-        call merge_degen(S%nat3, lws_out(:,iq), out_freqs(:,iq))
+        ! call merge_degen(S%nat3, lws_out(:,iq), out_freqs(:,iq))
         !
         if(trim(input%calculation) == 'spfdef') then
           do iconc = 1, size(concentrations)
@@ -554,14 +555,17 @@ contains
             spectral_function(iconc, iw) = &
               sum(matmul(AIMAG(tetra_weights_green_cmplx(omega**2)), out_grid%w))
           enddo
-        elseif((trim(input%calculation) == 'self') ) then
+        elseif((trim(input%calculation) == 'self' .or. trim(input%calculation) == 'spf-def') ) then
           ! if (out_grid%nqtot /= 1) &
           ! call errore("main_defect", "you can calculate self-energy only in one q-point at once", 1)
-          self_energy(:,iq,iw) = lws_out(:,iq)
+          self_energy(:,iq,iw) = input%conc*lws_out(:,iq)
         endif
         ! call mpi_bsum(S%nat3, out_grid%nqtot, lws_out)
-      enddo
-    enddo
+      enddo ! iw
+    enddo ! iq
+    if (trim(input%calculation) == 'spf-def') then
+      call write_spf('spf-2.dat', w_in%en, self_energy, out_freqs, out_grid)
+    endif
     !
     open(10, file="dos.dat", status='replace', action='write')
     do iw = 1, input%n_omega

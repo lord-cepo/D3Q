@@ -46,7 +46,7 @@ program defectp
   integer :: iw, jR, jq, iR
   complex(dp) :: mat3(3,3), eig3(3)
   complex(dp), allocatable :: V_sc(:,:)
-  real(dp) :: freq0(9)
+  real(dp),allocatable :: freq0(:)
   real(dp) :: tau(3)
   real(dp), allocatable :: R(:,:), q(:,:)
   real(dp), allocatable :: D0(:,:)
@@ -88,11 +88,26 @@ program defectp
   ! call S_uc2sc(S, Sd, sc_grid, S_sc)
   CALL aux_system(Sd)
   ! fc2d%fc(:,:,1) = (fc2d%fc(:,:,1) + transpose(fc2d%fc(:,:,1))) / 2
-  call impose_asr2(input%asr3, Sd%nat, fc2d)
-  call div_mass_fc2(Sd, fc2d)
-  ! call fc2_recenter(S_sc, fc2d, fc2d_centered, 2)
-  call print_message("ASR applied to fc2d")
+  ! call impose_asr2(input%asr3, Sd%nat, fc2d)
 
+  !> ASR imposed on RR representation of fc2d
+  !>------------------------------------------------
+  allocate(DRR(S%nat3, S%nat3, nR, nR))
+  DRR = fc_sc2RR(sc_grid, S, Sd, fc2d%fc(:,:,1))
+  call asr3(DRR)
+  fc2d%fc(:,:,1) = fc_RR2sc(sc_grid, S, Sd, DRR)
+  deallocate(DRR)
+  call div_mass_fc2(Sd, fc2d)
+  call print_message("ASR applied to fc2d")
+  !--------------------------------------------------
+  ! call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
+  ! open(138, file="band.dat")
+  ! allocate(freq0(Sd%nat3))
+  ! do iq = 1, out_grid%nqtot
+  !   call freq_phq(out_grid%xq(:,iq), Sd, fc2d_centered, freq0)
+  !   write(138,"(1000E20.8)") freq0
+  ! enddo
+  ! close(138)
   !
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&
@@ -229,14 +244,16 @@ program defectp
   ! call mat2_diag(3, mat3, eig3)
   ! print*, "Test diag mat3:", eig3
   !
-  call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, sym_grid)
+  ! call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, sym_grid, out_grid)
 
   ! CALL main_defect(S, fc2_centered, fc2_sc, in_grid, out_grid, input)
   ! allocate(D0(nR*S%nat3, nR*S%nat3))
   ! D0 = fc_uc2sc(S, Sd, input%sc_grid, fc2_periodic%fc)
   ! call full_born_p(input, S, Sd, fc2_centered, D0, cmplx(D0-fc2d%fc(:,:,1), 0._dp, dp), out_grid)
 
+  !
   CALL fc2_sc%center(sc_grid, S)
+  call main_defect(S, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid, input)
   call full_born_center(S, input, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid)
 
   ! print*, "Defect full Born calculation done."
@@ -262,9 +279,9 @@ contains
           dist2 = norm2(S%tau(:,na1) + fc2_centered%xR(:,iR)) + norm2(S%tau(:,na2))
           do j1 = 1, 3
             do j2 = 1, 3
-              write(10, "(3E20.8, 3I5)") dist, &
+              write(10, "(3E20.8, 3I5)") dist, dist2, &
                 fc2_centered%fc(j1+3*(na1-1), j2+3*(na2-1), iR), &
-                dist2, iR, na1, na2
+                iR, na1, na2
             enddo
           enddo
         enddo
@@ -290,4 +307,5 @@ contains
     enddo
     close(10)
   end subroutine
+  !
 end program

@@ -4,7 +4,10 @@ module dca
     deallocate_tetra, tetra_output, set_wg
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
     fc2_recenter, fftinterp_mat2, mat2_diag
-  use thutils
+  use thutils, only: v2index_n, index2v_n, bz2simple, grid_vec_cart, &
+    e_iqr, index2v, cryst2cart, v2index
+  use defutils, only : flatten_RR_cmplx, unflatten_RR_cmplx, &
+    quter_cmplx, fftinterp_mat2_cmplx
   use defect, only : tetra_from_self, write_spf_ndiag, write_spf
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
@@ -12,7 +15,7 @@ module dca
   use code_input, only: code_input_type
   use functions, only: invzmat
   use constants, only: tpi, pi
-  use quter_defect
+  use quter_defect, only : forceconst2_sc
   use functions, only: f_gauss
   use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
   use merge_degenerate, only: merge_degen
@@ -46,12 +49,11 @@ contains
     integer, allocatable :: pos(:), kq(:,:)!, big_iq(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, &
-      cluster_mesh(3), Npos, ntot, iR
+      cluster_mesh(3), Npos, ntot
     real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff
     real(dp) :: dos(input%n_omega), shift(3)
     logical :: conv
     complex(dp) :: A(S%nat3,S%nat3)
-    character(100) :: filename
     !
 
     MAXITER = 50

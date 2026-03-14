@@ -40,6 +40,7 @@ decompose_zstar.o : mpi_thermal.o
 defect.o : mpi_thermal.o
 defect_eig.o : mpi_thermal.o
 defect_proj.o : mpi_thermal.o
+defutils.o : mpi_thermal.o
 dynbubble.o : mpi_thermal.o
 eos.o : mpi_thermal.o
 f3_bwfft.o : mpi_thermal.o
@@ -335,6 +336,7 @@ code_input.o : ./q_grids.o
 code_input.o : ./timers.o
 dca.o : ./EPW_utilities.o
 dca.o : ./code_input.o
+dca.o : ./defect.o
 dca.o : ./fc2_interp.o
 dca.o : ./fc3_interp.o
 dca.o : ./functions.o
@@ -359,6 +361,7 @@ defect.o : ./fc3_interp.o
 defect.o : ./functions.o
 defect.o : ./input_fc.o
 defect.o : ./merge_degenerate.o
+defect.o : ./mpi_thermal.o
 defect.o : ./ph_velocity.o
 defect.o : ./q_grids.o
 defect.o : ./quter_defect.o
@@ -367,7 +370,9 @@ defect.o : ./test_print.o
 defect.o : ./thfftw.o
 defect.o : ./thtetra.o
 defect.o : ./utils.o
+defect_eig.o : ./defutils.o
 defect_eig.o : ./fc2_interp.o
+defect_eig.o : ./full_born.o
 defect_eig.o : ./input_fc.o
 defect_eig.o : ./mpi_thermal.o
 defect_eig.o : ./q_grids.o
@@ -388,6 +393,11 @@ defect_proj.o : ./simtet.o
 defect_proj.o : ./test_print.o
 defect_proj.o : ./thtetra.o
 defect_proj.o : ./utils.o
+defutils.o : ./fc2_interp.o
+defutils.o : ./functions.o
+defutils.o : ./input_fc.o
+defutils.o : ./quter.o
+defutils.o : ./utils.o
 dynbubble.o : ./fc2_interp.o
 dynbubble.o : ./fc3_interp.o
 dynbubble.o : ./functions.o
@@ -597,6 +607,8 @@ overlap.o : mpi_thermal.h
 ph_system.o : mpi_thermal.h
 posix_signal.o : mpi_thermal.h
 q_grids.o : mpi_thermal.h
+quter_defect.o : defutils.o
+dca.o : defutils.o
 read_md.o : mpi_thermal.h
 timers.o : mpi_thermal.h
 variational_tk.o : mpi_thermal.h

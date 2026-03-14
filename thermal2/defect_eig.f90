@@ -8,7 +8,8 @@ module defect_eig
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
-  use quter_defect, only : forceconst2_sc, flatten_RR_cmplx
+  use quter_defect, only : forceconst2_sc
+  use defutils, only : flatten_RR_cmplx
 contains
   function D_or_V(S, fc2, fc2_sc, grid, which)
     type(ph_system_info), intent(in) :: S
@@ -178,21 +179,22 @@ contains
     lowest_eig = W(1:i)
   end function
   !
-  subroutine norm_gV(S, fc2, fc2_sc, grid, n_omega, eta)
+  subroutine norm_gV(S, fc2, fc2_sc, grid, sym_grid, n_omega)
     use thtetra, only : set_wg, tetra_output
     use constants, only : RY_TO_CMM1
     use thutils, only : freq_in_grid
     use simtet, only : tetra_init_sym_cmplx, tetra_weights_green_cmplx
     use mpi_thermal, only : num_procs, my_id
+    use full_born, only : zgemm_N
     type(ph_system_info), intent(in) :: S
     type(forceconst2_grid), intent(in) :: fc2
     type(forceconst2_sc), intent(inout) :: fc2_sc
-    type(q_grid), intent(in) :: grid
+    type(q_grid), intent(in) :: grid, sym_grid
     integer, intent(in) :: n_omega
-    real(dp), intent(in) :: eta(:)
+    ! real(dp), intent(in) :: eta(:)
     !
     real(dp), dimension(grid%nqtot*S%nat3,grid%nqtot*S%nat3) :: id
-    complex(dp), dimension(grid%nqtot*S%nat3,grid%nqtot*S%nat3) :: VK, A, one_minus_gV, V
+    complex(dp), dimension(grid%nqtot*S%nat3,grid%nqtot*S%nat3) :: VK, A, gV, V, gV2, gVt
     integer :: iq, jq, ibnd, jbnd, compi, compj, iw, N, ieta
     type(tetra_output) :: wg
     real(dp) :: norm_VK, norm_gV_, w2(grid%nqtot*S%nat3)
@@ -200,11 +202,11 @@ contains
     complex(dp), allocatable :: wg_cmplx(:,:)
     complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
     complex(dp) :: U_dagger(S%nat3, S%nat3)
+    real(dp) :: eta
     !
     V = D_or_V(S, fc2, fc2_sc, grid, "V")
-    call set_wg(S, fc2, grid, n_omega, wg)
-    allocate(wg_cmplx(size((wg%w),1), size(wg%w,2)))
-    call freq_in_grid(S, fc2, grid, freqs, Us)
+    call set_wg(S, fc2, sym_grid, n_omega, wg, mult=2.0_dp)
+    eta = 1e-12_dp
     !
     ! norm_VK = frobenius_norm(VK)
     ! print*, "norm V matrix", norm_VK
@@ -212,38 +214,43 @@ contains
     id = id_mat(N)
     !
     open(10, file="norm.dat")
-    do ieta = 1, size(eta)
-      print*, "eta =", eta(ieta)
-      call tetra_init_sym_cmplx(grid, S, cmplx(freqs**2, eta(ieta), dp))
-      do iw = my_id+1, size(wg%en), num_procs
-        ! do concurrent(iq=1:grid%nqtot, jq=1:grid%nqtot, ibnd=1:S%nat3, jbnd=1:S%nat3)
-        !   compi = (iq-1)*S%nat3 + ibnd
-        !   compj = (jq-1)*S%nat3 + jbnd
-        !   A(compi,compj) = V(compi,compj) * wg%w(ibnd,wg%e(iq),iw)
-        ! enddo
-        ! V = VK
-        wg_cmplx = tetra_weights_green_cmplx(wg%en(iw)**2)
-        ! do iq = 1, grid%nqtot
-        !   U_dagger = conjg(transpose(Us(:,:,iq)))
-        !   U_dagger(:,4:) = 0._dp
-        !   do jq = 1, grid%nqtot
-        !     V((iq-1)*S%nat3+1:iq*S%nat3, (jq-1)*S%nat3+1:jq*S%nat3) = &
-        !       V((iq-1)*S%nat3+1:iq*S%nat3, (jq-1)*S%nat3+1:jq*S%nat3) + &
-        !       matmul(U_dagger, Us(:,:,jq)) * fc2_sc%mass_ratios(1)*E(iw)**2 / grid%nqtot
-        !   end do
-        ! end do
-        !
-        do concurrent(jq=1:grid%nqtot, jbnd=1:S%nat3)
-          compj = (jq-1)*S%nat3 + jbnd
-          one_minus_gV(:,compj) = V(:,compj) / ((wg%en(iw) - eta(ieta))**2 - freqs(jbnd,jq)**2)
-        enddo
-        !
-        one_minus_gV = matmul(conjg(transpose(id - one_minus_gV)), id - one_minus_gV)
-        ! norm_gV_ = frobenius_norm(gVVg)
-        ! print*, "iw =", iw, " norm gVg =", norm_gV_
-        write(10, "(20E25.8)") wg%en(iw) * RY_TO_CMM1, &
-          eta(ieta) * RY_TO_CMM1, SQRT(lowest_eig(N, one_minus_gV, 1))
-      enddo
+    ! do ieta = 1, size(eta)
+    ! print*, "eta =", eta(ieta)
+    ! call tetra_init_sym_cmplx(grid, S, cmplx(freqs**2, eta(ieta), dp))
+    ! call tetra_init_sym(grid, S, freqs**2)
+    do iw = my_id+1, size(wg%en), num_procs
+      print*, "iw = ", iw
+      ! do concurrent(iq=1:grid%nqtot, jq=1:grid%nqtot, ibnd=1:S%nat3, jbnd=1:S%nat3)
+      !   compi = (iq-1)*S%nat3 + ibnd
+      !   compj = (jq-1)*S%nat3 + jbnd
+      !   A(compi,compj) = V(compi,compj) * wg%w(ibnd,wg%e(iq),iw)
+      ! enddo
+      ! V = VK
+      ! wg_cmplx = tetra_weights_green_cmplx(wg%en(iw)**2)
+      ! do iq = 1, grid%nqtot
+      !   U_dagger = conjg(transpose(Us(:,:,iq)))
+      !   U_dagger(:,4:) = 0._dp
+      !   do jq = 1, grid%nqtot
+      !     V((iq-1)*S%nat3+1:iq*S%nat3, (jq-1)*S%nat3+1:jq*S%nat3) = &
+      !       V((iq-1)*S%nat3+1:iq*S%nat3, (jq-1)*S%nat3+1:jq*S%nat3) + &
+      !       matmul(U_dagger, Us(:,:,jq)) * fc2_sc%mass_ratios(1)*E(iw)**2 / grid%nqtot
+      !   end do
+      ! end do
+      !
+      ! gV = 0._dp
+      ! do concurrent(jq=1:grid%nqtot, jbnd=1:S%nat3)
+      !   compj = (jq-1)*S%nat3 + jbnd
+      !   gV(:,compj) = V(:,compj) / (wg%en(iw)**2 - freqs(jbnd,jq)**2 + cmplx(0._dp, eta, dp))
+      ! enddo
+
+      ! gVt = conjg(transpose(gV))
+      ! gV2 = 0._dp
+      ! call zgemm_N(N, gVt, gV, gV2)
+      ! gv2 = matmul(conjg(transpose(gV)), gV)
+      ! norm_gV_ = frobenius_norm(gVVg)
+      ! print*, "iw =", iw, " norm gVg =", norm_gV_
+      ! write(10, "(20E25.8)") wg%en(iw) * RY_TO_CMM1, lowest_eig(N, gV2, 1)
+      ! enddo
     enddo
     close(10)
     !
@@ -286,13 +293,13 @@ contains
     complex(dp) :: trace
     complex(dp), allocatable :: V(:,:), V1(:,:)
     type(q_grid) :: grid
-    real(dp) :: eigs(7**3*S%nat3,8)
+    real(dp) :: eigs(4**3*S%nat3,8)
     real(dp), allocatable :: eig_v(:)
     !
     n_eigs = size(eigs,1)
     eigs = 0._dp
     open(10, file="eig-V.dat", status='replace', action='write')
-    do i = 3, 7
+    do i = 4,4
       call setup_simple_grid(S%bg, i, i, i, grid)
       N = grid%nqtot * S%nat3
       allocate(V(N,N), V1(N,N), eig_v(N))
