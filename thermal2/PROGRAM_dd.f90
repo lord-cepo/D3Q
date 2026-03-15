@@ -244,7 +244,7 @@ program defectp
   ! call mat2_diag(3, mat3, eig3)
   ! print*, "Test diag mat3:", eig3
   !
-  ! call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, sym_grid, out_grid)
+  call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, sym_grid, out_grid)
 
   ! CALL main_defect(S, fc2_centered, fc2_sc, in_grid, out_grid, input)
   ! allocate(D0(nR*S%nat3, nR*S%nat3))
@@ -253,8 +253,8 @@ program defectp
 
   !
   CALL fc2_sc%center(sc_grid, S)
-  call main_defect(S, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid, input)
-  call full_born_center(S, input, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid)
+  ! call main_defect(S, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid, input)
+  ! call full_born_center(S, input, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid)
 
   ! print*, "Defect full Born calculation done."
   ! call full_born_analytical(input, S, fc2_centered, in_grid, out_grid)

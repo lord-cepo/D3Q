@@ -97,7 +97,7 @@ MODULE thtetra
 
 CONTAINS
   !
-  subroutine tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult, U_sym)
+  subroutine tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult)
     type(q_grid), intent(in) :: grid
     type(ph_system_info), intent(in) :: S
     type(forceconst2_grid), intent(in) :: fc2
@@ -105,18 +105,12 @@ CONTAINS
     integer, intent(in) :: n_omega
     real(dp), intent(in) :: mult
     ! type(q_grid), intent(out), optional :: grid_sym_
-    complex(dp), allocatable, intent(out), optional :: U_sym(:,:,:)
     !
     real(dp), allocatable :: freqs_sym(:,:)
     integer :: iw
     !
     allocate(freqs_sym(S%nat3, grid%nqtot))
-    if(present(U_sym)) then
-      allocate(U_sym(S%nat3, S%nat3, grid%nqtot))
-      call freq_in_grid(S, fc2, grid, freqs_sym, U_sym)
-    else
-      call freq_in_grid(S, fc2, grid, freqs_sym)
-    endif
+    call freq_in_grid(S, fc2, grid, freqs_sym)
     call tetra_init_sym(grid, S, freqs_sym**2, .false., wg)
     allocate(wg%w(S%nat3, wg%nsym, n_omega))
     call move_alloc(freqs_sym, wg%f)
@@ -150,7 +144,6 @@ CONTAINS
     end if
     !
     call tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult_)
-    call freq_in_grid(S, fc2, grid, freqs)
     !
     do iw = 1, n_omega
       wg%w(:,:,iw) = tetra_weights_green(wg%en(iw)**2)
@@ -160,7 +153,7 @@ CONTAINS
         enddo
       enddo
       do iq = 1, grid%nqtot
-        call merge_degen(S%nat3, wg%w(:,iq,iw), freqs(:,iq))
+        call merge_degen(S%nat3, wg%w(:,iq,iw), wg%f(:,iq))
       enddo
     enddo
   end subroutine
@@ -1043,7 +1036,7 @@ CONTAINS
       ntmax = ntetra
     endif
     !
-    DO nt = 1+my_id, ntmax, num_procs
+    DO nt = 1, ntmax
       !
       DO ibnd = 1, nbnd
         !

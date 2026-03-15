@@ -27,6 +27,19 @@ module dca
   use EPW_utilities, only : mix_broyden_full
   use mpi_thermal, only : mpi_bsum, ionode, num_procs, my_id
 contains
+  subroutine init_random_seed()
+    implicit none
+    integer :: n
+    integer, allocatable :: seed(:)
+
+    call random_seed(size=n)
+    allocate(seed(n))
+
+    seed = 12345   ! fixed seed for reproducibility
+    call random_seed(put=seed)
+
+  end subroutine
+!
   subroutine dca_selfnrg(S, S_sc, input, fc2, fc2_sc, grid, out_grid)
     type(ph_system_info), intent(in) :: S, S_sc
     type(code_input_type), intent(in) :: input
@@ -42,7 +55,7 @@ contains
       G0i_cluster, G_coarse, Gi_coarse, self_fine, self_R, U, UT, &
       UT_fine, U_fine, UT_out, U_out, self_out_diag
     complex(dp), allocatable, dimension(:,:,:,:) :: G_avg, Gi_conf, &
-      Gi_avg, self_in, self_out, phase_mat, V
+      Gi_avg, self_in, self_out, phase_mat, V, self_out_grid
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, &
       self_uf
     real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f, freqs_out
@@ -56,6 +69,7 @@ contains
     complex(dp) :: A(S%nat3,S%nat3)
     !
 
+    call init_random_seed()
     MAXITER = 50
     ABS_TOLERANCE = 1e-13_dp
     REL_TOLERANCE = 1e-3_dp
@@ -89,6 +103,16 @@ contains
       UT(:,:,iq) = conjg(transpose(U(:,:,iq)))
     enddo
     print*, "DCA cluster size:", Nc, "number of configurations to be averaged:", NSAMPLES
+    !
+    allocate(self_out_diag(S%nat3,out_grid%nqtot,input%n_omega))
+    allocate(UT_out(S%nat3,S%nat3,out_grid%nqtot), U_out(S%nat3,S%nat3,out_grid%nqtot))
+    allocate(freqs_out(S%nat3,out_grid%nqtot), self_out_grid(S%nat3,S%nat3,out_grid%nqtot,input%n_omega))
+    do iq = 1, out_grid%nqtot
+      call freq_phq_safe(out_grid%xq(:,iq), S, fc2, freqs_out(:,iq), U_out(:,:,iq))
+      UT_out(:,:,iq) = conjg(transpose(U_out(:,:,iq)))
+    enddo
+    self_out_grid = 0.0_dp
+    self_out_diag = 0.0_dp
     !
     allocate(G_avg(S%nat3, S%nat3, Nc, Nc))
     allocate(Gi_conf(S%nat3, S%nat3, Nc, Nc))
@@ -331,39 +355,31 @@ contains
         self_in(:,:,:,iw) = reshape(delta_in, [S%nat3, S%nat3, Nc])
       enddo ! self-energy SC cycle
       ! print*, self_out(4,4,1,iw), self_out(5,5,2,iw)
-      ! do iq = 1, grid%nqtot
-      !   dos(iw) = dos(iw) + aimag(sum(den_weights(:,iq))) * wg%qw(iq)
-      ! enddo
-    enddo ! frequency loop
-    call mpi_bsum(input%n_omega, dos)
-    !
-    deallocate(self_out)
-    allocate(self_out_diag(S%nat3,out_grid%nqtot,input%n_omega))
-    allocate(UT_out(S%nat3,S%nat3,out_grid%nqtot), U_out(S%nat3,S%nat3,out_grid%nqtot))
-    allocate(freqs_out(S%nat3,out_grid%nqtot), self_out(S%nat3,S%nat3,out_grid%nqtot,input%n_omega))
-    do iw = 1, input%n_omega
+      do iq = 1, grid%nqtot
+        dos(iw) = dos(iw) + aimag(sum(den_weights(:,iq))) * wg%qw(iq)
+      enddo
       do iq = 1, out_grid%nqtot
-        if(iw == 1) then
-          call freq_phq_safe(out_grid%xq(:,iq), S, fc2, freqs_out(:,iq), U_out(:,:,iq))
-          UT_out(:,:,iq) = conjg(transpose(U_out(:,:,iq)))
-        endif
-        call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, self_out(:,:,iq,iw))
-        self_out(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out(:,:,iq,iw), U_out(:,:,iq)))
+        call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, self_out_grid(:,:,iq,iw))
+        self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out_grid(:,:,iq,iw), U_out(:,:,iq)))
         do i = 1, S%nat3
-          self_out_diag(i, iq, iw) = self_out(i,i,iq,iw)
+          self_out_diag(i, iq, iw) = self_out_grid(i,i,iq,iw)
         enddo
       enddo
-    enddo
+    enddo ! frequency loop
+    call mpi_bsum(input%n_omega, dos)
+    call mpi_bsum(S%nat3, S%nat3, out_grid%nqtot, input%n_omega, self_out_grid)
+    call mpi_bsum(S%nat3, out_grid%nqtot, input%n_omega, self_out_diag)
+    !
     if (input%calculation == 'spf-def') then
       call write_spf_ndiag('spf-dca-ndiag.dat', wg%en, self_out, freqs_out, out_grid)
       call write_spf('spf-dca.dat', wg%en, self_out_diag, freqs_out, out_grid)
     endif
-    ! open(110, file="dos_dca.dat")
-    ! do iw = 1, input%n_omega
-    !   if(ionode) WRITE(110, "(3E20.8)") wg%en(iw) * RY_TO_CMM1, &
-    !     - dos(iw) / pi * product(grid%n) * 2 * wg%en(iw) / RY_TO_CMM1
-    ! enddo
-    ! close(110)
+    open(110, file="dos_dca.dat")
+    do iw = 1, input%n_omega
+      if(ionode) WRITE(110, "(3E20.8)") wg%en(iw) * RY_TO_CMM1, &
+        - dos(iw) / pi * product(grid%n) * 2 * wg%en(iw) / RY_TO_CMM1
+    enddo
+    close(110)
     !
   end subroutine
 !
@@ -375,6 +391,7 @@ contains
     !
     integer :: i
     real(dp) :: r
+    !
     !
     npos = 0
     do i = 1, N

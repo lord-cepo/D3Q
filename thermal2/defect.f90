@@ -327,6 +327,9 @@ contains
       enddo
     enddo
     call mpi_bsum(input%n_omega, dos)
+    call mpi_bsum( S%nat3, out_grid%nqtot, input%n_omega, self_energy)
+    call mpi_bsum( S%nat3, S%nat3, out_grid%nqtot, input%n_omega, Tq)
+
     !
     ! do iq = 1, out_grid%nqtot
     !   do ibnd = 1, S%nat3
@@ -432,6 +435,7 @@ contains
   !
   subroutine main_defect(S, fc2, fc2_sc, grid, sym_grid, out_grid, input)
     use constants, only: BOHR_RADIUS_CM, RY_TO_CMM1
+    use thtetra, only: ek_sort
     type(ph_system_info), intent(in) :: S
     type(forceconst2_sc), intent(inout) :: fc2_sc
     type(forceconst2_grid), intent(in) :: fc2
