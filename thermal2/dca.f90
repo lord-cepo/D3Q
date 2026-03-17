@@ -35,7 +35,7 @@ contains
     call random_seed(size=n)
     allocate(seed(n))
 
-    seed = 12345   ! fixed seed for reproducibility
+    seed = 12345
     call random_seed(put=seed)
 
   end subroutine
@@ -68,7 +68,8 @@ contains
     logical :: conv
     complex(dp) :: A(S%nat3,S%nat3)
     !
-
+    if(input%calculation == "test") call init_random_seed()
+    !
     MAXITER = 50
     ABS_TOLERANCE = 1e-13_dp
     REL_TOLERANCE = 1e-3_dp
@@ -146,7 +147,7 @@ contains
     ! allocate(fc2_sc%defects(3, 1))
     ! fc2_sc%defects(:,1) = [1,1,1]
 
-    print*, NSAMPLES, "DCA samples to be used"
+    if(ionode) print*, NSAMPLES, "DCA samples to be used"
     call center_V(xq, S, S_sc, fc2_sc, cluster_mesh, Vqqs)
     do idef = 1, n_eq_sites
       do iq = 1, Nc
@@ -181,7 +182,7 @@ contains
         enddo
       enddo
     enddo
-    print"(A,E15.4)", "simulated concentration:", real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
+    if(ionode) print"(A,E15.4)", "simulated concentration:", real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
     !
     !
     !> construction of G0_coarse and G0i_coarse, which are averaged over the small
@@ -206,7 +207,7 @@ contains
     !
     dos = 0._dp
     !
-    print*, "Starting DCA self-energy calculation..."
+    if(ionode) print*, "Starting DCA self-energy calculation..."
     do iw = 1+my_id, input%n_omega, num_procs
       ! do iq = 1, Nc
       !   do i = 1, S%nat3
@@ -376,6 +377,18 @@ contains
       enddo
       call mpi_bsum(input%n_omega, dos)
       call write_dos('dos-dca.dat', wg_out%en, dos)
+     case("test")
+      do iw = 1+my_id, input%n_omega, num_procs
+        call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg_out%en(iw)**2, den_weights)
+        dos(iw) = sum(matmul(AIMAG(den_weights), wg_out%qw)) * product(out_grid%n)
+      enddo
+      call mpi_bsum(input%n_omega, dos)
+      call write_dos('dos-dca-test.dat', wg_out%en, dos)
+      call write_spf_ndiag('spf-dca-ndiag-test.dat', wg%en, self_out_grid(:,:,:1,:), out_freqs(:,:1))
+      call write_spf('spf-dca-test.dat', wg%en, self_out_diag(:,:1,:), out_freqs(:,:1))
+      call write_self('self-dca-test.dat', wg%en, self_out_diag(:,:,:1))
+     case default
+      if(ionode) print*, "WARNING: unknown DCA calculation type"
     end select
     !
   end subroutine

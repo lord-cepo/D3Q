@@ -1,0 +1,17 @@
+&definput
+  calculation = 'test'
+  mode = '1b fb dca'
+  file_mat2 = 'mat2R_test1'
+  file_mat3 = 'mat2D_test1'
+  outdir = '.'
+  asr2 = 'diff'
+  asr3 = 'diff'
+  nk = 12,12,12
+  sc_grid = 4,4,4
+  n_omega = 32
+  use_symm = .true.
+  delta_approx = 'tetra'
+  conc = 1e-2
+ /
+QPOINTS grid
+10 10 10

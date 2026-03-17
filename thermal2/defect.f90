@@ -210,7 +210,7 @@ contains
         if(iR == -1) call enlarge_R(fc2_sc%yR1(:,iR1,iR2), R_list, nR)
       enddo
     enddo
-    print*, "Number of unique R vectors: ", nR
+    if(ionode) print*, "Number of unique R vectors: ", nR
     !
     call create_diffs(fc2_sc, diff_list)
     allocate(diffs(3,size(diff_list,2)))
@@ -249,7 +249,7 @@ contains
     !
     allocate(diff_large(3,nR_large))
     diff_large = cryst2cart(real(diff_list_large,dp), S%at, 1)
-    print*, "Number of unique large diff vectors: ", nR_large
+    if(ionode) print*, "Number of unique large diff vectors: ", nR_large
 
     N = S%nat3 * nR
     allocate(V__(N,N))
@@ -351,6 +351,13 @@ contains
       call write_self("self-fb.dat", wg%en, self_energy)
      case('dos')
       call write_dos("dos-fb.dat", wg%en, dos)
+     case('test')
+      call write_spf_ndiag('spf-fb-ndiag-test.dat', wg%en, Tq(:,:,:1,:), out_freqs(:,:1))
+      call write_spf('spf-fb-test.dat', wg%en, self_energy(:,:1,:), out_freqs(:,:1))
+      call write_self("self-fb-test.dat", wg%en, self_energy(:,:1,:))
+      call write_dos("dos-fb-test.dat", wg%en, dos)
+     case default
+      if (ionode) print*, "Unknown calculation type for fb: ", input%calculation
     end select
   contains
     subroutine t_symmetrize(TRR, iR_list, nR, TR)
@@ -561,6 +568,13 @@ contains
         print*, "WARNING: DOS calculation in a non-grid q-point set: ", out_grid%type
       call write_dos("dos-1b.dat", w_out%en, dos)
       call write_dos("dos-0.dat", w_out%en, dos0)
+     case("test")
+      call write_spf('spf-1b-test.dat', w_in%en, self_energy(:,:1,:), freqs(:,:1))
+      call write_self("self-1b-test.dat", w_in%en, self_energy(:,:1,:))
+      call write_dos("dos-1b-test.dat", w_out%en, dos)
+      call write_dos("dos-0-test.dat", w_out%en, dos0)
+     case default
+      if (ionode) print*, "Unknown calculation type for 1B: ", input%calculation
     end select
     call print_message("end of 1B calculation")
     !
