@@ -67,7 +67,7 @@ program defectp
     sc_grid = fc2_periodic%nq
   else
     sc_grid = input%sc_grid
-    print*, "Using sc_grid = ", input%sc_grid
+    if(ionode) print*, "Using sc_grid = ", input%sc_grid
   end if
   nR = product(sc_grid)
   call allocate_fc2_grid(nR, S%nat, fc2_treated)

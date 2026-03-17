@@ -501,6 +501,8 @@ contains
     self_energy = 0._dp
     self_ndiag = 0._dp
     w_self = 0._dp
+    dos = 0._dp
+    dos0 = 0._dp
     allocate(interp(S%nat3, sym_grid%nqtot))
     do iw = 1+my_id, input%n_omega, num_procs
       !
@@ -654,7 +656,7 @@ contains
     open(10, file=filename)
     do iw = 2, size(weights,3)
       do iq = 1, size(weights,2)
-        write(10, "(1000E20.8)") en(iw)*RY_TO_CMM1, iq, &
+        write(10, "(E20.8,X,I3,100E20.8)") en(iw)*RY_TO_CMM1, iq, &
           -2 * en(iw) / pi * AIMAG(weights(:,iq,iw)) / RY_TO_CMM1
       enddo
     enddo
@@ -676,7 +678,7 @@ contains
       do iq = 1, size(self_energy,2)
         r = real(self_energy(:,iq,iw), dp)
         s = AIMAG(self_energy(:,iq,iw))
-        write(10, "(1000E20.8)") en(iw)*RY_TO_CMM1, iq, -2 / pi * en(iw) * s / &
+        write(10, "(E20.8,X,I3,100E20.8)") en(iw)*RY_TO_CMM1, iq, -2 / pi * en(iw) * s / &
           ((en(iw)**2 - freqs(:,iq)**2 - r)**2 + s**2) / RY_TO_CMM1
       enddo
     enddo
@@ -705,7 +707,7 @@ contains
         do i = 1, size(self_energy,1)
           spf(i) = -2 / pi * en(iw) * aimag(M(i,i))
         enddo
-        write(10, "(1000E20.8)") en(iw)*RY_TO_CMM1, iq, spf / RY_TO_CMM1
+        write(10, "(E20.8,X,I3,100E20.8)") en(iw)*RY_TO_CMM1, iq, spf / RY_TO_CMM1
       enddo
     enddo
     close(10)
