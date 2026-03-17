@@ -5,10 +5,10 @@ module dca
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
     fc2_recenter, fftinterp_mat2, mat2_diag
   use thutils, only: v2index_n, index2v_n, bz2simple, grid_vec_cart, &
-    e_iqr, index2v, cryst2cart, v2index
+    e_iqr, index2v, cryst2cart, v2index, freq_in_grid
   use defutils, only : flatten_RR_cmplx, unflatten_RR_cmplx, &
     quter_cmplx, fftinterp_mat2_cmplx
-  use defect, only : tetra_from_self, write_spf_ndiag, write_spf, write_self
+  use defect, only : tetra_from_self, write_spf_ndiag, write_spf, write_self, write_dos
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
@@ -46,7 +46,7 @@ contains
     type(forceconst2_grid), intent(in) :: fc2
     type(forceconst2_sc), intent(inout) :: fc2_sc
     type(q_grid), intent(in) :: grid, out_grid
-    type(tetra_output) :: wg
+    type(tetra_output) :: wg, wg_out
     !
     complex(dp), allocatable, dimension(:) :: delta_in, delta_out, G__
     complex(dp), allocatable, dimension(:,:) :: den_weights, &
@@ -58,7 +58,7 @@ contains
       Gi_avg, self_in, self_out, phase_mat, V, self_out_grid
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, &
       self_uf
-    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f, freqs_out
+    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f, out_freqs
     integer, allocatable :: pos(:), kq(:,:)!, big_iq(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, &
@@ -90,6 +90,7 @@ contains
       call errore("dca_selfnrg", "grid size not multiple of fc2 grid size", 1)
     R = grid_vec_cart(cluster_mesh, S%at, natural=.true.)
     call set_wg(S, fc2, grid, input%n_omega, wg)
+    call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
     !
     allocate(UT_fine(S%nat3,S%nat3,grid%nqtot), U_fine(S%nat3,S%nat3,grid%nqtot))
     allocate(f(S%nat3,Nc), U(S%nat3,S%nat3,Nc), UT(S%nat3,S%nat3,Nc))
@@ -105,9 +106,9 @@ contains
     !
     allocate(self_out_diag(S%nat3,out_grid%nqtot,input%n_omega))
     allocate(UT_out(S%nat3,S%nat3,out_grid%nqtot), U_out(S%nat3,S%nat3,out_grid%nqtot))
-    allocate(freqs_out(S%nat3,out_grid%nqtot), self_out_grid(S%nat3,S%nat3,out_grid%nqtot,input%n_omega))
+    allocate(out_freqs(S%nat3,out_grid%nqtot), self_out_grid(S%nat3,S%nat3,out_grid%nqtot,input%n_omega))
+    call freq_in_grid(S, fc2, out_grid, out_freqs, U_out)
     do iq = 1, out_grid%nqtot
-      call freq_phq_safe(out_grid%xq(:,iq), S, fc2, freqs_out(:,iq), U_out(:,:,iq))
       UT_out(:,:,iq) = conjg(transpose(U_out(:,:,iq)))
     enddo
     self_out_grid = 0.0_dp
@@ -349,9 +350,6 @@ contains
         self_in(:,:,:,iw) = reshape(delta_in, [S%nat3, S%nat3, Nc])
       enddo ! self-energy SC cycle
       ! print*, self_out(4,4,1,iw), self_out(5,5,2,iw)
-      do iq = 1, grid%nqtot
-        dos(iw) = dos(iw) + aimag(sum(den_weights(:,iq))) * wg%qw(iq)
-      enddo
       do iq = 1, out_grid%nqtot
         call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, self_out_grid(:,:,iq,iw))
         self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out_grid(:,:,iq,iw), U_out(:,:,iq)))
@@ -361,24 +359,23 @@ contains
         enddo
       enddo
     enddo ! frequency loop
-    call mpi_bsum(input%n_omega, dos)
     call mpi_bsum(S%nat3, S%nat3, out_grid%nqtot, input%n_omega, self_out_grid)
     call mpi_bsum(S%nat3, out_grid%nqtot, input%n_omega, self_out_diag)
     !
     select case(input%calculation)
      case ('spf-def')
-      call write_spf_ndiag('spf-dca-ndiag.dat', wg%en, self_out_grid, freqs_out, out_grid)
-      call write_spf('spf-dca.dat', wg%en, self_out_diag, freqs_out, out_grid)
+      call write_spf_ndiag('spf-dca-ndiag.dat', wg%en, self_out_grid, out_freqs, out_grid)
+      call write_spf('spf-dca.dat', wg%en, self_out_diag, out_freqs, out_grid)
       call write_self('self-dca.dat', wg%en, self_out_diag)
      case('self')
       call write_self('self-dca.dat', wg%en, self_out_diag)
      case('dos')
-      open(110, file="dos_dca.dat")
-      do iw = 1, input%n_omega
-        if(ionode) WRITE(110, "(3E20.8)") wg%en(iw) * RY_TO_CMM1, &
-          - dos(iw) / pi * product(grid%n) * 2 * wg%en(iw) / RY_TO_CMM1
+      do iw = 1+my_id, input%n_omega, num_procs
+        call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg_out%en(iw)**2, den_weights)
+        dos(iw) = sum(matmul(AIMAG(den_weights), wg_out%qw)) * product(out_grid%n)
       enddo
-      close(110)
+      call mpi_bsum(input%n_omega, dos)
+      call write_dos('dos-dca.dat', wg_out%en, dos)
     end select
     !
   end subroutine

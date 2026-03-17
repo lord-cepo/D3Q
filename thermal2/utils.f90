@@ -12,6 +12,13 @@ module thutils
 !
 contains
   !
+  function contain(str, sub_str)
+    character(len=*), intent(in) :: str, sub_str
+    logical :: contain
+    !
+    contain = index(str, sub_str) > 0
+  end function
+  !
   subroutine freq_in_grid(S, fc2, grid, freqs, Us)
     use merge_degenerate, only: merge_degen
     !

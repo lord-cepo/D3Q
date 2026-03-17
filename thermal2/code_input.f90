@@ -138,6 +138,7 @@ CONTAINS
     !
     ! Input variable, and defaul values:
     CHARACTER(16)  :: calculation = "" ! "spf"
+    character(256) :: mode = ""
     CHARACTER(256) :: file_mat3  = INVALID ! no default
     CHARACTER(256) :: file_mat2  = INVALID ! no default
     CHARACTER(256) :: file_mat2_final  = INVALID ! default = file_mat2
@@ -150,7 +151,7 @@ CONTAINS
     CHARACTER(256) :: outdir = './'              ! where to write output files
     CHARACTER(8)   :: asr2 = "no"                ! apply sum rule to phonon force constants
     CHARACTER(10)   :: delta_approx = 'tetra'     ! 'gauss': dirac_delta = gaussian, 'tetra' dirac_delta = scattering surface with optimized tetrahedra
-    integer :: n_omega = 100
+    integer :: n_omega = 1
     real(dp) :: conc = 0._dp
     INTEGER            :: nconf = -1                 ! number of smearing/temperature couples
     INTEGER            :: nq = -1                    ! number of q-point to read, only for lw
@@ -247,7 +248,7 @@ CONTAINS
       do_grid=.false.       ! is true, construct a regular grid of q-points
     !
     NAMELIST /definput / &
-      calculation, file_mat2, file_mat3, outdir, prefix, asr2, asr3, sc_grid, &
+      calculation, mode, file_mat2, file_mat3, outdir, prefix, asr2, asr3, sc_grid, &
       nk, n_omega, use_symm, delta_approx, conc
     NAMELIST  / lwinput / &
       calculation, outdir, prefix, &
@@ -401,6 +402,7 @@ CONTAINS
     input%file_mat3                    =  file_mat3
     input%file_dzeu                    =  file_dzeu
     input%outdir                       =  TRIMCHECK(outdir)
+    input%mode                         =  mode
     input%asr2                         =  asr2
     input%asr3                         =  asr3
     input%sc_grid                      =  sc_grid
@@ -480,11 +482,15 @@ CONTAINS
         volume_factor, s%Omega
     ENDIF
     !
-    READ(calculation,*,iostat=ios) input%calculation, input%mode
-    IF(ios/=0) THEN
-      input%calculation = calculation
-      input%mode = "full"
-    ENDIF
+    if(code == 'DEF') then
+      READ(calculation,*,iostat=ios) input%calculation
+    else
+      READ(calculation,*,iostat=ios) input%calculation, input%mode
+      IF(ios/=0) THEN
+        input%calculation = calculation
+        input%mode = "full"
+      ENDIF
+    endif
     ioWRITE(*,*) "calculation: ", input%calculation, input%mode
     !
 !     IF(nq<0.and.TRIM(input%calculation)/="grid".and.code=="LW") &
@@ -963,6 +969,7 @@ CONTAINS
       CALL mpi_broadcast(asr2)
       call mpi_broadcast(asr3)
       CALL mpi_broadcast(calculation)
+      call mpi_broadcast(mode)
       CALL mpi_broadcast(casimir_scattering)
       CALL mpi_broadcast(de)
       CALL mpi_broadcast(e0)
