@@ -103,7 +103,7 @@ contains
       call freq_phq_safe(xq(:,iq), S, fc2, f(:,iq), U(:,:,iq))
       UT(:,:,iq) = conjg(transpose(U(:,:,iq)))
     enddo
-    print*, "DCA cluster size:", Nc, "number of configurations to be averaged:", NSAMPLES
+    if(ionode) print*, "DCA cluster size:", Nc, "number of configurations to be averaged:", NSAMPLES
     !
     allocate(self_out_diag(S%nat3,out_grid%nqtot,input%n_omega))
     allocate(UT_out(S%nat3,S%nat3,out_grid%nqtot), U_out(S%nat3,S%nat3,out_grid%nqtot))
@@ -386,7 +386,7 @@ contains
       call write_dos('dos-dca-test.dat', wg_out%en, dos)
       call write_spf_ndiag('spf-dca-ndiag-test.dat', wg%en, self_out_grid(:,:,:1,:), out_freqs(:,:1))
       call write_spf('spf-dca-test.dat', wg%en, self_out_diag(:,:1,:), out_freqs(:,:1))
-      call write_self('self-dca-test.dat', wg%en, self_out_diag(:,:,:1))
+      call write_self('self-dca-test.dat', wg%en, self_out_diag(:,:1,:))
      case default
       if(ionode) print*, "WARNING: unknown DCA calculation type"
     end select

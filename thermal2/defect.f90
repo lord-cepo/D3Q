@@ -321,7 +321,7 @@ contains
         enddo
         ! call merge_degen(S%nat3, self_energy(:,iq,iw), out_freqs(:,iq))
       enddo
-      if(input%calculation == 'dos') then
+      if(input%calculation == 'dos' .or. input%calculation == 'test') then
         call tetra_from_self(S, out_grid, out_freqs, Tq(:,:,:,iw), wg_out%en(iw)**2, w_self)
         dos(iw) = sum(matmul(AIMAG(w_self), wg_out%qw)) * product(out_grid%n)
       endif
@@ -539,7 +539,7 @@ contains
           self_ndiag(ibnd,ibnd,iq,iw) = c * lws_out(ibnd,iq)
         enddo
       enddo ! iq
-      if(input%calculation == 'dos') then
+      if(input%calculation == 'dos' .or. input%calculation == 'test') then
         call tetra_from_self(S, out_grid, out_freqs, self_ndiag(:,:,:,iw), w_out%en(iw)**2, w_self)
         dos(iw) = sum(matmul(AIMAG(w_self), w_out%qw)) * product(out_grid%n)
         dos0(iw) = sum(matmul(AIMAG(w_out%w(:,:,iw)), w_out%qw)) * product(out_grid%n)

@@ -1,8 +1,8 @@
 &definput
   calculation = 'test'
   mode = '1b fb dca'
-  file_mat2 = 'mat2R_test1'
-  file_mat3 = 'mat2D_test1'
+  file_mat2 = 'mat2R_test_sip'
+  file_mat3 = 'mat2D_test_sip'
   outdir = '.'
   asr2 = 'diff'
   asr3 = 'diff'
