@@ -8,7 +8,7 @@ module dca
     e_iqr, index2v, cryst2cart, v2index
   use defutils, only : flatten_RR_cmplx, unflatten_RR_cmplx, &
     quter_cmplx, fftinterp_mat2_cmplx
-  use defect, only : tetra_from_self, write_spf_ndiag, write_spf
+  use defect, only : tetra_from_self, write_spf_ndiag, write_spf, write_self
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
@@ -69,7 +69,6 @@ contains
     complex(dp) :: A(S%nat3,S%nat3)
     !
 
-    call init_random_seed()
     MAXITER = 50
     ABS_TOLERANCE = 1e-13_dp
     REL_TOLERANCE = 1e-3_dp
@@ -252,6 +251,7 @@ contains
         do iq = 1, grid%nqtot
           call fftinterp_mat2_cmplx(grid%xq(:,iq), S, self_R, self_xR, self_fine(:,:,iq))
           self_fine(:,:,iq) = matmul(UT_fine(:,:,iq), matmul(self_fine(:,:,iq), U_fine(:,:,iq)))
+          where(aimag(self_fine(:,:,iq)) > 0._dp) self_fine(:,:,iq) = conjg(self_fine(:,:,iq))
         enddo
         !
         call tetra_from_self(S, grid, wg%f, self_fine, wg%en(iw)**2, &
@@ -280,6 +280,7 @@ contains
         !>
         !
         !> construction of the flatten average Gf_avg over niter configurations
+        !----------------------------------------------------------------------
         Gf_avg = 0.0_dp
         do it = 1, NSAMPLES
           ! > construction of G_conf for a given configuration
@@ -308,6 +309,8 @@ contains
           !
         enddo
         Gf_avg = Gf_avg / real(NSAMPLES, dp)
+        !----------------------------------------------------------------------
+
         ! Gi_conf = 0.0_dp
         ! do iq = 1, Nc
         !   Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
@@ -316,7 +319,7 @@ contains
         ! call invzmat(S%nat3*Nc, Gf_conf)
         ! Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
         ! ! Gf_avg = diag_cmplx(g__ * (1 - n_eq_sites * Nc * conc))
-        ! do idef = 1, 1
+        ! do idef = 1, n_eq_sites
         !   Gi_conf = 0.0_dp
         !   do iq = 1, Nc
         !     Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
@@ -326,20 +329,11 @@ contains
         !   enddo
         !   Gf_conf = flatten_RR_cmplx(Gi_conf)
         !   call invzmat(S%nat3*Nc, Gf_conf)
-        !   Gf_avg = Gf_avg + Gf_conf * (conc * Nc * n_eq_sites)
+        !   Gf_avg = Gf_avg + Gf_conf * (conc * Nc)
         ! enddo
-        ! I_gV__ = id_mat(Nc*S%nat3) - spread(g__, dim=2, ncopies=size(V__,2)) * V__ !* (1-conc * n_eq_sites)
-        ! call invzmat(Nc*S%nat3, I_gV__)
-        ! ! G_avg__ = diag_cmplx((1 - conc * n_eq_sites * Nc) * g__) + &
-        ! !   I_gV__ * spread(g__, dim=1, ncopies=size(V__,1)) * conc * n_eq_sites * Nc
-        ! ! T__ = matmul(V__, I_gV__) * Nc * conc * n_eq_sites
-
-        ! print*, "diff", sum(abs(I_gV__ - G_avg__)) / sum(abs(I_gV__))
-
         !>
         !
         !> self energy is G0_cluster^-1 - <G>^-1
-        ! call invzmat(S%nat3*Nc, Gf_avg)
         Gi_avg = unflatten_RR_cmplx(Gf_avg, Nc, Nc)
         do iq = 1, Nc
           call invzmat(S%nat3, Gi_avg(:,:,iq,iq))
@@ -361,6 +355,7 @@ contains
       do iq = 1, out_grid%nqtot
         call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, self_out_grid(:,:,iq,iw))
         self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out_grid(:,:,iq,iw), U_out(:,:,iq)))
+        where(aimag(self_out_grid(:,:,iq,iw)) > 0._dp) self_out_grid(:,:,iq,iw) = conjg(self_out_grid(:,:,iq,iw))
         do i = 1, S%nat3
           self_out_diag(i, iq, iw) = self_out_grid(i,i,iq,iw)
         enddo
@@ -370,16 +365,21 @@ contains
     call mpi_bsum(S%nat3, S%nat3, out_grid%nqtot, input%n_omega, self_out_grid)
     call mpi_bsum(S%nat3, out_grid%nqtot, input%n_omega, self_out_diag)
     !
-    if (input%calculation == 'spf-def') then
-      call write_spf_ndiag('spf-dca-ndiag.dat', wg%en, self_out, freqs_out, out_grid)
+    select case(input%calculation)
+     case ('spf-def')
+      call write_spf_ndiag('spf-dca-ndiag.dat', wg%en, self_out_grid, freqs_out, out_grid)
       call write_spf('spf-dca.dat', wg%en, self_out_diag, freqs_out, out_grid)
-    endif
-    open(110, file="dos_dca.dat")
-    do iw = 1, input%n_omega
-      if(ionode) WRITE(110, "(3E20.8)") wg%en(iw) * RY_TO_CMM1, &
-        - dos(iw) / pi * product(grid%n) * 2 * wg%en(iw) / RY_TO_CMM1
-    enddo
-    close(110)
+      call write_self('self-dca.dat', wg%en, self_out_diag)
+     case('self')
+      call write_self('self-dca.dat', wg%en, self_out_diag)
+     case('dos')
+      open(110, file="dos_dca.dat")
+      do iw = 1, input%n_omega
+        if(ionode) WRITE(110, "(3E20.8)") wg%en(iw) * RY_TO_CMM1, &
+          - dos(iw) / pi * product(grid%n) * 2 * wg%en(iw) / RY_TO_CMM1
+      enddo
+      close(110)
+    end select
     !
   end subroutine
 !

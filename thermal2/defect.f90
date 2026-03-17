@@ -193,7 +193,7 @@ contains
     call freq_in_grid(S, fc2, grid, freqs, Us)
     call freq_in_grid(S, fc2, out_grid, out_freqs, out_Us)
 
-    c = input%conc !* size(fc2_sc%defects,2)
+    c = input%conc * size(fc2_sc%defects,2)
     do iq = 1, out_grid%nqtot
       out_Us_c(:,:,iq) = conjg(transpose(out_Us(:,:,iq)))
     enddo
@@ -435,7 +435,6 @@ contains
   !
   subroutine main_defect(S, fc2, fc2_sc, grid, sym_grid, out_grid, input)
     use constants, only: BOHR_RADIUS_CM, RY_TO_CMM1
-    use thtetra, only: ek_sort
     type(ph_system_info), intent(in) :: S
     type(forceconst2_sc), intent(inout) :: fc2_sc
     type(forceconst2_grid), intent(in) :: fc2
@@ -443,8 +442,8 @@ contains
     type(code_input_type), intent(in) :: input
     type(tetra_output) :: w_in
     !
-    real(dp), dimension(S%nat3, grid%nqtot) :: freqs, freqs1
-    real(dp), dimension(S%nat3, out_grid%nqtot) :: out_freqs, out_freqs1
+    real(dp), dimension(S%nat3, grid%nqtot) :: freqs
+    real(dp), dimension(S%nat3, out_grid%nqtot) :: out_freqs
     complex(dp), dimension(S%nat3, out_grid%nqtot) :: lws_out
     complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
     complex(dp), dimension(S%nat3, S%nat3, out_grid%nqtot) :: out_Us!, out_us_copy
@@ -454,9 +453,7 @@ contains
     integer :: iq, iw, ibnd, nR, jq, Nin, Nout, jbnd
     complex(dp), allocatable, dimension(:,:,:) :: Vqqs, Vqqs_out, Vms
     character(15) :: filename
-    real(dp) :: concentrations(3), mult
-    real(dp) :: spectral_function(3,input%n_omega)
-    integer :: iconc
+    real(dp) :: spectral_function(input%n_omega), c
     complex(dp) :: self_energy(S%nat3, out_grid%nqtot, input%n_omega)
     CHARACTER (LEN=6), EXTERNAL :: int_to_char
     complex(dp) :: phase_factor(grid%nqtot)
@@ -465,7 +462,7 @@ contains
     !
     !> full born quantities in real space
     !
-    concentrations = [0.0_dp, 1e-4_dp, 1e-3_dp] ! defects per cell
+    c = input%conc * size(fc2_sc%defects,2)
     nR   = product(fc2%nq)
     Nin  = S%nat3*grid%nqtot
     Nout = S%nat3*out_grid%nqtot
@@ -552,24 +549,19 @@ contains
         enddo
         ! call merge_degen(S%nat3, lws_out(:,iq), out_freqs(:,iq))
         !
-        if(trim(input%calculation) == 'spfdef') then
-          do iconc = 1, size(concentrations)
-            mult = concentrations(iconc)
-            call tetra_init_sym_cmplx(out_grid, S, out_freqs**2 + mult*lws_out)
-            spectral_function(iconc, iw) = &
-              sum(matmul(AIMAG(tetra_weights_green_cmplx(omega**2)), out_grid%w))
-          enddo
-        elseif((trim(input%calculation) == 'self' .or. trim(input%calculation) == 'spf-def') ) then
+        if((trim(input%calculation) == 'self' .or. trim(input%calculation) == 'spf-def') ) then
           ! if (out_grid%nqtot /= 1) &
           ! call errore("main_defect", "you can calculate self-energy only in one q-point at once", 1)
-          self_energy(:,iq,iw) = input%conc*lws_out(:,iq)
+          self_energy(:,iq,iw) = c*lws_out(:,iq)
+        endif
+        if(trim(input%calculation) == 'spf-def') then
+          call tetra_init_sym_cmplx(out_grid, S, out_freqs**2 + self_energy(:,:,iw))
+          spectral_function(iw) = &
+            sum(matmul(AIMAG(tetra_weights_green_cmplx(omega**2)), out_grid%w))
         endif
         ! call mpi_bsum(S%nat3, out_grid%nqtot, lws_out)
       enddo ! iw
     enddo ! iq
-    if (trim(input%calculation) == 'spf-def') then
-      call write_spf('spf-2.dat', w_in%en, self_energy, out_freqs, out_grid)
-    endif
     !
     open(10, file="dos.dat", status='replace', action='write')
     do iw = 1, input%n_omega
@@ -586,11 +578,11 @@ contains
       endif
       call write_file(out_freqs, lws_out, filename, out_grid%type)
       call print_message("end of 1B calculation")
-     case("spfdef")
-      open(10, file="spectral_function.dat", status='replace', action='write')
-      do iw = 0, input%n_omega
-        omega = w_in%max_f*iw/input%n_omega
-        write(10, "(100E17.4)") omega, spectral_function(:,iw)
+     case("spf-def")
+      call write_spf('spf-2.dat', w_in%en, self_energy, out_freqs, out_grid)
+      open(10, file="spf-2-tetra.dat")
+      do iw = 1, input%n_omega
+        write(10, "(100E17.4)") omega, spectral_function(iw)
       enddo
      case("self")
       call write_freq("freq.dat", out_grid%xq, out_freqs)
