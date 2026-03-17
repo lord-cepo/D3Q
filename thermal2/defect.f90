@@ -712,7 +712,7 @@ contains
     if(.not. ionode) return
     open(10, file=filename)
     do iw = 2, size(en)
-      do iq = 1, size(self_energy,2)
+      do iq = 1, size(self_energy,3)
         M = - self_energy(:,:,iq,iw)
         do i = 1, size(self_energy,1)
           M(i,i) = M(i,i) + en(iw)**2 - freqs(i,iq)**2

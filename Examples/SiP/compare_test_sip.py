@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
+success = 0
 for file in [file for file in os.listdir() if file.endswith('-test.dat')]:
     data = np.loadtxt(file)
     ref = np.loadtxt('./reference/' + file)
@@ -11,9 +12,8 @@ for file in [file for file in os.listdir() if file.endswith('-test.dat')]:
         i = 9
     if file.startswith('dos'):
         i = 1
-    if np.allclose(data, ref, rtol=1e-5):
-        print(f"{file} matches reference.")
-    else:
+    print(f"{file} read successfully.")
+    if not np.allclose(data, ref, rtol=1e-5):
         print(f"---------------------> {file} does NOT match reference.")
         plt.plot(data[:, 0], data[:, i], label='test')
         plt.plot(ref[:, 0], ref[:, i], label='reference', linestyle='dashed')
@@ -22,3 +22,14 @@ for file in [file for file in os.listdir() if file.endswith('-test.dat')]:
         plt.ylabel('Value')
         plt.legend()
         plt.savefig(file.replace('-test.dat', '.png'), dpi=600)
+    else:
+        success += 1
+
+print()
+print("---------------------------")
+if(success == 12):
+    print("TEST SUCCESS")
+else:
+    print(f"TEST FAILED: {12 - success} files do not match reference.")
+print("---------------------------")
+
