@@ -230,7 +230,6 @@ program defectp
   fc2_sc%fc = DRR - fc_uc2RR(fc2_treated)
   deallocate(DRR)
   !
-  print*, input%calculation, input%mode
   if(contain(input%mode, 'dca')) &
     call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, sym_grid, out_grid)
   CALL fc2_sc%center(sc_grid, S)

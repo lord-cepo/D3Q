@@ -7,7 +7,7 @@ module defect
   use thutils
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
-  ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
+  use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
   use code_input, only: code_input_type
   use functions, only: invzmat
   use constants, only: tpi, pi
@@ -184,7 +184,7 @@ contains
     integer :: j_list(fc2_sc%n_R2)
     integer, allocatable :: g0_iR(:)
     real(dp), parameter :: alpha = 1.0_dp
-    complex(dp) :: den_weights(S%nat3, out_grid%nqtot)
+    complex(dp) :: w_self(S%nat3, out_grid%nqtot)
     real(dp) :: dos(input%n_omega)
 
     !
@@ -320,9 +320,11 @@ contains
           self_energy(ibnd,iq,iw) = Tq(ibnd,ibnd,iq,iw)
         enddo
         ! call merge_degen(S%nat3, self_energy(:,iq,iw), out_freqs(:,iq))
-        call tetra_from_self(S, out_grid, out_freqs, Tq(:,:,:,iw), wg_out%en(iw)**2, den_weights)
-        dos(iw) = sum(matmul(AIMAG(den_weights), wg_out%qw)) * product(out_grid%n)
       enddo
+      if(input%calculation == 'dos') then
+        call tetra_from_self(S, out_grid, out_freqs, Tq(:,:,:,iw), wg_out%en(iw)**2, w_self)
+        dos(iw) = sum(matmul(AIMAG(w_self), wg_out%qw)) * product(out_grid%n)
+      endif
     enddo !iw
     call mpi_bsum(input%n_omega, dos)
     call mpi_bsum( S%nat3, out_grid%nqtot, input%n_omega, self_energy)
@@ -344,8 +346,8 @@ contains
      case('self')
       call write_self("self-fb.dat", wg%en, self_energy)
      case('spf-def')
-      call write_spf_ndiag('spf-fb-ndiag.dat', wg%en, Tq, out_freqs, out_grid)
-      call write_spf('spf-fb.dat', wg%en, self_energy, out_freqs, out_grid)
+      call write_spf_ndiag('spf-fb-ndiag.dat', wg%en, Tq, out_freqs)
+      call write_spf('spf-fb.dat', wg%en, self_energy, out_freqs)
       call write_self("self-fb.dat", wg%en, self_energy)
      case('dos')
       call write_dos("dos-fb.dat", wg%en, dos)
@@ -444,13 +446,13 @@ contains
     complex(dp), allocatable :: interp(:,:)
     complex(dp), allocatable, dimension(:,:,:,:) :: V
     real(dp) :: omega
-    integer :: iq, iqp, iw, ibnd, nR, jq, jbnd
-    complex(dp), allocatable, dimension(:,:,:) :: Vqqs, Vqqs_out, Vms
+    integer :: iq, iw, ibnd, nR, jq, jbnd
+    complex(dp), allocatable, dimension(:,:,:) :: Vqqs_out, Vms
     character(15) :: filename
     real(dp) :: spectral_function(input%n_omega), c
     real(dp), dimension(input%n_omega) :: dos, dos0
     complex(dp) :: self_energy(S%nat3, out_grid%nqtot, input%n_omega)
-    complex(dp) :: den_weights(S%nat3, out_grid%nqtot)
+    complex(dp) :: w_self(S%nat3, out_grid%nqtot)
     complex(dp) :: self_ndiag(S%nat3, S%nat3, out_grid%nqtot, input%n_omega)
     CHARACTER (LEN=6), EXTERNAL :: int_to_char
     complex(dp) :: phase_factor(grid%nqtot)
@@ -461,10 +463,9 @@ contains
     !
     c = input%conc * size(fc2_sc%defects,2)
     nR   = product(fc2%nq)
-    allocate(Vqqs(S%nat3,S%nat3,grid%nqtot))
     allocate(Vms(S%nat3,S%nat3,grid%nqtot))
     allocate(Vqqs_out(S%nat3,S%nat3,out_grid%nqtot))
-    allocate(V(S%nat3,S%nat3,out_grid%nqtot,grid%nqtot))
+    allocate(V(S%nat3,S%nat3,grid%nqtot,out_grid%nqtot))
     !
     !> input files are periodic, it can be changed
     !> SC: grid type   (big_nat3,big_nat3,1)
@@ -487,19 +488,23 @@ contains
       call fc2_sc%r2q(out_grid%xq(:,iq), Vqqs_out(:,:,iq))
     enddo
     !
-    self_energy = 0._dp
-    self_ndiag = 0._dp
-    allocate(interp(S%nat3, sym_grid%nqtot))
     do iq = 1, out_grid%nqtot
       call fc2_sc%r2q(out_grid%xq(:,iq))
       U_dagger = conjg(transpose(out_Us(:,:,iq)))
       do jq = 1, grid%nqtot
-        call fc2_sc%r2q(grid%xq(:,jq), Vqqs(:,:,jq))
-        Vqqs(:,:,jq) = matmul(U_dagger, matmul(Vqqs(:,:,jq), Us(:,:,jq)))
-        ! pixel(jq,iq) = sum(Vqqs(:,:,jq))
+        call fc2_sc%r2q(grid%xq(:,jq), V(:,:,jq,iq))
+        V(:,:,jq,iq) = matmul(U_dagger, matmul(V(:,:,jq,iq), Us(:,:,jq)))
+        ! pixel(jq,iq) = sum(V(:,:,jq))
       enddo
+    enddo
+    !
+    self_energy = 0._dp
+    self_ndiag = 0._dp
+    w_self = 0._dp
+    allocate(interp(S%nat3, sym_grid%nqtot))
+    do iw = 1+my_id, input%n_omega, num_procs
       !
-      do iw = 1+my_id, input%n_omega, num_procs
+      do iq = 1, out_grid%nqtot
         ! if(mod(iw, input%n_omega/10) == 0) &
         ! print"(A,A,I3,A)", input%calculation, " progress ", NINT(100 * REAL(iw,DP) / input%n_omega), "%"
         omega = w_in%en(iw)
@@ -514,23 +519,28 @@ contains
           endif
           do jq = 1, grid%nqtot
             do jbnd = 1, S%nat3
-              lws_out(ibnd,iq) = lws_out(ibnd,iq) + abs(Vqqs(ibnd,jbnd,jq))**2 * interp(jbnd,w_in%e(jq))
+              lws_out(ibnd,iq) = lws_out(ibnd,iq) + abs(V(ibnd,jbnd,jq,iq))**2 * interp(jbnd,w_in%e(jq))
             enddo
           enddo
         enddo
-        call merge_degen(S%nat3, lws_out(:,iq), out_freqs(:,iq))
+        ! call merge_degen(S%nat3, lws_out(:,iq), out_freqs(:,iq))
         !
         self_energy(:,iq,iw) = c*lws_out(:,iq)
         do ibnd = 1, S%nat3
           self_ndiag(ibnd,ibnd,iq,iw) = c * lws_out(ibnd,iq)
         enddo
-      enddo ! iw
-    enddo ! iq
-    ! call mpi_bsum(S%nat3, out_grid%nqtot, lws_out)
+      enddo ! iq
+      if(input%calculation == 'dos') then
+        call tetra_from_self(S, out_grid, out_freqs, self_ndiag(:,:,:,iw), w_out%en(iw)**2, w_self)
+        dos(iw) = sum(matmul(AIMAG(w_self), w_out%qw)) * product(out_grid%n)
+        dos0(iw) = sum(matmul(AIMAG(w_out%w(:,:,iw)), w_out%qw)) * product(out_grid%n)
+      end if
+    enddo ! iw
     call mpi_bsum(S%nat3, out_grid%nqtot, input%n_omega, self_energy)
     call mpi_bsum(S%nat3, S%nat3, out_grid%nqtot, input%n_omega, self_ndiag)
+    call mpi_bsum(input%n_omega, dos)
+    call mpi_bsum(input%n_omega, dos0)
     !
-    print*, "end of self-energy calculation", input%calculation
     select case(trim(input%calculation))
      case("lw")
       if(trim(out_grid%type) == 'path') then
@@ -540,20 +550,13 @@ contains
       endif
       call write_file(out_freqs, lws_out, filename, out_grid%type)
      case("spf-def")
-      call write_spf('spf-1b.dat', w_in%en, self_energy, out_freqs, out_grid)
+      call write_spf('spf-1b.dat', w_in%en, self_energy, freqs)
+      call write_self("self-1b.dat", w_in%en, self_energy)
      case("self")
       call write_self("self-1b.dat", w_in%en, self_energy)
      case("dos")
-      dos = 0._dp
-      dos0 = 0._dp
-      do iw = 1+my_id, input%n_omega, num_procs
-        call tetra_from_self(S, out_grid, out_freqs, self_ndiag(:,:,:,iw), w_out%en(iw)**2, den_weights)
-        dos(iw) = sum(matmul(AIMAG(den_weights), w_out%qw)) * product(out_grid%n)
-        dos0(iw) = sum(AIMAG(matmul(w_out%w(:,:,iw), w_out%qw(:))))
-      enddo
-      call mpi_bsum(input%n_omega, dos)
-      call mpi_bsum(input%n_omega, dos0)
-      !
+      if(trim(out_grid%type) /= 'grid' .and. trim(out_grid%type) /= 'simple' .and. ionode) &
+        print*, "WARNING: DOS calculation in a non-grid q-point set: ", out_grid%type
       call write_dos("dos-1b.dat", w_out%en, dos)
       call write_dos("dos-0.dat", w_out%en, dos0)
     end select
@@ -569,7 +572,7 @@ contains
     !
     integer :: iq_, ibnd_
     !
-    open(10, file=filename_, status='replace', action='write')
+    open(10, file=filename_)
     if (trim(type) == 'path') then
       do iq_ = 1, size(freqs_, 2)
         write(10, "(1000e14.5)") freqs_(:,iq_), -AIMAG(lws_(:,iq_))
@@ -614,8 +617,8 @@ contains
     !
     integer :: iw, iq
     !
-    print*, "size is", size(self_energy,2)
-    open(10, file=filename, status='replace', action='write')
+    if(.not. ionode) return
+    open(10, file=filename)
     do iw = 1, size(self_energy,3)
       do iq = 1, size(self_energy,2)
         write(10, "(E20.8,X,I3,100E20.8)") &
@@ -632,49 +635,68 @@ contains
     !
     integer :: iq
     !
-    open(10, file=filename, status='replace', action='write')
+    if(.not. ionode) return
+    open(10, file=filename)
     do iq = 1, size(xq, 2)
       write(10, "(100E20.8)") xq(:, iq), freqs(:, iq)
     enddo
     close(10)
   end subroutine
   !
-  subroutine write_spf(filename, en, self_energy, freqs, out_grid)
+  subroutine write_spf_weights(filename, en, weights)
+    character(*), intent(in) :: filename
+    real(dp), intent(in) :: en(:)
+    complex(dp), intent(in) :: weights(:,:,:)
+    !
+    integer :: iw, iq
+    !
+    if(.not. ionode) return
+    open(10, file=filename)
+    do iw = 2, size(weights,3)
+      do iq = 1, size(weights,2)
+        write(10, "(1000E20.8)") en(iw)*RY_TO_CMM1, iq, &
+          -2 * en(iw) / pi * AIMAG(weights(:,iq,iw)) / RY_TO_CMM1
+      enddo
+    enddo
+    close(10)
+  end subroutine
+  !
+  subroutine write_spf(filename, en, self_energy, freqs)
     character(*), intent(in) :: filename
     real(dp), intent(in) :: en(:)
     complex(dp), intent(in) :: self_energy(:,:,:)
     real(dp), intent(in) :: freqs(:,:)
-    type(q_grid), intent(in) :: out_grid
     !
     real(dp), dimension(size(self_energy,1)) :: r,s
     integer :: iw, iq
     !
     if(.not. ionode) return
-    open(10, file=filename, status='replace', action='write')
+    open(10, file=filename)
     do iw = 2, size(self_energy,3)
       do iq = 1, size(self_energy,2)
         r = real(self_energy(:,iq,iw), dp)
         s = AIMAG(self_energy(:,iq,iw))
-        write(10, "(1000E20.8)") en(iw)*RY_TO_CMM1, out_grid%xq(:,iq), -2 / pi * en(iw) * s / &
+        write(10, "(1000E20.8)") en(iw)*RY_TO_CMM1, iq, -2 / pi * en(iw) * s / &
           ((en(iw)**2 - freqs(:,iq)**2 - r)**2 + s**2) / RY_TO_CMM1
       enddo
     enddo
     close(10)
   end subroutine
   !
-  subroutine write_spf_ndiag(filename, en, self_energy, freqs, grid)
+  subroutine write_spf_ndiag(filename, en, self_energy, freqs)
     character(*), intent(in) :: filename
     real(dp), intent(in) :: en(:)
     complex(dp), intent(in) :: self_energy(:,:,:,:)
     real(dp), intent(in) :: freqs(:,:)
-    type(q_grid), intent(in) :: grid
     !
     integer :: iq, i, iw
     complex(dp) :: M(size(self_energy,1), size(self_energy,2))
     real(dp) :: spf(size(self_energy,1))
+    !
+    if(.not. ionode) return
     open(10, file=filename)
     do iw = 2, size(en)
-      do iq = 1, grid%nqtot
+      do iq = 1, size(self_energy,2)
         M = - self_energy(:,:,iq,iw)
         do i = 1, size(self_energy,1)
           M(i,i) = M(i,i) + en(iw)**2 - freqs(i,iq)**2
@@ -683,7 +705,7 @@ contains
         do i = 1, size(self_energy,1)
           spf(i) = -2 / pi * en(iw) * aimag(M(i,i))
         enddo
-        write(10, "(1000E20.8)") en(iw)*RY_TO_CMM1, grid%xq(:,iq), spf / RY_TO_CMM1
+        write(10, "(1000E20.8)") en(iw)*RY_TO_CMM1, iq, spf / RY_TO_CMM1
       enddo
     enddo
     close(10)
@@ -695,6 +717,8 @@ contains
     real(dp), intent(in) :: dos(:)
     !
     integer :: iw
+    !
+    if(.not. ionode) return
     open(17, file=filename)
     do iw = 1, size(en)
       if(ionode) WRITE(17, "(2E20.8)") en(iw) * RY_TO_CMM1, &

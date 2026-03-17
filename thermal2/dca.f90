@@ -364,8 +364,8 @@ contains
     !
     select case(input%calculation)
      case ('spf-def')
-      call write_spf_ndiag('spf-dca-ndiag.dat', wg%en, self_out_grid, out_freqs, out_grid)
-      call write_spf('spf-dca.dat', wg%en, self_out_diag, out_freqs, out_grid)
+      call write_spf_ndiag('spf-dca-ndiag.dat', wg%en, self_out_grid, out_freqs)
+      call write_spf('spf-dca.dat', wg%en, self_out_diag, out_freqs)
       call write_self('self-dca.dat', wg%en, self_out_diag)
      case('self')
       call write_self('self-dca.dat', wg%en, self_out_diag)
