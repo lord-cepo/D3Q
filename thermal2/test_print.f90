@@ -187,4 +187,17 @@ contains
 
   end subroutine orthonormalize
   !
+  subroutine test_log(message, test_passed)
+    character(len=*), intent(in) :: message
+    logical, intent(in) :: test_passed
+    !
+    open(10, file='../../test.log', action='write', position='append')
+    if(test_passed) then
+      write(10,*) "Test passed: ", trim(message)
+    else
+      write(10,*) "----------------> Test FAILED: ", trim(message)
+    end if
+    close(10)
+  end subroutine test_log
+  !
 end module

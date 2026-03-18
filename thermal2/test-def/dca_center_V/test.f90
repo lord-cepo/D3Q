@@ -9,6 +9,7 @@ program test
   use test_print, only: allclose
   use q_grids, only: symmetrize_system
   use asr2_module, only: impose_asr2
+  use test_print, only: test_log
   !
   type(ph_system_info) :: S, Sd(2)
   type(forceconst2_grid) :: fc2, fc2d(2)
@@ -77,10 +78,6 @@ program test
     enddo
   enddo
   !
-  if(test_passed) then
-    print*, "Test passed: symmetry rotation of potential in q space"
-  else
-    print*, "Test FAILED: symmetry rotation of potential in q space"
-  end if
+  call test_log("dca_center_V", test_passed)
   !
 end program

@@ -105,6 +105,7 @@ MYNAME       = $(shell basename $(CURDIR))
 FATHERNAME   = $(shell cd ..; basename `pwd -P`)
 THELINKPLACE = $(FATHERNAME)/$(MYNAME)
 
+
 EXEC = $(shell ls PROGRAM_*.f90 | sed -e 's/PROGRAM_//' -e 's/\.f90//')
 # db tk lw qha asr3 sqom sparse q2r r2q qq2rr import_shengbte recenter interpolate2 rmzeu tdph mtx impurity dd prova
 #make_wedge decompose_d2
@@ -122,9 +123,27 @@ $(EXEC) : % : PROGRAM_%.o tldeps d3q-libs thermal2-libs $(MINPACK)
 	$(STRIP)  d3_$@.x
 	- ( cd ../../bin && ln -fs ../D3Q/thermal2/d3_$@.x d3_$@.x )
 
-test-def : def test_dca_center_V/test.o
-	$(LD) $(LDFLAGS) -o test_dca_center_V/test.x test_dca_center_V/test.o libthermal2.a SimTet-2011/libsimtet.a \
+TEST_SRCS = $(wildcard test-def/*/test.f90)
+TEST_OBJS = $(patsubst %.f90,%.o,$(TEST_SRCS))
+TEST_EXECS = $(patsubst %.f90,%.x,$(TEST_SRCS))
+TEST_FOLDERS = $(sort $(dir $(TEST_SRCS)))
+
+test-def/%.x : test-def/%.o
+	$(LD) $(LDFLAGS) -o $@ $< libthermal2.a SimTet-2011/libsimtet.a \
 			$(EXTOBJS) $(QEMODS) $(LIBOBJS) $(QELIBS)
+
+test-def : tldeps d3q-libs thermal2-libs $(MINPACK) $(TEST_EXECS)
+	rm -f test.log
+	@for folder in $(TEST_FOLDERS); do \
+		echo "Running $$folder/test.x"; \
+		( cd $$folder && ./test.x ); \
+	done
+	@echo
+	@echo "All tests completed. Here's test.log:"
+	@echo "-----------------------------"
+	@cat test.log
+	@echo "-----------------------------"
+
 d3q-libs :
 	( cd ../src/ && make libd3q.a)
 
