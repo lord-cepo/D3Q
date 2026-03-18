@@ -122,6 +122,9 @@ $(EXEC) : % : PROGRAM_%.o tldeps d3q-libs thermal2-libs $(MINPACK)
 	$(STRIP)  d3_$@.x
 	- ( cd ../../bin && ln -fs ../D3Q/thermal2/d3_$@.x d3_$@.x )
 
+test-def : def test_dca_center_V/test.o
+	$(LD) $(LDFLAGS) -o test_dca_center_V/test.x test_dca_center_V/test.o libthermal2.a SimTet-2011/libsimtet.a \
+			$(EXTOBJS) $(QEMODS) $(LIBOBJS) $(QELIBS)
 d3q-libs :
 	( cd ../src/ && make libd3q.a)
 
