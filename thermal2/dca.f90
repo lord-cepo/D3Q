@@ -70,9 +70,9 @@ contains
     !
     if(input%calculation == "test") call init_random_seed()
     !
-    MAXITER = 50
-    ABS_TOLERANCE = 1e-13_dp
-    REL_TOLERANCE = 1e-3_dp
+    MAXITER = 70
+    ABS_TOLERANCE = 1e-14_dp
+    REL_TOLERANCE = 1e-4_dp
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
@@ -148,7 +148,7 @@ contains
     ! fc2_sc%defects(:,1) = [1,1,1]
 
     if(ionode) print*, NSAMPLES, "DCA samples to be used"
-    call center_V(xq, S, S_sc, fc2_sc, cluster_mesh, Vqqs)
+    call center_V(xq, S, S_sc, fc2_sc, Vqqs)
     do idef = 1, n_eq_sites
       do iq = 1, Nc
         do jq = 1, Nc
@@ -414,7 +414,7 @@ contains
     !
   end subroutine
 !
-  SUBROUTINE center_V(xq, S, S_sc, fc2_sc, cluster_mesh, Vqqs)
+  SUBROUTINE center_V(xq, S, S_sc, fc2_sc, Vqqs)
     !-----------------------------------------------------------------------
     ! Apply ONE symmetry that maps atom1 -> atom2 to center potential there
     !
@@ -425,7 +425,6 @@ contains
     real(dp), intent(in) :: xq(:,:)
     type(ph_system_info), INTENT(IN) :: S, S_sc
     type(forceconst2_sc), INTENT(IN) :: fc2_sc
-    integer, dimension(3), intent(in) :: cluster_mesh
     complex(dp), allocatable, intent(out) :: Vqqs(:,:,:,:,:)
     !
     real(dp):: trans(3)
@@ -436,9 +435,8 @@ contains
     real(dp), allocatable :: tens4(:,:,:,:,:,:)
     REAL(DP), ALLOCATABLE :: work(:,:,:,:,:,:)
     !
-    call fc_temp%allocate(S, S_sc, fc2_sc%nq)
     !
-    Nq = product(cluster_mesh)
+    Nq = size(xq,2)
     N = product(fc2_sc%nq)
     allocate(Vqqs(S%nat3,S%nat3,Nq,Nq,size(fc2_sc%defects,2)))
     allocate(tens4(3,S%nat,3,S%nat, N, N))
@@ -449,6 +447,7 @@ contains
     call transform_tns4(tens4, -1)
     !
     do site = 1, size(fc2_sc%defects,2)
+      call fc_temp%allocate(S, S_sc, fc2_sc%nq)
       DO isym = 1, nsym
         IF ( irt(isym, fc2_sc%defects(1,1)) == fc2_sc%defects(1,site) ) THEN
           isym_map = isym
@@ -481,20 +480,21 @@ contains
       call transform_tns4(work, 1)
       !
       fc_temp%fc = reshape( work, [3*S%nat, 3*S%nat, N, N] )
+      fc_temp%taudef = S%tau(:,fc2_sc%defects(1,site)) - S%tau(:, fc2_sc%defects(1,1))
       call fc_temp%center(fc2_sc%nq, S)
       !
       ! call translate_xR(fc_temp, trans)
-      do iq = 1, size(xq,2)
+      do iq = 1, Nq
         call fc_temp%r2q(xq(:,iq))
-        do jq = 1, size(xq,2)
+        do jq = 1, Nq
           call fc_temp%r2q(xq(:,jq), Vqqs(:,:,iq,jq,site))
         enddo
       enddo
       ! call translate_xR(fc_temp, -trans)
       !
+      call fc_temp%deallocate()
     enddo
     !
-    call fc_temp%deallocate()
     DEALLOCATE( work )
     !
   contains

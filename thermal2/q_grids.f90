@@ -84,7 +84,27 @@ CONTAINS
     copy%xq0 =  grid%xq0
     copy%xq = grid%xq
   END SUBROUTINE
-
+  !
+  subroutine symmetrize_system(S)
+    USE cell_base,        ONLY : at, bg
+    USE symm_base,        ONLY : set_sym
+    USE ph_system,        ONLY : ph_system_info
+    use ions_base, only : atm
+    !
+    IMPLICIT NONE
+    TYPE(ph_system_info), INTENT(IN) :: S
+    REAL(DP), ALLOCATABLE :: m_loc(:,:), xq(:,:), wq(:)
+    ! at is needed as global variable by set_sym_bl
+    if(sum(abs(at)) > 1e-10_dp) return
+    at = S%at
+    bg = S%bg
+    atm = S%atm
+    ALLOCATE(m_loc(3,S%nat))
+    m_loc = 0._dp
+    !
+    CALL set_sym(S%nat, S%tau, S%ityp, 1, m_loc) ! 1 = nspin I think
+  end subroutine
+  !
   SUBROUTINE q_grid_symmetrize(grid, S)
     USE cell_base,        ONLY : at, bg
     USE symm_base,        ONLY : set_sym, nsym, s_symm_base => s, time_reversal, t_rev
@@ -95,24 +115,16 @@ CONTAINS
     IMPLICIT NONE
     class(q_grid), INTENT(inout) :: grid
     TYPE(ph_system_info), INTENT(IN) :: S
-    REAL(DP), ALLOCATABLE :: m_loc(:,:), xq(:,:), wq(:)
+    REAL(DP), ALLOCATABLE :: xq(:,:), wq(:)
     INTEGER :: nxq
     real(dp) :: xq0(3)
     EXTERNAL kpoint_grid
     ! at is needed as global variable by set_sym_bl
-    at = S%at
-    ! bg is needed as global variable by symmatrix (to resimmetrize)
-    bg = S%bg
-    atm = S%atm
-    IF(.not.allocated(m_loc))  THEN
-      ALLOCATE(m_loc(3,S%nat))
-      m_loc = 0._dp
-    ENDIF
+    call symmetrize_system(S)
     if(grid%scattered) call errore("q_grid_symmetrize", "it's better to symmetrize before scattering", 1)
     !
     IF(.not. allocated(xq)) ALLOCATE(xq(3,grid%nqtot))
     IF(.not. allocated(wq)) ALLOCATE(wq(grid%nqtot))
-    CALL set_sym(S%nat, S%tau, S%ityp, 1, m_loc) ! 1 = nspin I think
     xq0 = grid%xq0
     call cryst_to_cart(1, xq0, S%at, -1)
     xq0 = xq0 * 2 * grid%n

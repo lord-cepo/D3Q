@@ -322,6 +322,8 @@ contains
     if (allocated(fc%yR1)) deallocate(fc%yR1)
     if (allocated(fc%xR1)) deallocate(fc%xR1)
     if (allocated(fc%n_R1)) deallocate(fc%n_R1)
+    if (allocated(fc%defects)) deallocate(fc%defects)
+    if (allocated(fc%mass_ratios)) deallocate(fc%mass_ratios)
     fc%n_R2 = 0
     fc%taudef = 0._dp
     fc%stage = -1
@@ -808,7 +810,7 @@ contains
     do na1 = 1, S%nat
       do na2 = 1, S%nat
         d2 = (S%tau(:,na1) - S%tau(:,na2))
-        d1 = (S%tau(:,na1) + S%tau(:,na2))/2 - 2*fc%taudef
+        d1 = (S%tau(:,na1) + S%tau(:,na2))/2 - fc%taudef
         call inside_ws(diff_grid_cart, d2, nrws, rws, weights2, inds2)
         call inside_ws(sum_grid_cart, d1, nrws, rws, weights1, inds1)
         do iR2_big = 1, size(weights2)
