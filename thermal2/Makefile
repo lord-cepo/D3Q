@@ -117,7 +117,7 @@ all : tldeps d3q-libs thermal2-libs $(EXEC)
 .PHONY : tldeps d3q-libs thermal2-libs
 
 # Note to self: $^ expands to all dependencies, $< expands to the first dependency
-$(EXEC) : % : PROGRAM_%.o tldeps d3q-libs thermal2-libs $(MINPACK)
+$(EXEC) : % : PROGRAM_%.o tldeps d3q-libs thermal2-libs simtet-libs $(MINPACK)
 	$(LD) $(LDFLAGS) -o d3_$@.x $< libthermal2.a SimTet-2011/libsimtet.a \
 	    $(EXTOBJS) $(QEMODS) $(LIBOBJS) $(QELIBS)
 	$(STRIP)  d3_$@.x
