@@ -50,7 +50,7 @@ contains
     !
     complex(dp), allocatable, dimension(:) :: delta_in, delta_out, G__
     complex(dp), allocatable, dimension(:,:) :: den_weights, &
-      den_eig, Gf_conf, Gf_avg, df, dv, overlap, V__, I_gV__, G_avg__
+      den_eig, Gf_conf, Gf_avg, df, dv, overlap, V__, I_gV__, G_avg__, out_den_weights
     complex(dp), allocatable, dimension(:,:,:) :: den_UL, den_UR, &
       G0i_cluster, G_coarse, Gi_coarse, self_fine, self_R, U, UT, &
       UT_fine, U_fine, UT_out, U_out, self_out_diag
@@ -79,7 +79,7 @@ contains
     cluster_mesh = input%sc_grid
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
-    NSAMPLES = max(nint(1e2_dp / Nc / conc / n_eq_sites), 1)
+    NSAMPLES = min(max(nint(1e2_dp / Nc / conc / n_eq_sites), 1), 300)
     NQ = product(grid%n) / Nc
     xq = grid_vec_cart(cluster_mesh, S%bg, divide=.true., natural=.true.)
     shift = xq(:,v2index_n([1,1,1],cluster_mesh)) / 2
@@ -131,6 +131,7 @@ contains
     allocate(phase_mat(Nc, Nc, n_eq_sites, NSAMPLES))
     allocate(kq(NQ, Nc))!, big_iq(grid%nqtot))
     allocate(den_weights(S%nat3, grid%nqtot))
+    allocate(out_den_weights(S%nat3, out_grid%nqtot))
     allocate(den_UL(S%nat3, S%nat3, grid%nqtot))
     allocate(den_UR(S%nat3, S%nat3, grid%nqtot))
     allocate(overlap(S%nat3, grid%nqtot))
@@ -372,15 +373,15 @@ contains
       call write_self('self-dca.dat', wg%en, self_out_diag)
      case('dos')
       do iw = 1+my_id, input%n_omega, num_procs
-        call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg_out%en(iw)**2, den_weights)
-        dos(iw) = sum(matmul(AIMAG(den_weights), wg_out%qw)) * product(out_grid%n)
+        call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg_out%en(iw)**2, out_den_weights)
+        dos(iw) = sum(matmul(AIMAG(out_den_weights), wg_out%qw)) * product(out_grid%n)
       enddo
       call mpi_bsum(input%n_omega, dos)
       call write_dos('dos-dca.dat', wg_out%en, dos)
      case("test")
       do iw = 1+my_id, input%n_omega, num_procs
-        call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg_out%en(iw)**2, den_weights)
-        dos(iw) = sum(matmul(AIMAG(den_weights), wg_out%qw)) * product(out_grid%n)
+        call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg_out%en(iw)**2, out_den_weights)
+        dos(iw) = sum(matmul(AIMAG(out_den_weights), wg_out%qw)) * product(out_grid%n)
       enddo
       call mpi_bsum(input%n_omega, dos)
       call write_dos('dos-dca-test.dat', wg_out%en, dos)
