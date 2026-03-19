@@ -4,7 +4,11 @@ import os
 
 success = 0
 for file in [file for file in os.listdir() if file.endswith('-test.dat')]:
-    data = np.loadtxt(file)
+    try:
+        data = np.loadtxt(file)
+    except:
+        print(f"---------------------> Error reading {file}. Skipping.")
+        continue
     ref = np.loadtxt('./reference/' + file)
     if file.startswith('spf'):
         i = 7
@@ -22,6 +26,7 @@ for file in [file for file in os.listdir() if file.endswith('-test.dat')]:
         plt.ylabel('Value')
         plt.legend()
         plt.savefig(file.replace('-test.dat', '.png'), dpi=600)
+        plt.close()
     else:
         success += 1
 
