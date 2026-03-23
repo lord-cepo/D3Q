@@ -83,6 +83,7 @@ CONTAINS
     copy%iq0 =  grid%iq0
     copy%xq0 =  grid%xq0
     copy%xq = grid%xq
+    copy%symmetrized = grid%symmetrized
   END SUBROUTINE
   !
   subroutine symmetrize_system(S)

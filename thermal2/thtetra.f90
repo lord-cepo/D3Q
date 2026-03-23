@@ -13,7 +13,7 @@ MODULE thtetra
   ! https://journals.aps.org/prb/abstract/10.1103/PhysRevB.89.094515
   ! they multiply ni with Jik in the first article, then they transform (fit) through wlsm matrices
   USE kinds, ONLY: DP
-  USE mpi_thermal, ONLY: my_id, num_procs, mpi_bsum
+  USE mpi_thermal, ONLY: my_id, num_procs, mpi_bsum, ionode
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe
@@ -170,7 +170,7 @@ CONTAINS
     integer, allocatable, optional, intent(out) :: first_point(:)
     !
     type(q_grid) :: full_grid
-    integer :: ik, jk, isym
+    integer :: ik, jk, isym, jkp
     real(dp), dimension(3) :: xkr, deltap, deltam
     REAL(DP), PARAMETER :: eps = 1e-5_dp
     !
@@ -184,12 +184,14 @@ CONTAINS
         full_grid, xq0=grid%xq0, scatter = .false., quiet = .true.)
       nqtot = full_grid%nqtot
       allocate(equiv_(nqtot))
-      CALL cryst_to_cart( grid%nqtot, grid%xq, S%at, -1 )
+      equiv_ = 0
+      CALL cryst_to_cart( grid%nq, grid%xq, S%at, -1 )
       call cryst_to_cart( nqtot, full_grid%xq, S%at, -1 )
 
       DO ik = 1, nqtot
         ! if (ik == 11) print"(3F8.2)", full_grid%xq(:,ik)
-        DO jk = 1, grid%nqtot
+        DO jk = 1, grid%nq
+          jkp = jk + grid%iq0
           DO isym = 1, nsym
             !
             xkr(1:3) = MATMUL(REAL(symms(:,:,isym), dp), grid%xq(:,jk))
@@ -204,9 +206,9 @@ CONTAINS
             IF ( norm2(deltap) < eps .OR. ( time_reversal .AND. &
               norm2(deltam) < eps ) ) THEN
               !  equivalent irreducible k-point found
-              equiv_(ik) = jk
+              equiv_(ik) = jkp
               if (present(first_point)) then
-                if (first_point(jk) == 0) first_point(jk) = ik
+                if (first_point(jkp) == 0) first_point(jkp) = ik
               endif
               GOTO 15
             ENDIF
@@ -214,36 +216,41 @@ CONTAINS
           ENDDO
         ENDDO
         !  equivalent irreducible k-point found - something wrong
-        CALL errore( 'opt_tetra_init', 'cannot locate  k point', ik )
+        if(.not. grid%scattered) CALL errore( 'opt_tetra_init', 'cannot locate  k point', ik )
         !
 15      CONTINUE
         !
       ENDDO
       !
-      DO jk = 1, grid%nqtot
+      DO jk = 1, grid%nq
+        jkp = jk + grid%iq0
         DO ik = 1, product(grid%n)
-          IF (equiv_(ik) == jk) GOTO 20
+          IF (equiv_(ik) == jkp) GOTO 20
         ENDDO
         !  this failure of the algorithm may indicate that the displaced grid
         !  (with k1,k2,k3.ne.0) does not have the full symmetry of the lattice
         print"(3F8.2)", grid%xq(:,jk)
         print*, grid%nqtot
-        CALL errore( 'opt_tetra_init', 'cannot remap grid on k-point list', jk )
+        CALL errore( 'opt_tetra_init', 'cannot remap grid on k-point list', jkp )
         !
 20      CONTINUE
       ENDDO
       !
       !  bring irreducible k-points back to cartesian axis
       !
-      CALL cryst_to_cart( grid%nqtot, grid%xq, S%bg, 1 )
+      CALL cryst_to_cart( grid%nq, grid%xq, S%bg, 1 )
     else
       nqtot = grid%nqtot
       allocate(equiv_(grid%nqtot))
-      do jk = 1, grid%nqtot
-        equiv_(jk) = jk
-        if (present(first_point)) first_point(jk) = jk
+      equiv_ = 0
+      do jk = 1, grid%nq
+        jkp = jk + grid%iq0
+        equiv_(jkp) = jkp
+        if (present(first_point)) first_point(jkp) = jkp
       enddo
     endif
+    if(grid%scattered) call mpi_bsum(nqtot, equiv_)
+    if(grid%scattered) call mpi_bsum(grid%nqtot, first_point)
   end subroutine
   !--------------------------------------------------------------------------
   SUBROUTINE tetra_init_sym(grid, S, ek, opt, wg)

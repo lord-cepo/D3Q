@@ -381,7 +381,7 @@ contains
     ef_ = ef * TETRA_MULTIPLIER
     wg_sym = 0._dp
     !
-    DO nt = 1+MY_ID_TETRA, nvalid, NUM_PROCS_TETRA
+    DO nt = 1, nvalid
       !
       DO ibnd = 1, nbnd
         !

@@ -3,7 +3,7 @@ program defectp
   USE fc3_interpolate,  ONLY : forceconst3
   use q_grids, only: setup_grid, revert_grid
   use code_input, only: READ_INPUT
-  use mpi_thermal, only: start_mpi, stop_mpi
+  use mpi_thermal, only: start_mpi, stop_mpi, num_procs
   use input_fc, only: read_fc2, aux_system, div_mass_fc2, write_fc2, multiply_mass_fc2
   use asr2_module, only: impose_asr2
   use thutils, only: v2index, cryst2cart, index2v_cart
@@ -22,7 +22,7 @@ program defectp
   type(ph_system_info) :: S, Sd, S_, S_sc
   type(forceconst2_grid) :: fc2d, fc2d_centered, fc2_centered, fc2_periodic, fc2_treated, fc2_treated_centered
   type(forceconst2_sc) :: fc2_sc
-  type(q_grid) :: in_grid, out_grid, sym_grid
+  type(q_grid) :: in_grid, out_grid, sym_grid, out_grid_sym_scat, in_grid_sym_scat
   type(code_input_type) :: input, input_
   class(forceconst3), pointer :: fc3, fc3_
   integer :: n_add, new_it, isc
@@ -116,6 +116,12 @@ program defectp
   !
   call q_grid_copy(in_grid, sym_grid)
   call sym_grid%symmetrize(S)
+  call q_grid_copy(sym_grid, in_grid_sym_scat)
+  if(num_procs > 1) call in_grid_sym_scat%scatter()
+  call q_grid_copy(out_grid, out_grid_sym_scat)
+  if(.not. out_grid_sym_scat%symmetrized) &
+    call out_grid_sym_scat%symmetrize(S)
+  if(num_procs > 1) call out_grid_sym_scat%scatter()
   ! call q_grid_copy(sym_grid, out_grid)
   CALL fc2_sc%allocate(S, Sd, sc_grid)
   !
@@ -231,7 +237,7 @@ program defectp
   deallocate(DRR)
   !
   if(contain(input%mode, 'dca')) &
-    call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, sym_grid, out_grid)
+    call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, in_grid_sym_scat, sym_grid, out_grid)
   CALL fc2_sc%center(sc_grid, S)
   if(contain(input%mode, '1b')) &
     call main_defect(S, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid, input)
