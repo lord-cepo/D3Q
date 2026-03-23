@@ -859,9 +859,10 @@ CONTAINS
     !
     real(dp) :: DAV, D_small_prev, D_large_prev, hw
     !
-    hw = hwe! + 1e-2_dp
+    hw = hwe
+    if(any(D + hwe == 0._dp)) hw = hw + 1e-10_dp
     DAV = (D(2) + D(3))/2.0_dp
-    if (abs((D(2) - D(3))/(DAV + hw)) < tet_cutoff) then
+    if ((D(3) - D(2))/(DAV + hw) < tet_cutoff) then
       D_small_prev = D(2); D_large_prev = D(3)
       D(3) = DAV + 0.5_dp*abs(DAV + hw)*tet_cutoff
       D(2) = DAV - 0.5_dp*abs(DAV + hw)*tet_cutoff
@@ -869,12 +870,12 @@ CONTAINS
       if (D(3) > D(4)) D(4) = D(4) + (D(3) - D_large_prev)
     endif
     DAV = (D(1) + D(2))/2.0_dp
-    if (abs((D(1) - D(2))/(DAV + hw)) < tet_cutoff) then
+    if ((D(2) - D(1))/(DAV + hw) < tet_cutoff) then
       D(1) = DAV - 0.5_dp*abs(DAV + hw)*tet_cutoff
     endif
     DAV = (D(3) + D(4))/2.0_dp
-    if (abs((D(3) - D(4))/(DAV + hw)) < tet_cutoff) then
-      D(4) = DAV - 0.5_dp*abs(DAV + hw)*tet_cutoff
+    if ((D(4) - D(3))/(DAV + hw) < tet_cutoff) then
+      D(4) = DAV + 0.5_dp*abs(DAV + hw)*tet_cutoff
     endif
   end subroutine
   !
@@ -960,11 +961,11 @@ CONTAINS
     ENDDO
     !
     !
-    if((near(1,2) .and. near(3,4)) .or. &
-      (near(1,2) .and. near(2,3)) .or. &
-      (near(2,3) .and. near(3,4))) then
-      call rm_degen_vertices(ef, e)
-    endif
+    ! if((near(1,2) .and. near(3,4)) .or. &
+    !   (near(1,2) .and. near(2,3)) .or. &
+    !   (near(2,3) .and. near(3,4))) then
+    !   call rm_degen_vertices(ef, e)
+    ! endif
     !
     IF( e(1) <= ef .AND. ef <= e(2) ) THEN
       !
@@ -1048,9 +1049,9 @@ CONTAINS
       DO ibnd = 1, nbnd
         !
         e = ek_sort(:,ibnd,nt)
+        CALL rm_degen_vertices(ef_mult, e)
         !
         wI0 = delta_vertices(ef_mult, e)
-        CALL rm_degen_vertices(ef_mult, e)
         D = -e
         wR0 = real_vertices(ef_mult, D)
         !

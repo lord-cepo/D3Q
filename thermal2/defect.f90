@@ -239,7 +239,8 @@ contains
 
     !
     call set_wg(S, fc2, sym_grid, input%n_omega, wg)
-    call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
+    if(input%calculation == 'dos' .or. input%calculation == 'test') &
+      call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
     call freq_in_grid(S, fc2, grid, freqs, Us)
     call freq_in_grid(S, fc2, out_grid, out_freqs, out_Us)
 
