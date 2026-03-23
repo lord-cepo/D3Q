@@ -5,10 +5,11 @@ module dca
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
     fc2_recenter, fftinterp_mat2, mat2_diag
   use thutils, only: v2index_n, index2v_n, bz2simple, grid_vec_cart, &
-    e_iqr, index2v, cryst2cart, v2index, freq_in_grid
+    e_iqr, index2v, cryst2cart, v2index, freq_in_grid, diag_cmplx
   use defutils, only : flatten_RR_cmplx, unflatten_RR_cmplx, &
     quter_cmplx, fftinterp_mat2_cmplx
-  use defect, only : tetra_from_self, write_spf_ndiag, write_spf, write_self, write_dos
+  use defect, only : tetra_from_self, write_spf_ndiag, write_spf, &
+    write_self, write_dos, tetra_from_self_diag
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
@@ -50,12 +51,13 @@ contains
     !
     complex(dp), allocatable, dimension(:) :: delta_in, delta_out, G__
     complex(dp), allocatable, dimension(:,:) :: den_weights, &
-      den_eig, Gf_conf, Gf_avg, df, dv, overlap, V__, I_gV__, G_avg__, out_den_weights
+      den_eig, Gf_conf, Gf_avg, df, dv, overlap, V__, I_gV__, G_avg__, &
+      out_den_weights, G0i_cluster, Gi_coarse, self_diag, self_in_diag
     complex(dp), allocatable, dimension(:,:,:) :: den_UL, den_UR, &
-      G0i_cluster, G_coarse, Gi_coarse, self_fine, self_R, U, UT, &
-      UT_fine, U_fine, UT_out, U_out, self_out_diag
+      self_fine, self_R, U, UT, UT_fine, U_fine, UT_out, U_out, self_out_diag, &
+      self_in, self_out
     complex(dp), allocatable, dimension(:,:,:,:) :: G_avg, Gi_conf, &
-      Gi_avg, self_in, self_out, phase_mat, V, self_out_grid
+      Gi_avg, phase_mat, V, self_out_grid
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, &
       self_uf
     real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f, out_freqs
@@ -79,7 +81,7 @@ contains
     cluster_mesh = input%sc_grid
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
-    NSAMPLES = NINT(real(min(max(nint(1e3_dp / Nc / conc / n_eq_sites), 1), 300),dp)/&
+    NSAMPLES = NINT(real(min(max(nint(1e3_dp / Nc / conc / n_eq_sites), 1), 100),dp)/&
       real(num_procs, dp)) * num_procs
     NQ = product(grid_scat%n) / Nc
     xq = grid_vec_cart(cluster_mesh, S%bg, divide=.true., natural=.true.)
@@ -119,18 +121,19 @@ contains
     self_out_grid = 0.0_dp
     self_out_diag = 0.0_dp
     !
+    allocate(self_diag(S%nat3, grid_scat%nqtot))
     allocate(G_avg(S%nat3, S%nat3, Nc, Nc))
     allocate(Gi_conf(S%nat3, S%nat3, Nc, Nc))
     allocate(Gf_conf(S%nat3*Nc, S%nat3*Nc))
     allocate(Gf_avg(S%nat3*Nc, S%nat3*Nc))
     allocate(Gi_avg(S%nat3, S%nat3, Nc, Nc))
-    allocate(G_coarse(S%nat3, S%nat3, Nc))
-    allocate(Gi_coarse(S%nat3, S%nat3, Nc))
-    allocate(G0i_cluster(S%nat3, S%nat3, Nc))
-    allocate(self_in(S%nat3, S%nat3, Nc, input%n_omega))
+    allocate(Gi_coarse(S%nat3, Nc))
+    allocate(G0i_cluster(S%nat3, Nc))
+    allocate(self_in(S%nat3, S%nat3, Nc))
+    allocate(self_in_diag(S%nat3, Nc))
     allocate(self_uf(3, 3, S%nat, S%nat, Nc))
     allocate(self_fine(S%nat3, S%nat3, grid_scat%nqtot))
-    allocate(self_out(S%nat3, S%nat3, Nc, input%n_omega))
+    allocate(self_out(S%nat3, S%nat3, Nc))
     allocate(V(S%nat3, S%nat3, Nc, Nc))
     allocate(phase_mat(Nc, Nc, n_eq_sites, NSAMPLES))
     allocate(kq(NQ, Nc))!, big_iq(grid_scat%nqtot))
@@ -225,21 +228,13 @@ contains
       !   ! print*, sum(abs(wg%en(iw)**2 - f(:,iq)**2 - 1/g__(S%nat3*(iq-1)+1:S%nat3*iq))) / sum(abs(wg%en(iw)**2 - f(:,iq)**2))
       ! enddo
       do sc_iter = 1, MAXITER
-        conv = .true.
-        max_diff = 0._dp
-        do iq = 1, Nc
-          do i = 1, S%nat3
-            max_diff = max(max_diff, ABS(self_out(i,i,iq,iw)-self_in(i,i,iq,iw)))
-            if( ABS(self_out(i,i,iq,iw)-self_in(i,i,iq,iw)) > REL_TOLERANCE * &
-              abs(self_in(i,i,iq,iw)) + ABS_TOLERANCE) conv = .false.
-          enddo
-        enddo
-        ! print*, iw, sc_iter, max_diff
-        if (conv) exit
         !> construction of G0_cluster from self-energy
         !
         do iq = 1, Nc
-          A = matmul(U(:,:,iq), matmul(self_in(:,:,iq,iw), UT(:,:,iq)))
+          A = matmul(U(:,:,iq), matmul(self_in(:,:,iq), UT(:,:,iq)))
+          do i = 1, S%nat3
+            self_in_diag(i,iq) = A(i,i)
+          enddo
           self_uf(:,:,:,:,iq) = unflatten_RR_cmplx(A, S%nat, S%nat)
         enddo
         CALL quter_cmplx(input%sc_grid(1), input%sc_grid(2), input%sc_grid(3), &
@@ -256,17 +251,20 @@ contains
         !   enddo
         ! enddo
         ! close(10)
-        self_fine = 0.0_dp
+        self_diag = 0.0_dp
         do iq = 1, grid_scat%nq
           iqp = iq + grid_scat%iq0
-          call fftinterp_mat2_cmplx(grid_scat%xq(:,iq), S, self_R, self_xR, self_fine(:,:,iqp))
-          self_fine(:,:,iqp) = matmul(UT_fine(:,:,iqp), matmul(self_fine(:,:,iqp), U_fine(:,:,iqp)))
+          call fftinterp_mat2_cmplx(grid_scat%xq(:,iq), S, self_R, self_xR, A)
+          A = matmul(UT_fine(:,:,iqp), matmul(A, U_fine(:,:,iqp)))
+          do i = 1, S%nat3
+            self_diag(i,iqp) = A(i,i)
+          enddo
           ! where(aimag(self_fine(:,:,iqp)) > 0._dp) self_fine(:,:,iqp) = conjg(self_fine(:,:,iqp))
         enddo
-        call mpi_bsum(S%nat3, S%nat3, grid_scat%nqtot, self_fine)
+        call mpi_bsum(S%nat3, grid_scat%nqtot, self_diag)
         !
-        call tetra_from_self(S, grid_scat, wg%f, self_fine, wg%en(iw)**2, &
-          den_weights, den_UL, den_UR, overlap, mpi=.true.)
+        call tetra_from_self_diag(S, grid_scat, wg%f**2+self_diag, wg%en(iw)**2, &
+          den_weights, mpi=.true.)
         !}
         do iqp = 1, grid_scat%nqtot
           call merge_degen(S%nat3, den_weights(:,iqp), wg%f(:,iqp))
@@ -276,19 +274,12 @@ contains
         do iq = 1, Nc
           do jq = 1, NQ
             kkq = wg%e(kq(jq,iq))
-            do k = 1, S%nat3
-              do j = 1, S%nat3
-                do i = 1, S%nat3
-                  Gi_coarse(i,j,iq) = Gi_coarse(i,j,iq) + &
-                    den_UR(i,k,kkq) * conjg(den_UL(j,k,kkq)) * &
-                    den_weights(k,kkq) / overlap(k,kkq) * Nc
-                enddo
-              enddo
-            enddo
+            Gi_coarse(:,iq) = Gi_coarse(:,iq) + 1._dp / (den_weights(:,kkq) * Nc)
           enddo
-          call invzmat(S%nat3, Gi_coarse(:,:,iq))
-          G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_in(:,:,iq,iw)
+          ! call invzmat(S%nat3, Gi_coarse(:,:,iq))
+          G0i_cluster(:,iq) = Gi_coarse(:,iq) + self_in_diag(:,iq)
         enddo
+        if(ionode) print*, sum(Gi_coarse(:,iq)) / Nc
         !>
         !
         !> construction of the flatten average Gf_avg over niter configurations
@@ -307,7 +298,9 @@ contains
           enddo
           !
           do jq = 1, Nc
-            Gi_conf(:,:,jq,jq) = G0i_cluster(:,:,jq)
+            do i = 1, S%nat3
+              Gi_conf(i,i,jq,jq) = G0i_cluster(i,jq)
+            enddo
             do iq = 1, Nc
               Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - V(:,:,iq,jq)
             enddo
@@ -350,18 +343,29 @@ contains
         Gi_avg = unflatten_RR_cmplx(Gf_avg, Nc, Nc)
         do iq = 1, Nc
           call invzmat(S%nat3, Gi_avg(:,:,iq,iq))
-          self_out(:,:,iq,iw) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
+          self_out(:,:,iq) = diag_cmplx(G0i_cluster(:,iq)) - Gi_avg(:,:,iq,iq)
           !diag(wg%en(iw)**2 - f(:,iq)**2) - Gi_avg(:,:,iq,iq)
         enddo
         !>
         !
-        delta_out = reshape(self_out(:,:,:,iw), [S%nat3**2*Nc])
+        delta_out = reshape(self_out, [S%nat3**2*Nc])
         !
         call mix_broyden_full(S%nat3**2*Nc, delta_out, delta_in, &
           ALPHA_MIX, sc_iter, MEMORY, df, dv)
-        self_in(:,:,:,iw) = reshape(delta_in, [S%nat3, S%nat3, Nc])
+        self_in = reshape(delta_in, [S%nat3, S%nat3, Nc])
+        !
+        conv = .true.
+        max_diff = 0._dp
+        do iq = 1, Nc
+          do i = 1, S%nat3
+            max_diff = max(max_diff, ABS(self_out(i,i,iq)-self_in(i,i,iq)))
+            if( ABS(self_out(i,i,iq)-self_in(i,i,iq)) > REL_TOLERANCE * &
+              abs(self_in(i,i,iq)) + ABS_TOLERANCE) conv = .false.
+          enddo
+        enddo
+        if (conv) exit
       enddo ! self-energy SC cycle
-      N_ITER_TOT = N_ITER_TOT + sc_iter
+      N_ITER_TOT = N_ITER_TOT + sc_iter - 1
       if(conv) then
         if(ionode) print"(A,I4,A,I4,A)", "frequency ", iw, " converged in ", sc_iter-1, " iterations."
       else

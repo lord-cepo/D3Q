@@ -110,13 +110,8 @@ contains
       mpi_ = .false.
     endif
     !
-    den_eig = 0._dp
-    !
-    do iq = 1, grid%nq
-      iqp = iq + grid%iq0
-      den_eig(:,iqp) = w2_plus_sigma(:,iqp)
-    enddo
-    if (grid%scattered) call mpi_bsum(S%nat3, grid%nqtot, den_eig)
+    den_eig = w2_plus_sigma
+    where(aimag(den_eig)> 0._dp) den_eig = conjg(den_eig)
     !
     !{ weights of diagonal tetra
     call tetra_init_sym_cmplx(grid, S, den_eig, mpi=mpi_)
