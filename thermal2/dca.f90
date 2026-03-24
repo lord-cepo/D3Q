@@ -237,7 +237,7 @@ contains
           enddo
           self_uf(:,:,:,:,iq) = unflatten_RR_cmplx(A, S%nat, S%nat)
         enddo
-        CALL quter_cmplx(input%sc_grid(1), input%sc_grid(2), input%sc_grid(3), &
+        CALL quter_cmplx(cluster_mesh(1), cluster_mesh(2), cluster_mesh(3), &
           S%nat, S%tau, S%at, S%bg, self_uf, xq, self_R, self_xR, 2)
         !
         ! write(filename, "(A,I2.2,A)") "self_R_", iw, ".dat"
@@ -274,12 +274,12 @@ contains
         do iq = 1, Nc
           do jq = 1, NQ
             kkq = wg%e(kq(jq,iq))
-            Gi_coarse(:,iq) = Gi_coarse(:,iq) + 1._dp / (den_weights(:,kkq) * Nc)
+            Gi_coarse(:,iq) = Gi_coarse(:,iq) + den_weights(:,kkq)
           enddo
           ! call invzmat(S%nat3, Gi_coarse(:,:,iq))
+          Gi_coarse(:,iq) = 1._dp / Gi_coarse(:,iq) / Nc
           G0i_cluster(:,iq) = Gi_coarse(:,iq) + self_in_diag(:,iq)
         enddo
-        if(ionode) print*, sum(Gi_coarse(:,iq)) / Nc
         !>
         !
         !> construction of the flatten average Gf_avg over niter configurations
