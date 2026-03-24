@@ -26,7 +26,7 @@ module dca
   use constants, only : RY_TO_CMM1
   use symm_base, only : symm_matrices => s
   use EPW_utilities, only : mix_broyden_full
-  use mpi_thermal, only : mpi_bsum, ionode, num_procs, my_id
+  use mpi_thermal, only : mpi_bsum, ionode, num_procs, my_id, mpi_broadcast
 contains
   subroutine init_random_seed()
     implicit none
@@ -67,8 +67,9 @@ contains
       cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT
     real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff
     real(dp) :: dos(input%n_omega), shift(3)
-    logical :: conv
+    logical :: conv, low_concentration
     complex(dp) :: A(S%nat3,S%nat3)
+    integer, allocatable :: N_sites(:,:)
     !
     if(input%calculation == "test") call init_random_seed()
     !
@@ -172,9 +173,17 @@ contains
     ntot = 0
     phase_mat = 0.0_dp
     !
-    do it = 1, NSAMPLES
+    allocate(N_sites(n_eq_sites, NSAMPLES))
+    do idef = 1, n_eq_sites
+      call assign_defect_counts(NSAMPLES, Nc, conc, N_sites(idef,:))
+    enddo
+    call mpi_broadcast(n_eq_sites, NSAMPLES, N_sites)
+    !
+    do it = 1+my_id, NSAMPLES, num_procs
       do idef = 1, n_eq_sites
-        call sample_binomial(Nc, conc, pos, Npos)
+        ! call sample_binomial(Nc, conc, pos, Npos)
+        Npos = N_sites(idef, it)
+        call sample_canonical(Nc, Npos, pos)
         ntot = ntot + Npos
         do ipos = 1, Npos
           do k = 1, Nc
@@ -189,7 +198,16 @@ contains
         enddo
       enddo
     enddo
-    if(ionode) print"(A,E15.4)", "simulated concentration:", real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
+    call mpi_bsum(Nc, Nc, n_eq_sites, NSAMPLES, phase_mat)
+    call mpi_bsum(ntot)
+    simulated_conc = real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
+    if(ionode) print"(A,E15.4)", "simulated concentration:", simulated_conc
+    low_concentration = .false.
+    if(all(N_sites < 2)) then
+      low_concentration = .true.
+      if(ionode) print*, "Using low concentration approximation (at most 1 defect per configuration)"
+      simulated_conc = conc
+    endif
     !
     !
     !> construction of G0_coarse and G0i_coarse, which are averaged over the small
@@ -215,12 +233,12 @@ contains
     dos = 0._dp
     N_ITER_TOT = 0
     delta_in = 0._dp
+    df = 0._dp
+    dv = 0._dp
     !
     if(ionode) print*, "Starting DCA self-energy calculation..."
     if(ionode) print*, ""
     do iw = 1, input%n_omega
-      df = 0._dp
-      dv = 0._dp
       ! do iq = 1, Nc
       !   do i = 1, S%nat3
       !     g__(i+S%nat3*(iq-1)) = wg%w(i, wg%e(kq(1,iq)), iw) * Nc
@@ -284,59 +302,63 @@ contains
         !
         !> construction of the flatten average Gf_avg over niter configurations
         !----------------------------------------------------------------------
-        Gf_avg = 0.0_dp
-        do it = 1+my_id, NSAMPLES, num_procs
-          ! > construction of G_conf for a given configuration
-          Gi_conf = 0.0_dp
-          V = 0.0_dp
-          do idef = 1, n_eq_sites
-            do jq = 1, Nc
-              do iq = 1, Nc
-                V(:,:,iq,jq) = Vqqs(:,:,iq,jq,idef) * phase_mat(iq,jq,idef,it)
-              enddo
-            enddo
-          enddo
-          !
+        if(low_concentration) then
+          Gf_conf = 0.0_dp
           do jq = 1, Nc
             do i = 1, S%nat3
-              Gi_conf(i,i,jq,jq) = G0i_cluster(i,jq)
-            enddo
-            do iq = 1, Nc
-              Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - V(:,:,iq,jq)
+              Gf_conf(i+(jq-1)*S%nat3,i+(jq-1)*S%nat3) = 1 / G0i_cluster(i,jq)
             enddo
           enddo
-          !>
+          Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
           !
-          Gf_conf = flatten_RR_cmplx(Gi_conf)
-          call invzmat(S%nat3*Nc, Gf_conf)
-          !
-          Gf_avg = Gf_avg + Gf_conf
-          !
-        enddo
-        call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf_avg)
-        Gf_avg = Gf_avg / real(NSAMPLES, dp)
+          do idef = 1, n_eq_sites
+            Gi_conf = 0.0_dp
+            do jq = 1, Nc
+              do i = 1, S%nat3
+                Gi_conf(i,i,jq,jq) = G0i_cluster(i,jq)
+              enddo
+              do iq = 1, Nc
+                Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef)
+              enddo
+            enddo
+            Gf_conf = flatten_RR_cmplx(Gi_conf)
+            call invzmat(S%nat3*Nc, Gf_conf)
+            Gf_avg = Gf_avg + Gf_conf * (conc * Nc)
+          enddo
+        else
+          Gf_avg = 0.0_dp
+          do it = 1+my_id, NSAMPLES, num_procs
+            ! > construction of G_conf for a given configuration
+            Gi_conf = 0.0_dp
+            V = 0.0_dp
+            do idef = 1, n_eq_sites
+              do jq = 1, Nc
+                do iq = 1, Nc
+                  V(:,:,iq,jq) = Vqqs(:,:,iq,jq,idef) * phase_mat(iq,jq,idef,it)
+                enddo
+              enddo
+            enddo
+            !
+            do jq = 1, Nc
+              do i = 1, S%nat3
+                Gi_conf(i,i,jq,jq) = G0i_cluster(i,jq)
+              enddo
+              do iq = 1, Nc
+                Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - V(:,:,iq,jq)
+              enddo
+            enddo
+            !>
+            !
+            Gf_conf = flatten_RR_cmplx(Gi_conf)
+            call invzmat(S%nat3*Nc, Gf_conf)
+            !
+            Gf_avg = Gf_avg + Gf_conf
+            !
+          enddo
+          call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf_avg)
+          Gf_avg = Gf_avg / real(NSAMPLES, dp)
+        endif
         !----------------------------------------------------------------------
-
-        ! Gi_conf = 0.0_dp
-        ! do iq = 1, Nc
-        !   Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
-        ! enddo
-        ! Gf_conf = flatten_RR_cmplx(Gi_conf)
-        ! call invzmat(S%nat3*Nc, Gf_conf)
-        ! Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
-        ! ! Gf_avg = diag_cmplx(g__ * (1 - n_eq_sites * Nc * conc))
-        ! do idef = 1, 1
-        !   Gi_conf = 0.0_dp
-        !   do iq = 1, Nc
-        !     Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
-        !     do jq = 1, Nc
-        !       Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef)
-        !     enddo
-        !   enddo
-        !   Gf_conf = flatten_RR_cmplx(Gi_conf)
-        !   call invzmat(S%nat3*Nc, Gf_conf)
-        !   Gf_avg = Gf_avg + Gf_conf * (conc * Nc * n_eq_sites)
-        ! enddo
         !>
         !
         !> self energy is G0_cluster^-1 - <G>^-1
@@ -375,7 +397,8 @@ contains
       ! print*, self_out(4,4,1,iw), self_out(5,5,2,iw)
       do iq = 1, out_grid%nqtot
         call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, self_out_grid(:,:,iq,iw))
-        self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out_grid(:,:,iq,iw), U_out(:,:,iq)))
+        self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out_grid(:,:,iq,iw), U_out(:,:,iq))) * &
+          conc / simulated_conc
         ! where(aimag(self_out_grid(:,:,iq,iw)) > 0._dp) self_out_grid(:,:,iq,iw) = conjg(self_out_grid(:,:,iq,iw))
         do i = 1, S%nat3
           self_out_diag(i, iq, iw) = self_out_grid(i,i,iq,iw)
@@ -415,7 +438,76 @@ contains
     end select
     !
   end subroutine
+  !
+  subroutine assign_defect_counts(NSAMPLES, Nc, conc, N_sites)
+    implicit none
+    integer, intent(in) :: NSAMPLES, Nc
+    real(dp), intent(in) :: conc
+    integer, intent(out) :: N_sites(NSAMPLES)
+    real(dp) :: probs(0:Nc), cumsum(0:Nc+1), r
+    integer :: i, j
+
+    ! Compute log probs, then cumulative
+    probs = 0.0_dp
+    do i = 0, Nc
+      probs(i) = log_binom(Nc, i, conc)  ! ln[ binom * c^i * (1-c)^{Nc-i} ]
+    end do
+    cumsum(0) = 0.0_dp
+    do i = 1, Nc+1
+      cumsum(i) = cumsum(i-1) + exp(probs(i-1))
+    end do
+    cumsum(Nc+1) = 1.0_dp + 1.0e-12_dp  ! numerical safety
+
+    ! Assign via inverse CDF
+    do j = 1, NSAMPLES
+      call random_number(r)
+      ! Find i such that cumsum(i) <= r < cumsum(i+1)
+      do i = 0, Nc
+        if (r < cumsum(i+1)) then
+          N_sites(j) = i
+          exit
+        end if
+      end do
+    end do
+  end subroutine
 !
+  function real_to_randint(rr)
+    real(dp), intent(in) :: rr
+    real(dp) :: x
+    !
+    call random_number(x)
+    if(x > rr - floor(rr)) then
+      real_to_randint = floor(rr)
+    else
+      real_to_randint = ceiling(rr)
+    end if
+    !
+  end function
+  !
+  function log_binom(n, k, c)
+    implicit none
+    integer, intent(in) :: n, k
+    real(dp), intent(in) :: c
+    integer :: i
+    real(dp) :: lb, log_binom
+    !
+    log_binom = log_gamma(real(n+1,dp)) - log_gamma(real(k+1,dp)) - log_gamma(real(n-k+1,dp)) + k*log(c) + (n-k)*log(1-c)
+    ! log_binom = exp(lb)
+  end function
+!
+  subroutine sample_canonical(N, Npos, pos)
+    integer, intent(in) :: N, Npos
+    integer, intent(out) :: pos(N)
+    !
+    real(dp) :: r
+    integer :: i
+    !
+    do i = 1, Npos
+      call random_number(r)
+      pos(i) = 1 + floor(r * N)
+    enddo
+  end subroutine
+  !
   subroutine sample_binomial(N, c, pos, npos)
     integer, intent(in) :: N
     real(dp), intent(in) :: c
