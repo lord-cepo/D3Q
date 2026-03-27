@@ -213,7 +213,7 @@ contains
         tau = S%tau(:,i)
         call cryst_to_cart(1, tau, S%bg, -1)
         r_cryst = tau_sc*sc_grid - tau
-        if (NORM2(r_cryst - NINT(r_cryst))<1e-2) then
+        if (NORM2(r_cryst - NINT(r_cryst))<1e-1) then
           if (map_sc2uc(isc) /= -1) &
             call errore("map_sc2uc", "We already have found this defect", isc)
           iR = v2index(NINT(r_cryst), sc_grid)

@@ -46,7 +46,6 @@ program defectp
   integer :: iw, jR, jq, iR
   complex(dp) :: mat3(3,3), eig3(3)
   complex(dp), allocatable :: V_sc(:,:)
-  real(dp),allocatable :: freq0(:)
   real(dp) :: tau(3)
   real(dp), allocatable :: R(:,:), q(:,:)
   real(dp), allocatable :: D0(:,:)
@@ -59,8 +58,9 @@ program defectp
   CALL start_mpi()
   !
   CALL READ_INPUT("DEF", input, out_grid, S, fc2_periodic)
-  CALL fc2_recenter(S, fc2_periodic, fc2_centered, 2)
   S%lrigid = .false.
+  CALL fc2_recenter(S, fc2_periodic, fc2_centered, 2)
+  S%lrigid = .true.
   !
   !
   if(all(input%sc_grid == -1)) then
@@ -119,7 +119,8 @@ program defectp
   call q_grid_copy(sym_grid, in_grid_sym_scat)
   if(num_procs > 1) call in_grid_sym_scat%scatter()
   call q_grid_copy(out_grid, out_grid_sym_scat)
-  if(.not. out_grid_sym_scat%symmetrized) &
+  if(.not. out_grid_sym_scat%symmetrized .and. &
+    (out_grid_sym_scat%type == 'simple' .and. out_grid_sym_scat%type == 'grid')) &
     call out_grid_sym_scat%symmetrize(S)
   if(num_procs > 1) call out_grid_sym_scat%scatter()
   ! call q_grid_copy(sym_grid, out_grid)
@@ -237,7 +238,7 @@ program defectp
   deallocate(DRR)
   !
   if(contain(input%mode, 'dca')) &
-    call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, in_grid_sym_scat, sym_grid, out_grid)
+    call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, in_grid_sym_scat, out_grid)
   CALL fc2_sc%center(sc_grid, S)
   if(contain(input%mode, '1b')) &
     call main_defect(S, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid, input)

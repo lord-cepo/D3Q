@@ -136,7 +136,7 @@ test-def : tldeps d3q-libs thermal2-libs $(MINPACK) $(TEST_EXECS)
 	rm -f test.log
 	@for folder in $(TEST_FOLDERS); do \
 		echo "Running $$folder/test.x"; \
-		( cd $$folder && ./test.x ); \
+		( cd $$folder && tar -xf *.tar.gz; ./test.x ); \
 	done
 	@echo
 	@echo "All tests completed. Here's test.log:"

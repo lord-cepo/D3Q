@@ -306,7 +306,7 @@ contains
     integer,allocatable :: grid_vec_cryst(:,:)
     logical, intent(in), optional :: center, natural
     integer :: i, j, k, n
-    integer :: center_
+    integer :: center_, starting_at, ending_at
     logical :: natural_
 
     !
@@ -323,11 +323,18 @@ contains
     else
       center_ = 0
     end if
-
+    !
+    starting_at = 1
+    ending_at = 3
+    if (natural_) then
+      starting_at = 3
+      ending_at = 1
+    end if
+    !
     n = 0
-    do i = 0, mesh(1)-1
+    do i = 0, mesh(starting_at)-1
       do j = 0, mesh(2)-1
-        do k = 0, mesh(3)-1
+        do k = 0, mesh(ending_at)-1
           n = n + 1
           if(natural_) then
             grid_vec_cryst(:,n) = [k, j, i] - center_ * mesh / 2

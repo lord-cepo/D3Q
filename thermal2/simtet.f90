@@ -358,6 +358,7 @@ contains
   !
   FUNCTION tetra_weights_green_cmplx(ef) RESULT(wg_sym)
     USE constants, ONLY : pi
+    use thtetra, only : rm_degen_vertices
     !-----------------------------------------------------------------------------------
     !! Calculate weights for an integral of the kind int(Ak delta(ef-ek))
     !! The resulting wg can be used as sum(Ak * wk)
@@ -368,11 +369,11 @@ contains
     ! ... local variables
     !
     complex(dp) :: wg_sym(nbnd, nqs)
-
+    real(dp) :: r(4), i(4)
     INTEGER :: ik, nt, ibnd, ii,  ii_
     complex(DP) :: e(4)
     complex(dp) :: w(4), dummy(4)
-    complex(dp) :: ef_
+    real(dp) :: ef_
 
     ! for real part calc
     ! REAL(DP) :: wR0(4), ef_e(4), log_ef_e(4), prod_a(4), sum_a(4), second_term(4)
@@ -386,6 +387,11 @@ contains
       DO ibnd = 1, nbnd
         !
         e = ek_sort(:,ibnd,nt)
+        ! r = real(e, dp)
+        ! i = -aimag(e)
+        ! call rm_degen_vertices(ef_, r)
+        ! call rm_degen_vertices(ef_, i)
+        ! e = cmplx(r, -i, dp)
         call SIM0TWOI(w, dummy, ef_ - e)
         !
         DO ii_ = 1, iisize_tetra(nt)
