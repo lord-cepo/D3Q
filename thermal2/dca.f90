@@ -1,17 +1,17 @@
 module dca
   use kinds, only: dp
   use thtetra, only: tetra_init_sym, tetra_init, tetra_weights_green, &
-    deallocate_tetra, tetra_output, set_wg
+    deallocate_tetra, tetra_output, set_wg, equiv_grid
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
     fc2_recenter, fftinterp_mat2, mat2_diag
   use thutils, only: bz2simple, grid_vec_cart, &
-    e_iqr, index2v, cryst2cart, v2index, freq_in_grid, diag_cmplx
+    e_iqr, index2v, cryst2cart, v2index, freq_in_grid, diag_cmplx, diag
   use defutils, only : flatten_RR_cmplx, unflatten_RR_cmplx, &
     quter_cmplx, fftinterp_mat2_cmplx
   use defect, only : tetra_from_self, write_spf_ndiag, write_spf, &
     write_self, write_dos, tetra_from_self_diag
   use input_fc, only: ph_system_info, allocate_fc2_grid
-  use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
+  use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize, setup_simple_grid
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
   use code_input, only: code_input_type
   use functions, only: invzmat
@@ -25,8 +25,9 @@ module dca
   use ph_velocity, only : velocity
   use constants, only : RY_TO_CMM1
   use symm_base, only : symm_matrices => s
-  use EPW_utilities, only : mix_broyden_full
+  use EPW_utilities, only : mix_broyden
   use mpi_thermal, only : mpi_bsum, ionode, num_procs, my_id, mpi_broadcast
+  use quter_module, only : quter
 contains
   subroutine init_random_seed()
     implicit none
@@ -40,7 +41,31 @@ contains
     call random_seed(put=seed)
 
   end subroutine
-!
+  !
+  subroutine symmetrize_mat_cmplx(equiv, vec)
+    integer, intent(in) :: equiv(:)
+    complex(dp), intent(inout) :: vec(:,:,:)
+    !
+    integer :: iq, Nq_sym
+    complex(dp), allocatable :: vec_sym(:,:,:)
+    integer, allocatable :: N_star(:)
+    !
+    Nq_sym = maxval(equiv)
+    allocate(vec_sym(size(vec,1), size(vec,2), Nq_sym))
+    allocate(N_star(Nq_sym))
+    vec_sym = 0.0_dp
+    N_star = 0
+    !
+    do iq = 1, size(vec,3)
+      vec_sym(:,:,equiv(iq)) = vec_sym(:,:,equiv(iq)) + vec(:,:,iq)
+      N_star(equiv(iq)) = N_star(equiv(iq)) + 1
+    enddo
+    !
+    do iq = 1, size(vec,3)
+      vec(:,:,iq) = vec_sym(:,:,equiv(iq)) / N_star(equiv(iq))
+    enddo
+  end subroutine
+  !
   subroutine dca_selfnrg(S, S_sc, input, fc2, fc2_sc, in_grid, out_grid)
     type(ph_system_info), intent(in) :: S, S_sc
     type(code_input_type), intent(in) :: input
@@ -52,20 +77,24 @@ contains
     !! symmetric and scattered, normal order
     type(q_grid), intent(in) :: out_grid
     !! symmetric and not scattered, normal order
+    ! complex(dp), allocatable, intent(in) :: self_fb(:,:,:,:)
+    ! real(dp), allocatable, intent(in) :: xR_fb(:,:)
     type(tetra_output) :: wg, wg_out
     !
-    complex(dp), allocatable, dimension(:) :: delta_in, delta_out, G__
+    type(forceconst2_grid) :: self_R
+    real(dp), allocatable, dimension(:) :: delta_in, delta_out
     complex(dp), allocatable, dimension(:,:) :: den_weights, &
-      den_eig, Gf_conf, Gf_avg, df, dv, overlap, V__, I_gV__, G_avg__, &
-      out_den_weights, G0i_cluster, Gi_coarse, self_diag, &
-      self_out, self_in
+      den_eig, Gf_conf, Gf_avg, overlap, &
+      out_den_weights, self_diag, &
+      w2_plus_self, VL, VR, Gf0i
     complex(dp), allocatable, dimension(:,:,:) :: den_UL, den_UR, &
-      self_fine, self_R, U, UT, UT_fine, U_fine, UT_out, U_out, self_out_diag
+      self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, &
+      self_out_diag, V_conf, self_in, self_out, G0i_cluster, Gi_coarse
     complex(dp), allocatable, dimension(:,:,:,:) :: G_avg, Gi_conf, &
       Gi_avg, phase_mat, V, self_out_grid
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, &
       self_uf
-    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f, out_freqs
+    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f, out_freqs, dv, df
     integer, allocatable :: pos(:), kq(:,:)!, big_iq(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, &
@@ -73,9 +102,11 @@ contains
     real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff
     real(dp) :: dos(input%n_omega), shift(3)
     logical :: conv, low_concentration
-    complex(dp) :: A(S%nat3,S%nat3)
-    integer, allocatable :: N_sites(:,:)
+    complex(dp) :: A(S%nat3,S%nat3), eta
+    integer, allocatable :: N_sites(:,:), c_equiv(:)
     character(len=100) :: filename
+    type(q_grid) :: c_grid
+    real(dp), allocatable :: w2(:)
     !
     if(input%calculation == "test") call init_random_seed()
     !
@@ -85,10 +116,10 @@ contains
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
-    cluster_mesh = input%sc_grid
+    cluster_mesh = [10,10,1]
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
-    NSAMPLES = 500
+    NSAMPLES = 100
     NQ = product(in_grid%n) / Nc
     xq = grid_vec_cart(cluster_mesh, S%bg, divide=.true.)
     shift = xq(:,v2index([1,1,1],cluster_mesh)) / 2
@@ -96,6 +127,12 @@ contains
     do iq = 1, size(xq,2)
       xq(:,iq) = xq(:,iq) + shift
     enddo
+    !
+    call setup_simple_grid(S%bg, cluster_mesh(1), cluster_mesh(2), cluster_mesh(3), c_grid, shift)
+    call c_grid%symmetrize(S)
+    call equiv_grid(c_grid, S, c_equiv)
+    call c_grid%destroy()
+    !
     if (any(mod(in_grid%n, cluster_mesh) /= 0)) &
       call errore("dca_selfnrg", "grid size not multiple of fc2 grid size", 1)
     R = grid_vec_cart(cluster_mesh, S%at)
@@ -128,18 +165,20 @@ contains
     self_out_grid = 0.0_dp
     self_out_diag = 0.0_dp
     !
+    allocate(Gf0i(S%nat3*Nc, S%nat3*Nc))
+    allocate(V_conf(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
     allocate(self_diag(S%nat3, in_grid%nqtot))
     allocate(G_avg(S%nat3, S%nat3, Nc, Nc))
     allocate(Gi_conf(S%nat3, S%nat3, Nc, Nc))
     allocate(Gf_conf(S%nat3*Nc, S%nat3*Nc))
     allocate(Gf_avg(S%nat3*Nc, S%nat3*Nc))
     allocate(Gi_avg(S%nat3, S%nat3, Nc, Nc))
-    allocate(Gi_coarse(S%nat3, Nc))
-    allocate(G0i_cluster(S%nat3, Nc))
-    allocate(self_in(S%nat3, Nc))
+    allocate(Gi_coarse(S%nat3, S%nat3, Nc))
+    allocate(G0i_cluster(S%nat3, S%nat3, Nc))
+    allocate(self_in(S%nat3, S%nat3, Nc))
     allocate(self_uf(3, 3, S%nat, S%nat, Nc))
     allocate(self_fine(S%nat3, S%nat3, in_grid%nqtot))
-    allocate(self_out(S%nat3, Nc))
+    allocate(self_out(S%nat3, S%nat3, Nc))
     allocate(V(S%nat3, S%nat3, Nc, Nc))
     allocate(phase_mat(Nc, Nc, n_eq_sites, NSAMPLES))
     allocate(kq(NQ, Nc))!, big_iq(grid_scat%nqtot))
@@ -150,17 +189,12 @@ contains
     allocate(overlap(S%nat3, in_grid%nqtot))
     allocate(den_eig(S%nat3, in_grid%nqtot))
     allocate(pos(Nc))
-    allocate(G__(S%nat3*Nc))
-    allocate(V__(S%nat3*Nc, S%nat3*Nc))
-    allocate(I_gV__(S%nat3*Nc, S%nat3*Nc))
-    allocate(G_avg__(S%nat3*Nc, S%nat3*Nc))
+    allocate(w2_plus_self(S%nat3, in_grid%nqtot))
 
-    ! allocate(Npos(NSAMPLES))
-
-    ! deallocate(fc2_sc%defects)
-    ! allocate(fc2_sc%defects(3, 1))
-    ! fc2_sc%defects(:,1) = [1,1,1]
-
+    allocate(VL, source=Gf_avg)
+    allocate(VR, source=Gf_avg)
+    allocate(w2(S%nat3*Nc))
+    !
     call center_V(xq, S, S_sc, fc2_sc, Vqqs)
     do idef = 1, n_eq_sites
       do iq = 1, Nc
@@ -169,12 +203,9 @@ contains
         enddo
       enddo
     enddo
-    V__ = flatten_RR_cmplx(Vqqs(:,:,:,:,1))
-
     !
     ! !> construction of of the phase, used to translate the potential to
     ! !> random configurations inside the cluster
-
     ntot = 0
     phase_mat = 0.0_dp
     !
@@ -203,6 +234,21 @@ contains
         enddo
       enddo
     enddo
+    !
+    V_conf = 0.0_dp
+    do it = 1, NSAMPLES
+      do jq = 1, Nc
+        do iq = 1, Nc
+          do idef = 1, n_eq_sites
+            V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) = &
+              V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) + &
+              Vqqs(:,:,iq,jq,idef) * phase_mat(iq,jq,idef,it)
+          enddo
+        enddo
+      enddo
+      V_conf(:,:,it) = (V_conf(:,:,it)+conjg(transpose(V_conf(:,:,it)))) / 2.0_dp
+    enddo
+    !
     call mpi_bsum(Nc, Nc, n_eq_sites, NSAMPLES, phase_mat)
     call mpi_bsum(ntot)
     simulated_conc = real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
@@ -228,21 +274,22 @@ contains
     !
     self_out = 1._dp
     self_in = 0._dp
-    allocate(df(S%nat3**2*Nc, MEMORY))
-    allocate(dv(S%nat3**2*Nc, MEMORY))
-    allocate(delta_in(S%nat3**2*Nc))
-    allocate(delta_out(S%nat3**2*Nc))
-    delta_out = 0._dp
+    ! allocate(df(S%nat3**2*Nc, MEMORY))
+    ! allocate(dv(S%nat3**2*Nc, MEMORY))
+    ! allocate(delta_in(S%nat3**2*Nc))
+    ! allocate(delta_out(S%nat3**2*Nc))
+    ! delta_out = 0._dp
+    ! delta_in = 0._dp
+    ! df = 0._dp
+    ! dv = 0._dp
     !
     dos = 0._dp
     N_ITER_TOT = 0
-    delta_in = 0._dp
-    df = 0._dp
-    dv = 0._dp
+    self_fine = 0._dp
     !
     if(ionode) print*, "Starting DCA self-energy calculation..."
     if(ionode) print*, ""
-    do iw = 1, input%n_omega
+    do iw = 2, input%n_omega
       ! do iq = 1, Nc
       !   do i = 1, S%nat3
       !     g__(i+S%nat3*(iq-1)) = wg%w(i, wg%e(kq(1,iq)), iw) * Nc
@@ -254,14 +301,18 @@ contains
         !
         ! write(filename, "(A,I2.2,A)") "self_in_", sc_iter, ".dat"
         ! open(10, file=filename)
-        do iq = 1, Nc
-          A = matmul(U(:,:,iq), matmul(diag_cmplx(self_in(:,iq)), UT(:,:,iq)))
-          ! if(ionode) write(10, "(100E20.8)") self_in(:,iq)
-          self_uf(:,:,:,:,iq) = unflatten_RR_cmplx(A, S%nat, S%nat)
-        enddo
-        CALL quter_cmplx(cluster_mesh(1), cluster_mesh(2), cluster_mesh(3), &
-          S%nat, S%tau, S%at, S%bg, self_uf, xq, self_R, self_xR, 2)
+        ! do iq = 1, Nc
+        !   A = matmul(U(:,:,iq), matmul(diag(self_in(:,iq)), UT(:,:,iq)))
+        !   ! if(ionode) write(10, "(100E20.8)") self_in(:,iq)
+        !   self_uf(:,:,:,:,iq) = unflatten_RR_cmplx(A, S%nat, S%nat)
+        ! enddo
+        ! CALL quter_cmplx(cluster_mesh(1), cluster_mesh(2), cluster_mesh(3), &
+        !   S%nat, S%tau, S%at, S%bg, self_uf, xq, self_R, self_xR, 2)
         !
+        ! if(allocated(self_fb) .and. sc_iter == 1) then
+        !   self_R = self_fb(:,:,:,iw)
+        !   self_xR = xR_fb
+        ! endif
         ! close(10)
         ! write(filename, "(A,I2.2,A)") "self_R_", sc_iter, ".dat"
         ! open(10, file=filename)
@@ -274,17 +325,7 @@ contains
         !   enddo
         ! enddo
         ! close(10)
-        self_diag = 0.0_dp
-        do iq = 1, in_grid%nq
-          iqp = iq + in_grid%iq0
-          call fftinterp_mat2_cmplx(in_grid%xq(:,iq), S, self_R, self_xR, A)
-          A = matmul(UT_fine(:,:,iqp), matmul(A, U_fine(:,:,iqp)))
-          do i = 1, S%nat3
-            self_diag(i,iqp) = A(i,i)
-          enddo
-          ! where(aimag(self_diag(:,iqp)) > 0._dp) self_diag(:,iqp) = conjg(self_diag(:,iqp))
-        enddo
-        call mpi_bsum(S%nat3, in_grid%nqtot, self_diag)
+        ! self_diag = 0.0_dp
         !
         ! write(filename, "(A,I2.2,A)") "self_q_", sc_iter, ".dat"
         ! open(10, file=filename)
@@ -293,83 +334,92 @@ contains
         ! enddo
         ! close(10)
         !
-        call tetra_from_self_diag(S, in_grid, wg%f**2+self_diag, wg%en(iw)**2, &
-          den_weights, mpi=.true.)
-        !}
-        do iqp = 1, in_grid%nqtot
-          call merge_degen(S%nat3, den_weights(:,iqp), wg%f(:,iqp))
-        enddo
         !
+        ! eta = cmplx(0._dp, maxval(aimag(self_in)) + 1e-12_dp)
+        ! if(aimag(eta) < 0._dp) eta = 0.0_dp
+        ! self_in = self_in - eta
+        ! where(aimag(self_in) > 0._dp) self_in = conjg(self_in)
+        ! if(ionode) print*, aimag(eta)
+        !
+        ! do iq = 1, Nc
+        !   do jq = 1, NQ
+        !     kkq = wg%e(kq(jq,iq))
+        !     w2_plus_self(:,kkq) = wg%f(:,kkq)**2 + self_in(:,iq)
+        !   enddo
+        ! enddo
+        ! !
+        ! ! self_in(:,iq) + wg%f(:,wg%e(kq(jq,iq)))**2
+        ! call tetra_from_self_diag(S, in_grid, w2_plus_self, wg%en(iw)**2, &
+        !   den_weights, mpi=.true.)
+        ! do iqp = 1, in_grid%nqtot
+        !   call merge_degen(S%nat3, den_weights(:,iqp), wg%f(:,iqp))
+        ! enddo
+        ! if(any(aimag(den_weights) > 0._dp)) then
+        !   print*, "Imaginary part of den_weights positive! Max value:", maxval(aimag(den_weights))
+        !   stop 5
+        ! endif
+        !
+        if(ionode) print*, sum(abs(self_fine))
         Gi_coarse = 0.0_dp
         do iq = 1, Nc
           do jq = 1, NQ
             kkq = wg%e(kq(jq,iq))
-            Gi_coarse(:,iq) = Gi_coarse(:,iq) + den_weights(:,kkq)
+            A = diag(wg%f(:,kkq)**2 + wg%en(iw)**2) + self_fine(:,:,kkq)
+            call invzmat(S%nat3, A)
+            Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) - A / NQ
+            ! Gi_coarse(:,iq) = Gi_coarse(:,iq) + den_weights(:,kkq)
           enddo
-          ! call invzmat(S%nat3, Gi_coarse(:,:,iq))
-          Gi_coarse(:,iq) = 1._dp / Gi_coarse(:,iq) / Nc
-          G0i_cluster(:,iq) = Gi_coarse(:,iq) + self_in(:,iq)
+          call invzmat(S%nat3, Gi_coarse(:,:,iq))
+          ! Gi_coarse(:,iq) = 1._dp / Gi_coarse(:,iq) / Nc
+          G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_in(:,:,iq)
         enddo
+        Gf0i = 0.0_dp
+        do iq = 1, Nc
+          Gf0i((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = G0i_cluster(:,:,iq)
+        enddo
+        if(ionode) print*, sum(Gi_coarse)
         !>
         !
         !> construction of the flatten average Gf_avg over niter configurations
         !----------------------------------------------------------------------
-        if(low_concentration) then
-          Gf_conf = 0.0_dp
-          do jq = 1, Nc
-            do i = 1, S%nat3
-              Gf_conf(i+(jq-1)*S%nat3,i+(jq-1)*S%nat3) = 1 / G0i_cluster(i,jq)
-            enddo
-          enddo
-          Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
+        ! if(low_concentration) then
+        !   Gf_conf = 0.0_dp
+        !   do jq = 1, Nc
+        !     do i = 1, S%nat3
+        !       Gf_conf(i+(jq-1)*S%nat3,i+(jq-1)*S%nat3) = 1 / G0i_cluster(i,jq)
+        !     enddo
+        !   enddo
+        !   Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
+        !   !
+        !   do idef = 1, n_eq_sites
+        !     Gi_conf = 0.0_dp
+        !     do jq = 1, Nc
+        !       do i = 1, S%nat3
+        !         Gi_conf(i,i,jq,jq) = G0i_cluster(i,jq)
+        !       enddo
+        !       do iq = 1, Nc
+        !         Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef)
+        !       enddo
+        !     enddo
+        !     Gf_conf = flatten_RR_cmplx(Gi_conf)
+        !     call invzmat(S%nat3*Nc, Gf_conf)
+        !     Gf_avg = Gf_avg + Gf_conf * (conc * Nc)
+        !   enddo
+        ! else
+        Gf_avg = 0.0_dp
+        do it = 1+my_id, NSAMPLES, num_procs
+          ! > construction of G_conf for a given configuration
+          ! Gi_conf = 0.0_dp
           !
-          do idef = 1, n_eq_sites
-            Gi_conf = 0.0_dp
-            do jq = 1, Nc
-              do i = 1, S%nat3
-                Gi_conf(i,i,jq,jq) = G0i_cluster(i,jq)
-              enddo
-              do iq = 1, Nc
-                Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef)
-              enddo
-            enddo
-            Gf_conf = flatten_RR_cmplx(Gi_conf)
-            call invzmat(S%nat3*Nc, Gf_conf)
-            Gf_avg = Gf_avg + Gf_conf * (conc * Nc)
-          enddo
-        else
-          Gf_avg = 0.0_dp
-          do it = 1+my_id, NSAMPLES, num_procs
-            ! > construction of G_conf for a given configuration
-            Gi_conf = 0.0_dp
-            V = 0.0_dp
-            do idef = 1, n_eq_sites
-              do jq = 1, Nc
-                do iq = 1, Nc
-                  V(:,:,iq,jq) = Vqqs(:,:,iq,jq,idef) * phase_mat(iq,jq,idef,it)
-                enddo
-              enddo
-            enddo
-            !
-            do jq = 1, Nc
-              do i = 1, S%nat3
-                Gi_conf(i,i,jq,jq) = G0i_cluster(i,jq)
-              enddo
-              do iq = 1, Nc
-                Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - V(:,:,iq,jq)
-              enddo
-            enddo
-            !>
-            !
-            Gf_conf = flatten_RR_cmplx(Gi_conf)
-            call invzmat(S%nat3*Nc, Gf_conf)
-            !
-            Gf_avg = Gf_avg + Gf_conf
-            !
-          enddo
-          call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf_avg)
-          Gf_avg = Gf_avg / real(NSAMPLES, dp)
-        endif
+          Gf_conf = Gf0i - V_conf(:,:,it)
+          call invzmat(S%nat3*Nc, Gf_conf)
+          !
+          Gf_avg = Gf_avg + Gf_conf
+          !
+        enddo
+        call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf_avg)
+        Gf_avg = Gf_avg / real(NSAMPLES, dp)
+        ! endif
         !----------------------------------------------------------------------
         !>
         !
@@ -377,29 +427,74 @@ contains
         Gi_avg = unflatten_RR_cmplx(Gf_avg, Nc, Nc)
         do iq = 1, Nc
           call invzmat(S%nat3, Gi_avg(:,:,iq,iq))
-          do i = 1, S%nat3
-            self_out(i,iq) = G0i_cluster(i,iq) - Gi_avg(i,i,iq,iq)
-          enddo
-          !diag(wg%en(iw)**2 - f(:,iq)**2) - Gi_avg(:,:,iq,iq)
+          self_out(:,:,iq) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
         enddo
+        call symmetrize_mat_cmplx(c_equiv, self_out)
         !>
         !
-        delta_out = reshape(self_out, [S%nat3*Nc])
+        do iq = 1, Nc
+          self_out(:,:,iq) = matmul(U(:,:,iq), matmul(self_out(:,:,iq), UT(:,:,iq)))
+          self_uf(:,:,:,:,iq) = unflatten_RR_cmplx(self_out(:,:,iq), S%nat, S%nat)
+        enddo
         !
-        call mix_broyden_full(S%nat3*Nc, delta_out, delta_in, &
+        call quter(cluster_mesh(1), cluster_mesh(2), cluster_mesh(3), &
+          S%nat, S%tau, S%at, S%bg, self_uf, xq, self_R, 2)
+        !
+        do iq = 1, in_grid%nq
+          iqp = iq + in_grid%iq0
+          call fftinterp_mat2(in_grid%xq(:,iq), S, self_R, A)
+          self_fine(:,:,iqp) = matmul(UT_fine(:,:,iqp), matmul(A, U_fine(:,:,iqp)))
+          ! do i = 1, S%nat3
+          !   self_diag(i,iqp) = A(i,i)
+          ! enddo
+          ! where(aimag(self_diag(:,iqp)) > 0._dp) self_diag(:,iqp) = conjg(self_diag(:,iqp))
+        enddo
+        call mpi_bsum(S%nat3, S%nat3, in_grid%nqtot, self_fine)
+        !
+        if(.not. allocated(df)) then
+          allocate(df(size(self_R%fc), MEMORY))
+          allocate(dv(size(self_R%fc), MEMORY))
+          allocate(delta_in(size(self_R%fc)))
+          allocate(delta_out(size(self_R%fc)))
+          df = 0._dp
+          dv = 0._dp
+          delta_in = 0._dp
+          delta_out = 0._dp
+        end if
+        !
+        delta_out = reshape(self_R%fc, [size(self_R%fc)])
+        !
+        write(filename, "(A,I2.2,A)") "self_R_", sc_iter, ".dat"
+        open(10, file=filename)
+        do iR = 1, self_R%n_R
+          do i = 1, S%nat
+            do j = 1, S%nat
+              if(ionode) write(10, "(3E20.8)") norm2(self_R%xR(:,iR) + S%tau(:,i) - S%tau(:,j)), &
+                sum(abs(self_R%fc((i-1)*3+1:i*3,(j-1)*3+1:j*3,iR)))
+            enddo
+          enddo
+        enddo
+        close(10)
+        !
+        call mix_broyden(size(self_R%fc), delta_out, delta_in, &
           ALPHA_MIX, sc_iter, MEMORY, df, dv)
-        self_in = reshape(delta_in, [S%nat3, Nc])
+        self_R%fc = reshape(delta_in, [S%nat3, S%nat3, size(self_R%fc,3)])
+        !
+        do iq = 1, Nc
+          call fftinterp_mat2(xq(:,iq), S, self_R, self_in(:,:,iq))
+          self_in(:,:,iq) = matmul(UT(:,:,iq), matmul(self_in(:,:,iq), U(:,:,iq)))
+        enddo
         !
         conv = .true.
         max_diff = 0._dp
         do iq = 1, Nc
           do i = 1, S%nat3
-            max_diff = max(max_diff, ABS(self_out(i,iq)-self_in(i,iq)))
-            if( ABS(self_out(i,iq)-self_in(i,iq)) > REL_TOLERANCE * &
-              abs(self_in(i,iq)) + ABS_TOLERANCE) conv = .false.
+            max_diff = max(max_diff, ABS(self_out(i,i,iq)-self_in(i,i,iq)))
+            if( ABS(self_out(i,i,iq)-self_in(i,i,iq)) > REL_TOLERANCE * &
+              abs(self_in(i,i,iq)) + ABS_TOLERANCE) conv = .false.
           enddo
         enddo
-        if(ionode) print*, iw, sc_iter, max_diff / sum(abs(self_in)) * S%nat3 * Nc
+        if(ionode) print*, iw, sc_iter, max_diff / sum(abs(self_in)) * S%nat3**2 * Nc
         ! write(filename, "(A,I2.2,A)") "self_qout_", sc_iter, ".dat"
         ! open(10, file=filename)
         ! do iq = 1, out_grid%nqtot
@@ -422,19 +517,16 @@ contains
         if(ionode) print"(A,I4,A,I4,A,E15.3)", "frequency ", iw, &
           " NOT converged in ", sc_iter-1, " iterations. Max diff: ", max_diff
       end if
-      ! print*, self_out(4,4,1,iw), self_out(5,5,2,iw)
-      do iq = 1, out_grid%nqtot
-        call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, self_out_grid(:,:,iq,iw))
-        self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out_grid(:,:,iq,iw), U_out(:,:,iq))) * &
-          conc / simulated_conc
-        ! where(aimag(self_out_grid(:,:,iq,iw)) > 0._dp) self_out_grid(:,:,iq,iw) = conjg(self_out_grid(:,:,iq,iw))
-        do i = 1, S%nat3
-          self_out_diag(i, iq, iw) = self_out_grid(i,i,iq,iw)
-        enddo
-      enddo
+      ! do iq = 1, out_grid%nqtot
+      !   call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, self_out_grid(:,:,iq,iw))
+      !   self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out_grid(:,:,iq,iw), U_out(:,:,iq))) * &
+      !     conc / simulated_conc
+      !   ! where(aimag(self_out_grid(:,:,iq,iw)) > 0._dp) self_out_grid(:,:,iq,iw) = conjg(self_out_grid(:,:,iq,iw))
+      !   do i = 1, S%nat3
+      !     self_out_diag(i, iq, iw) = self_out_grid(i,i,iq,iw)
+      !   enddo
+      ! enddo
     enddo ! frequency loop
-    ! call mpi_bsum(S%nat3, S%nat3, out_grid%nqtot, input%n_omega, self_out_grid)
-    ! call mpi_bsum(S%nat3, out_grid%nqtot, input%n_omega, self_out_diag)
     !
     if(ionode) print*, "Average number of iterations per frequency:", real(N_ITER_TOT,dp) / input%n_omega
     select case(input%calculation)
