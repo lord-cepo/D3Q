@@ -25,7 +25,7 @@ module dca
   use ph_velocity, only : velocity
   use constants, only : RY_TO_CMM1
   use symm_base, only : symm_matrices => s
-  use EPW_utilities, only : mix_broyden
+  use EPW_utilities, only : mix_broyden_full
   use mpi_thermal, only : mpi_bsum, ionode, num_procs, my_id, mpi_broadcast
   use quter_module, only : quter
 contains
@@ -40,6 +40,19 @@ contains
     seed = 12345
     call random_seed(put=seed)
 
+  end subroutine
+  !
+  subroutine check_hermitian(name, matq)
+    character(*), intent(in) :: name
+    complex(dp), intent(in) :: matq(:,:,:)
+    integer :: iq
+    real(dp) :: max_diff
+    !
+    max_diff = 0.0_dp
+    do iq = 1, size(matq,3)
+      max_diff = max(max_diff, maxval(abs(matq(:,:,iq) - conjg(transpose(matq(:,:,iq))))))
+    enddo
+    if (ionode) print"(A,A,E20.8)", name, "-> maximum deviation from Hermiticity:", max_diff
   end subroutine
   !
   subroutine symmetrize_mat_cmplx(equiv, vec)
@@ -82,11 +95,11 @@ contains
     type(tetra_output) :: wg, wg_out
     !
     type(forceconst2_grid) :: self_R
-    real(dp), allocatable, dimension(:) :: delta_in, delta_out
+    complex(dp), allocatable, dimension(:) :: delta_in, delta_out, self_diff
     complex(dp), allocatable, dimension(:,:) :: den_weights, &
       den_eig, Gf_conf, Gf_avg, overlap, &
       out_den_weights, self_diag, &
-      w2_plus_self, VL, VR, Gf0i
+      w2_plus_self, VL, VR, Gf0i, dv, df
     complex(dp), allocatable, dimension(:,:,:) :: den_UL, den_UR, &
       self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, &
       self_out_diag, V_conf, self_in, self_out, G0i_cluster, Gi_coarse
@@ -94,15 +107,16 @@ contains
       Gi_avg, phase_mat, V, self_out_grid
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, &
       self_uf
-    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f, out_freqs, dv, df
+    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f, out_freqs
     integer, allocatable :: pos(:), kq(:,:)!, big_iq(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, &
-      cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT
+      cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT, iR
     real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff
-    real(dp) :: dos(input%n_omega), shift(3)
+    real(dp) :: dos(input%n_omega), shift(3), simulated_conc
     logical :: conv, low_concentration
     complex(dp) :: A(S%nat3,S%nat3), eta
+    real(dp) :: eig(S%nat3)
     integer, allocatable :: N_sites(:,:), c_equiv(:)
     character(len=100) :: filename
     type(q_grid) :: c_grid
@@ -111,12 +125,12 @@ contains
     if(input%calculation == "test") call init_random_seed()
     !
     MAXITER = 1000
-    ABS_TOLERANCE = 1e-13_dp * input%conc
+    ABS_TOLERANCE = 1e-10_dp * input%conc
     REL_TOLERANCE = 1e-6_dp
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
-    cluster_mesh = [10,10,1]
+    cluster_mesh = [4,4,1]
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
     NSAMPLES = 100
@@ -195,6 +209,16 @@ contains
     allocate(VR, source=Gf_avg)
     allocate(w2(S%nat3*Nc))
     !
+    allocate(df(S%nat3**2*Nc, MEMORY))
+    allocate(dv(S%nat3**2*Nc, MEMORY))
+    allocate(delta_in(S%nat3**2*Nc))
+    allocate(delta_out(S%nat3**2*Nc))
+    allocate(self_diff(S%nat3**2*Nc))
+    df = 0._dp
+    dv = 0._dp
+    delta_in = 0._dp
+    delta_out = 0._dp
+    !
     call center_V(xq, S, S_sc, fc2_sc, Vqqs)
     do idef = 1, n_eq_sites
       do iq = 1, Nc
@@ -234,6 +258,8 @@ contains
         enddo
       enddo
     enddo
+    call mpi_bsum(Nc, Nc, n_eq_sites, NSAMPLES, phase_mat)
+    call mpi_bsum(ntot)
     !
     V_conf = 0.0_dp
     do it = 1, NSAMPLES
@@ -249,8 +275,6 @@ contains
       V_conf(:,:,it) = (V_conf(:,:,it)+conjg(transpose(V_conf(:,:,it)))) / 2.0_dp
     enddo
     !
-    call mpi_bsum(Nc, Nc, n_eq_sites, NSAMPLES, phase_mat)
-    call mpi_bsum(ntot)
     simulated_conc = real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
     if(ionode) print"(A,E15.4)", "simulated concentration:", simulated_conc
     low_concentration = .false.
@@ -287,89 +311,25 @@ contains
     N_ITER_TOT = 0
     self_fine = 0._dp
     !
+    print*, in_grid%xq
     if(ionode) print*, "Starting DCA self-energy calculation..."
     if(ionode) print*, ""
-    do iw = 2, input%n_omega
-      ! do iq = 1, Nc
-      !   do i = 1, S%nat3
-      !     g__(i+S%nat3*(iq-1)) = wg%w(i, wg%e(kq(1,iq)), iw) * Nc
-      !   enddo
-      !   ! print*, sum(abs(wg%en(iw)**2 - f(:,iq)**2 - 1/g__(S%nat3*(iq-1)+1:S%nat3*iq))) / sum(abs(wg%en(iw)**2 - f(:,iq)**2))
-      ! enddo
+    do iw = 10, input%n_omega
       do sc_iter = 1, MAXITER
-        !> construction of G0_cluster from self-energy
-        !
-        ! write(filename, "(A,I2.2,A)") "self_in_", sc_iter, ".dat"
-        ! open(10, file=filename)
-        ! do iq = 1, Nc
-        !   A = matmul(U(:,:,iq), matmul(diag(self_in(:,iq)), UT(:,:,iq)))
-        !   ! if(ionode) write(10, "(100E20.8)") self_in(:,iq)
-        !   self_uf(:,:,:,:,iq) = unflatten_RR_cmplx(A, S%nat, S%nat)
-        ! enddo
-        ! CALL quter_cmplx(cluster_mesh(1), cluster_mesh(2), cluster_mesh(3), &
-        !   S%nat, S%tau, S%at, S%bg, self_uf, xq, self_R, self_xR, 2)
-        !
-        ! if(allocated(self_fb) .and. sc_iter == 1) then
-        !   self_R = self_fb(:,:,:,iw)
-        !   self_xR = xR_fb
-        ! endif
-        ! close(10)
-        ! write(filename, "(A,I2.2,A)") "self_R_", sc_iter, ".dat"
-        ! open(10, file=filename)
-        ! do iR = 1, size(self_xR,2)
-        !   do i = 1, S%nat
-        !     do j = 1, S%nat
-        !       if(ionode) write(10, "(3E20.8)") norm2(self_xR(:,iR) + S%tau(:,i) - S%tau(:,j)), &
-        !         sum(self_R((i-1)*3+1:i*3,(j-1)*3+1:j*3,iR))
-        !     enddo
-        !   enddo
-        ! enddo
-        ! close(10)
-        ! self_diag = 0.0_dp
-        !
-        ! write(filename, "(A,I2.2,A)") "self_q_", sc_iter, ".dat"
-        ! open(10, file=filename)
-        ! do iq = 1, in_grid%nqtot
-        !   if(ionode) write(10, "(100E20.8)") self_diag(:,iq)
-        ! enddo
-        ! close(10)
-        !
-        !
-        ! eta = cmplx(0._dp, maxval(aimag(self_in)) + 1e-12_dp)
-        ! if(aimag(eta) < 0._dp) eta = 0.0_dp
-        ! self_in = self_in - eta
-        ! where(aimag(self_in) > 0._dp) self_in = conjg(self_in)
-        ! if(ionode) print*, aimag(eta)
-        !
-        ! do iq = 1, Nc
-        !   do jq = 1, NQ
-        !     kkq = wg%e(kq(jq,iq))
-        !     w2_plus_self(:,kkq) = wg%f(:,kkq)**2 + self_in(:,iq)
-        !   enddo
-        ! enddo
-        ! !
-        ! ! self_in(:,iq) + wg%f(:,wg%e(kq(jq,iq)))**2
-        ! call tetra_from_self_diag(S, in_grid, w2_plus_self, wg%en(iw)**2, &
-        !   den_weights, mpi=.true.)
-        ! do iqp = 1, in_grid%nqtot
-        !   call merge_degen(S%nat3, den_weights(:,iqp), wg%f(:,iqp))
-        ! enddo
-        ! if(any(aimag(den_weights) > 0._dp)) then
-        !   print*, "Imaginary part of den_weights positive! Max value:", maxval(aimag(den_weights))
-        !   stop 5
-        ! endif
-        !
-        if(ionode) print*, sum(abs(self_fine))
         Gi_coarse = 0.0_dp
         do iq = 1, Nc
           do jq = 1, NQ
             kkq = wg%e(kq(jq,iq))
-            A = diag(wg%f(:,kkq)**2 + wg%en(iw)**2) + self_fine(:,:,kkq)
-            call invzmat(S%nat3, A)
-            Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) - A / NQ
+            ! print*, kkq, kq(jq,iq), NINT(cryst2cart(in_grid%xq(:,kkq), S%at, -1) * in_grid%n)
+            A = diag(wg%f(:,kkq)**2 + wg%en(iw)**2) + self_in(:,:,iq)
+            call mat2_diag(S%nat3, A, eig)
+            Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) - matmul(A, matmul(diag(1._dp/eig), conjg(transpose(A))))
             ! Gi_coarse(:,iq) = Gi_coarse(:,iq) + den_weights(:,kkq)
           enddo
-          call invzmat(S%nat3, Gi_coarse(:,:,iq))
+          A = Gi_coarse(:,:,iq) / NQ
+          call mat2_diag(S%nat3, A, eig)
+          Gi_coarse(:,:,iq) = matmul(A, matmul(diag(1._dp/eig), conjg(transpose(A))))
+          ! Gi_coarse(:,:,iq) = (Gi_coarse(:,:,iq) + conjg(transpose(Gi_coarse(:,:,iq)))) / 2.0_dp
           ! Gi_coarse(:,iq) = 1._dp / Gi_coarse(:,iq) / Nc
           G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_in(:,:,iq)
         enddo
@@ -377,35 +337,6 @@ contains
         do iq = 1, Nc
           Gf0i((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = G0i_cluster(:,:,iq)
         enddo
-        if(ionode) print*, sum(Gi_coarse)
-        !>
-        !
-        !> construction of the flatten average Gf_avg over niter configurations
-        !----------------------------------------------------------------------
-        ! if(low_concentration) then
-        !   Gf_conf = 0.0_dp
-        !   do jq = 1, Nc
-        !     do i = 1, S%nat3
-        !       Gf_conf(i+(jq-1)*S%nat3,i+(jq-1)*S%nat3) = 1 / G0i_cluster(i,jq)
-        !     enddo
-        !   enddo
-        !   Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
-        !   !
-        !   do idef = 1, n_eq_sites
-        !     Gi_conf = 0.0_dp
-        !     do jq = 1, Nc
-        !       do i = 1, S%nat3
-        !         Gi_conf(i,i,jq,jq) = G0i_cluster(i,jq)
-        !       enddo
-        !       do iq = 1, Nc
-        !         Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef)
-        !       enddo
-        !     enddo
-        !     Gf_conf = flatten_RR_cmplx(Gi_conf)
-        !     call invzmat(S%nat3*Nc, Gf_conf)
-        !     Gf_avg = Gf_avg + Gf_conf * (conc * Nc)
-        !   enddo
-        ! else
         Gf_avg = 0.0_dp
         do it = 1+my_id, NSAMPLES, num_procs
           ! > construction of G_conf for a given configuration
@@ -419,95 +350,35 @@ contains
         enddo
         call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf_avg)
         Gf_avg = Gf_avg / real(NSAMPLES, dp)
-        ! endif
-        !----------------------------------------------------------------------
-        !>
         !
         !> self energy is G0_cluster^-1 - <G>^-1
         Gi_avg = unflatten_RR_cmplx(Gf_avg, Nc, Nc)
         do iq = 1, Nc
-          call invzmat(S%nat3, Gi_avg(:,:,iq,iq))
+          A = Gi_avg(:,:,iq,iq)
+          call mat2_diag(S%nat3, A, eig)
+          Gi_avg(:,:,iq,iq) = matmul(A, matmul(diag(1._dp/eig), conjg(transpose(A))))
           self_out(:,:,iq) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
         enddo
         call symmetrize_mat_cmplx(c_equiv, self_out)
         !>
         !
         do iq = 1, Nc
-          self_out(:,:,iq) = matmul(U(:,:,iq), matmul(self_out(:,:,iq), UT(:,:,iq)))
-          self_uf(:,:,:,:,iq) = unflatten_RR_cmplx(self_out(:,:,iq), S%nat, S%nat)
+          self_out(:,:,iq) = (self_out(:,:,iq) + conjg(transpose(self_out(:,:,iq)))) / 2.0_dp
         enddo
+        delta_out = reshape(self_out, [S%nat3**2*Nc])
         !
-        call quter(cluster_mesh(1), cluster_mesh(2), cluster_mesh(3), &
-          S%nat, S%tau, S%at, S%bg, self_uf, xq, self_R, 2)
-        !
-        do iq = 1, in_grid%nq
-          iqp = iq + in_grid%iq0
-          call fftinterp_mat2(in_grid%xq(:,iq), S, self_R, A)
-          self_fine(:,:,iqp) = matmul(UT_fine(:,:,iqp), matmul(A, U_fine(:,:,iqp)))
-          ! do i = 1, S%nat3
-          !   self_diag(i,iqp) = A(i,i)
-          ! enddo
-          ! where(aimag(self_diag(:,iqp)) > 0._dp) self_diag(:,iqp) = conjg(self_diag(:,iqp))
-        enddo
-        call mpi_bsum(S%nat3, S%nat3, in_grid%nqtot, self_fine)
-        !
-        if(.not. allocated(df)) then
-          allocate(df(size(self_R%fc), MEMORY))
-          allocate(dv(size(self_R%fc), MEMORY))
-          allocate(delta_in(size(self_R%fc)))
-          allocate(delta_out(size(self_R%fc)))
-          df = 0._dp
-          dv = 0._dp
-          delta_in = 0._dp
-          delta_out = 0._dp
-        end if
-        !
-        delta_out = reshape(self_R%fc, [size(self_R%fc)])
-        !
-        write(filename, "(A,I2.2,A)") "self_R_", sc_iter, ".dat"
-        open(10, file=filename)
-        do iR = 1, self_R%n_R
-          do i = 1, S%nat
-            do j = 1, S%nat
-              if(ionode) write(10, "(3E20.8)") norm2(self_R%xR(:,iR) + S%tau(:,i) - S%tau(:,j)), &
-                sum(abs(self_R%fc((i-1)*3+1:i*3,(j-1)*3+1:j*3,iR)))
-            enddo
-          enddo
-        enddo
-        close(10)
-        !
-        call mix_broyden(size(self_R%fc), delta_out, delta_in, &
+        call mix_broyden_full(S%nat3**2*Nc, delta_out, delta_in, &
           ALPHA_MIX, sc_iter, MEMORY, df, dv)
-        self_R%fc = reshape(delta_in, [S%nat3, S%nat3, size(self_R%fc,3)])
-        !
-        do iq = 1, Nc
-          call fftinterp_mat2(xq(:,iq), S, self_R, self_in(:,:,iq))
-          self_in(:,:,iq) = matmul(UT(:,:,iq), matmul(self_in(:,:,iq), U(:,:,iq)))
-        enddo
+        self_in = reshape(delta_in, [S%nat3, S%nat3, Nc])
         !
         conv = .true.
         max_diff = 0._dp
-        do iq = 1, Nc
-          do i = 1, S%nat3
-            max_diff = max(max_diff, ABS(self_out(i,i,iq)-self_in(i,i,iq)))
-            if( ABS(self_out(i,i,iq)-self_in(i,i,iq)) > REL_TOLERANCE * &
-              abs(self_in(i,i,iq)) + ABS_TOLERANCE) conv = .false.
-          enddo
+        do iq = 1, S%nat3**2*Nc
+            max_diff = max(max_diff, ABS(delta_out(iq)))
+            if( ABS(delta_out(iq)) > REL_TOLERANCE * &
+              abs(delta_in(iq)) + ABS_TOLERANCE) conv = .false.
         enddo
-        if(ionode) print*, iw, sc_iter, max_diff / sum(abs(self_in)) * S%nat3**2 * Nc
-        ! write(filename, "(A,I2.2,A)") "self_qout_", sc_iter, ".dat"
-        ! open(10, file=filename)
-        ! do iq = 1, out_grid%nqtot
-        !   call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, self_out_grid(:,:,iq,iw))
-        !   self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out_grid(:,:,iq,iw), U_out(:,:,iq))) * &
-        !     conc / simulated_conc
-        !   ! where(aimag(self_out_grid(:,:,iq,iw)) > 0._dp) self_out_grid(:,:,iq,iw) = conjg(self_out_grid(:,:,iq,iw))
-        !   do i = 1, S%nat3
-        !     self_out_diag(i, iq, iw) = self_out_grid(i,i,iq,iw)
-        !   enddo
-        !   if(ionode) write(10, "(100E20.8)") self_out_diag(:,iq,iw)
-        ! enddo
-        ! close(10)
+        if(ionode) print*, iw, sc_iter, max_diff, sum(abs(self_in)) /S%nat3**2 / Nc, sum(abs(self_out)) /S%nat3**2 / Nc
         if (conv) exit
       enddo ! self-energy SC cycle
       N_ITER_TOT = N_ITER_TOT + sc_iter - 1
@@ -517,15 +388,6 @@ contains
         if(ionode) print"(A,I4,A,I4,A,E15.3)", "frequency ", iw, &
           " NOT converged in ", sc_iter-1, " iterations. Max diff: ", max_diff
       end if
-      ! do iq = 1, out_grid%nqtot
-      !   call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, self_out_grid(:,:,iq,iw))
-      !   self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(self_out_grid(:,:,iq,iw), U_out(:,:,iq))) * &
-      !     conc / simulated_conc
-      !   ! where(aimag(self_out_grid(:,:,iq,iw)) > 0._dp) self_out_grid(:,:,iq,iw) = conjg(self_out_grid(:,:,iq,iw))
-      !   do i = 1, S%nat3
-      !     self_out_diag(i, iq, iw) = self_out_grid(i,i,iq,iw)
-      !   enddo
-      ! enddo
     enddo ! frequency loop
     !
     if(ionode) print*, "Average number of iterations per frequency:", real(N_ITER_TOT,dp) / input%n_omega
@@ -594,6 +456,7 @@ contains
   function real_to_randint(rr)
     real(dp), intent(in) :: rr
     real(dp) :: x
+    integer :: real_to_randint
     !
     call random_number(x)
     if(x > rr - floor(rr)) then
