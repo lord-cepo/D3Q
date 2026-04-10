@@ -5,18 +5,18 @@ module dca
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
     fc2_recenter, fftinterp_mat2, mat2_diag
   use thutils, only: bz2simple, grid_vec_cart, &
-    e_iqr, index2v, cryst2cart, v2index, freq_in_grid, diag_cmplx, diag
+    e_iqr, index2v, cryst2cart, v2index, freq_in_grid, diag_cmplx, diag, id_mat
   use defutils, only : flatten_RR_cmplx, unflatten_RR_cmplx, &
     quter_cmplx, fftinterp_mat2_cmplx
   use defect, only : tetra_from_self, write_spf_ndiag, write_spf, &
-    write_self, write_dos, tetra_from_self_diag
+    write_self, write_dos, tetra_from_self_diag, find_where
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize, setup_simple_grid
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
   use code_input, only: code_input_type
   use functions, only: invzmat
   use constants, only: tpi, pi
-  use quter_defect, only : forceconst2_sc
+  use quter_defect, only : forceconst2_sc, inside_ws
   use functions, only: f_gauss
   use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
   use merge_degenerate, only: merge_degen
@@ -40,6 +40,39 @@ contains
     seed = 12345
     call random_seed(put=seed)
 
+  end subroutine
+  !
+  function sinc_3d(k, R)
+    real(dp), intent(in) :: k(3), R(3)
+    real(dp) :: sinc_3d
+    real(dp) :: kr(3), sk(3)
+    integer :: i
+    !
+    do i = 1, 3
+      kr(i) = k(i) * R(i)
+      if (abs(kr(i)) < 1e-8_dp) then
+        sk(i) = 1.0_dp
+      else
+        sk(i) = sin(kr(i)) / kr(i)
+      endif
+    enddo
+    sinc_3d = sk(1) * sk(2) * sk(3)
+  end function
+  !
+  subroutine find_where_real(R, list_of_R, idx) !res(idx)
+    real(dp), intent(in) :: R(3)
+    real(dp), intent(in) :: list_of_R(:,:)
+    integer, intent(out) :: idx
+    integer :: iR
+    !
+    idx = -1
+    do iR = 1, size(list_of_R,2)
+      if (all(abs(R - list_of_R(:,iR)) < 1e-8_dp)) then
+        idx = iR
+        exit
+      endif
+    enddo
+    if (idx == -1) print*, "Error in find_where_real: R not found", R
   end subroutine
   !
   subroutine check_hermitian(name, matq)
@@ -79,6 +112,47 @@ contains
     enddo
   end subroutine
   !
+  subroutine inside_ws_dca(NQ, R_list, r, nrws, rws, weights, ind_out)
+    integer, intent(in) :: NQ
+    real(dp), intent(in) :: R_list(:,:)
+    real(dp), intent(in) :: r(3)
+    real(dp), intent(in) :: rws(:,:)
+    !
+    real(dp), allocatable, intent(out) :: weights(:)
+    integer, allocatable, intent(out) :: ind_out(:)
+    !
+    real(dp), allocatable :: weights_(:)
+    integer, allocatable :: ind_out_(:)
+    integer :: i, nweights, nrws
+    real(dp) :: wg, wg_tot
+    real(dp), external :: wsweight
+    !
+    allocate(weights_(size(R_list, 2)))
+    allocate(ind_out_(size(R_list, 2)))
+    wg_tot = 0._dp
+    nweights = 0
+    do i = 1, size(R_list, 2)
+      wg = wsweight(r+R_list(:,i),rws,nrws)
+      if (wg > 1e-8) then
+        wg_tot = wg_tot + wg
+        nweights = nweights + 1
+        weights_(nweights) = wg
+        ind_out_(nweights) = i
+      endif
+    enddo
+    !
+    wg_tot = wg_tot / NQ
+    !
+    if (ABS(wg_tot-1)>1e-8) then
+      print*, "wg_tot is", wg_tot
+      call errore("inside_ws", "sum of weights is not 1", 1)
+    endif
+    allocate(weights(nweights), ind_out(nweights))
+    weights = weights_(:nweights)
+    ind_out = ind_out_(:nweights)
+    deallocate(weights_, ind_out_)
+  end subroutine
+  !
   subroutine dca_selfnrg(S, S_sc, input, fc2, fc2_sc, in_grid, out_grid)
     type(ph_system_info), intent(in) :: S, S_sc
     type(code_input_type), intent(in) :: input
@@ -94,33 +168,39 @@ contains
     ! real(dp), allocatable, intent(in) :: xR_fb(:,:)
     type(tetra_output) :: wg, wg_out
     !
-    type(forceconst2_grid) :: self_R
     complex(dp), allocatable, dimension(:) :: delta_in, delta_out, self_diff
     complex(dp), allocatable, dimension(:,:) :: den_weights, &
       den_eig, Gf_conf, Gf_avg, overlap, &
       out_den_weights, self_diag, &
-      w2_plus_self, VL, VR, Gf0i, dv, df
+      w2_plus_self, Gf0i, dv, df
     complex(dp), allocatable, dimension(:,:,:) :: den_UL, den_UR, &
       self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, &
-      self_out_diag, V_conf, self_in, self_out, G0i_cluster, Gi_coarse
+      self_out_diag, V_conf, self_in, self_out, G0i_cluster, Gi_coarse, &
+      self_R, self_coarse, rest, self_RL, self_den
     complex(dp), allocatable, dimension(:,:,:,:) :: G_avg, Gi_conf, &
       Gi_avg, phase_mat, V, self_out_grid
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, &
       self_uf
-    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f, out_freqs
+    real(dp), allocatable, dimension(:,:) :: self_xR, xq, R, f, out_freqs, &
+      window_weights, xq_patch
     integer, allocatable :: pos(:), kq(:,:)!, big_iq(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, &
-      cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT, iR
+      cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT, iR, RL_iter
     real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff
-    real(dp) :: dos(input%n_omega), shift(3), simulated_conc
+    real(dp) :: dos(input%n_omega), shift(3), simulated_conc, xqq(3)
     logical :: conv, low_concentration
-    complex(dp) :: A(S%nat3,S%nat3), eta
-    real(dp) :: eig(S%nat3)
-    integer, allocatable :: N_sites(:,:), c_equiv(:)
+    complex(dp) :: A(S%nat3,S%nat3), eta, ialpha(S%nat3,S%nat3)
+    real(dp) :: eig(S%nat3), bg_patch(3,3)
+    integer, allocatable :: N_sites(:,:), c_equiv(:), iq_of(:), window_ind(:,:), &
+      ind(:), equiv_full(:), window_count(:)
     character(len=100) :: filename
-    type(q_grid) :: c_grid
-    real(dp), allocatable :: w2(:)
+    type(q_grid) :: c_grid, in_grid_full
+    real(dp), allocatable :: w2(:), wgt(:)
+    !
+    INTEGER, PARAMETER:: nrwsx=2000
+    INTEGER :: nrws
+    REAL(DP) :: rws(0:3,nrwsx)
     !
     if(input%calculation == "test") call init_random_seed()
     !
@@ -130,7 +210,7 @@ contains
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
-    cluster_mesh = [4,4,1]
+    cluster_mesh = input%sc_grid
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
     NSAMPLES = 100
@@ -142,10 +222,21 @@ contains
       xq(:,iq) = xq(:,iq) + shift
     enddo
     !
+    call setup_simple_grid(S%bg, in_grid%n(1), in_grid%n(2), in_grid%n(3), in_grid_full)
+    ! call in_grid_full%symmetrize(S)
+    ! call equiv_grid(in_grid_full, S, equiv_full)
+    ! call in_grid_full%destroy()
+    ! call setup_simple_grid(S%bg, in_grid%n(1), in_grid%n(2), in_grid%n(3), in_grid_full)
+    !
     call setup_simple_grid(S%bg, cluster_mesh(1), cluster_mesh(2), cluster_mesh(3), c_grid, shift)
     call c_grid%symmetrize(S)
     call equiv_grid(c_grid, S, c_equiv)
     call c_grid%destroy()
+    !
+    do i = 1, 3
+      bg_patch(:,i) = S%bg(:,i) / cluster_mesh(i)
+    enddo
+    xq_patch = grid_vec_cart(in_grid%n*3, S%bg*3, divide=.true., center=.true.)
     !
     if (any(mod(in_grid%n, cluster_mesh) /= 0)) &
       call errore("dca_selfnrg", "grid size not multiple of fc2 grid size", 1)
@@ -204,9 +295,11 @@ contains
     allocate(den_eig(S%nat3, in_grid%nqtot))
     allocate(pos(Nc))
     allocate(w2_plus_self(S%nat3, in_grid%nqtot))
-
-    allocate(VL, source=Gf_avg)
-    allocate(VR, source=Gf_avg)
+    allocate(iq_of(in_grid%nqtot))
+    allocate(self_coarse(S%nat3, S%nat3, Nc))
+    allocate(rest(S%nat3, S%nat3, in_grid_full%nqtot))
+    allocate(self_RL(S%nat3, S%nat3, in_grid_full%nqtot))
+    allocate(self_den(S%nat3, S%nat3, in_grid_full%nqtot))
     allocate(w2(S%nat3*Nc))
     !
     allocate(df(S%nat3**2*Nc, MEMORY))
@@ -218,6 +311,7 @@ contains
     dv = 0._dp
     delta_in = 0._dp
     delta_out = 0._dp
+    self_coarse = 0._dp
     !
     call center_V(xq, S, S_sc, fc2_sc, Vqqs)
     do idef = 1, n_eq_sites
@@ -228,6 +322,21 @@ contains
       enddo
     enddo
     !
+    allocate(window_count(in_grid_full%nqtot))
+    window_count = 0
+    allocate(window_weights(NQ*3, in_grid_full%nqtot))
+    allocate(window_ind(NQ*3, in_grid_full%nqtot))
+    call wsinit(rws, nrwsx, nrws, bg_patch)
+    do iq = 1, in_grid_full%nqtot
+      call inside_ws_dca(NQ, xq_patch, -in_grid_full%xq(:,iq), nrws, rws, wgt, ind)
+      do i = 1, size(ind)
+        xqq = cryst2cart(xq_patch(:,ind(i))+in_grid_full%xq(:,iq), S%at, -1) * in_grid%n
+        kkq = v2index(bz2simple(NINT(xqq), in_grid%n), in_grid%n)
+        window_count(iq) = window_count(iq) + 1
+        window_weights(window_count(iq), iq) = wgt(i)
+        window_ind(window_count(iq), iq) = kkq
+      enddo
+    enddo
     ! !> construction of of the phase, used to translate the potential to
     ! !> random configurations inside the cluster
     ntot = 0
@@ -295,7 +404,6 @@ contains
     enddo
     !
     !>
-    !
     self_out = 1._dp
     self_in = 0._dp
     ! allocate(df(S%nat3**2*Nc, MEMORY))
@@ -310,29 +418,49 @@ contains
     dos = 0._dp
     N_ITER_TOT = 0
     self_fine = 0._dp
+    self_coarse = 0._dp
     !
-    print*, in_grid%xq
     if(ionode) print*, "Starting DCA self-energy calculation..."
     if(ionode) print*, ""
     do iw = 10, input%n_omega
       do sc_iter = 1, MAXITER
+        !
+        call tetra_from_self(S, in_grid, wg%f, self_fine, wg%en(iw)**2, &
+          den_weights, den_UL, den_UR, overlap, mpi=.true.)
+        !
+        ! do iqp = 1, in_grid%nqtot
+        !   call merge_degen(S%nat3, den_weights(:,iqp), wg%f(:,iqp))
+        ! enddo
+        !
         Gi_coarse = 0.0_dp
         do iq = 1, Nc
           do jq = 1, NQ
             kkq = wg%e(kq(jq,iq))
-            ! print*, kkq, kq(jq,iq), NINT(cryst2cart(in_grid%xq(:,kkq), S%at, -1) * in_grid%n)
-            A = diag(wg%f(:,kkq)**2 + wg%en(iw)**2) + self_in(:,:,iq)
-            call mat2_diag(S%nat3, A, eig)
-            Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) - matmul(A, matmul(diag(1._dp/eig), conjg(transpose(A))))
-            ! Gi_coarse(:,iq) = Gi_coarse(:,iq) + den_weights(:,kkq)
+            do k = 1, S%nat3
+              do j = 1, S%nat3
+                do i = 1, S%nat3
+                  Gi_coarse(i,j,iq) = Gi_coarse(i,j,iq) + &
+                    den_UR(i,k,kkq) * conjg(den_UL(j,k,kkq)) * &
+                    den_weights(k,kkq) / overlap(k,kkq) * Nc
+                enddo
+              enddo
+            enddo
           enddo
-          A = Gi_coarse(:,:,iq) / NQ
-          call mat2_diag(S%nat3, A, eig)
-          Gi_coarse(:,:,iq) = matmul(A, matmul(diag(1._dp/eig), conjg(transpose(A))))
-          ! Gi_coarse(:,:,iq) = (Gi_coarse(:,:,iq) + conjg(transpose(Gi_coarse(:,:,iq)))) / 2.0_dp
-          ! Gi_coarse(:,iq) = 1._dp / Gi_coarse(:,iq) / Nc
+          call invzmat(S%nat3, Gi_coarse(:,:,iq))
           G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_in(:,:,iq)
         enddo
+        !
+        write(filename, "(A,I4.4,A)") "G0i_cluster_", sc_iter, ".dat"
+        open(10, file=filename)
+        do iq = 1, Nc
+          do i = 1, S%nat3
+            do j = 1, S%nat3
+              write(10, "(2E20.8)") G0i_cluster(i,j,iq)
+            enddo
+          enddo
+        enddo
+        close(10)
+        !
         Gf0i = 0.0_dp
         do iq = 1, Nc
           Gf0i((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = G0i_cluster(:,:,iq)
@@ -354,35 +482,143 @@ contains
         !> self energy is G0_cluster^-1 - <G>^-1
         Gi_avg = unflatten_RR_cmplx(Gf_avg, Nc, Nc)
         do iq = 1, Nc
-          A = Gi_avg(:,:,iq,iq)
-          call mat2_diag(S%nat3, A, eig)
-          Gi_avg(:,:,iq,iq) = matmul(A, matmul(diag(1._dp/eig), conjg(transpose(A))))
+          call invzmat(S%nat3, Gi_avg(:,:,iq,iq))
           self_out(:,:,iq) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
         enddo
-        call symmetrize_mat_cmplx(c_equiv, self_out)
-        !>
         !
-        do iq = 1, Nc
-          self_out(:,:,iq) = (self_out(:,:,iq) + conjg(transpose(self_out(:,:,iq)))) / 2.0_dp
-        enddo
+        call symmetrize_mat_cmplx(c_equiv, self_out)
+        ! do iq = 1, Nc
+        !   A = (self_out(:,:,iq) - conjg(transpose(self_out(:,:,iq)))) / cmplx(0._dp, 2.0_dp)
+        !   call mat2_diag(S%nat3, A, eig)
+        !   print*, eig
+        ! enddo
+        !>
+        if(all(abs(self_out - self_in) < ABS_TOLERANCE + abs(self_in) * REL_TOLERANCE)) exit
         delta_out = reshape(self_out, [S%nat3**2*Nc])
         !
+        ! write(filename, "(A,I4.4,A)") "delta_out_", sc_iter, ".dat"
+        ! open(10, file=filename)
+        ! do i = 1, S%nat3**2*Nc
+        !   write(10, "(2E20.8)") delta_out(i)
+        ! enddo
+        ! close(10)
+        ! !
         call mix_broyden_full(S%nat3**2*Nc, delta_out, delta_in, &
           ALPHA_MIX, sc_iter, MEMORY, df, dv)
         self_in = reshape(delta_in, [S%nat3, S%nat3, Nc])
         !
-        conv = .true.
-        max_diff = 0._dp
-        do iq = 1, S%nat3**2*Nc
-            max_diff = max(max_diff, ABS(delta_out(iq)))
-            if( ABS(delta_out(iq)) > REL_TOLERANCE * &
-              abs(delta_in(iq)) + ABS_TOLERANCE) conv = .false.
+        if(ionode) print*, iw, sc_iter, sum(abs(self_in)) /S%nat3**2 / Nc, sum(abs(self_out)) /S%nat3**2 / Nc
+        ! self_in = self_out
+        max_diff = 0.0_dp
+        do iq = 1, Nc
+          A = (self_in(:,:,iq) - conjg(transpose(self_in(:,:,iq)))) / cmplx(0._dp, 2.0_dp)
+          call mat2_diag(S%nat3, A, eig)
+          max_diff = max(max_diff, maxval(eig))
         enddo
-        if(ionode) print*, iw, sc_iter, max_diff, sum(abs(self_in)) /S%nat3**2 / Nc, sum(abs(self_out)) /S%nat3**2 / Nc
-        if (conv) exit
+        print*, "maximum eig of self_in", max_diff
+        !
+        !
+        ialpha = id_mat(S%nat3) * cmplx(0._dp, 1e-10_dp, dp)
+        do iq = 1, Nc
+          A = matmul(U(:,:,iq), matmul(self_in(:,:,iq), UT(:,:,iq)))
+          ! self_in(:,:,iq) = A
+          A = id_mat(S%nat3) * wg%en(iw)**2 - A + ialpha
+          ! A = A - ialpha
+          call invzmat(S%nat3, A)
+          self_uf(:,:,:,:,iq) = unflatten_RR_cmplx(A, S%nat, S%nat)
+        enddo
+        !
+        CALL quter_cmplx(input%sc_grid(1), input%sc_grid(2), input%sc_grid(3), &
+          S%nat, S%tau, S%at, S%bg, self_uf, xq, self_R, self_xR, 2)
+        !
+        do iR = 1, size(self_xR,2)
+          self_R(:,:,iR) = self_R(:,:,iR) / sinc_3d(shift, self_xR(:,iR))
+        enddo
+        self_fine = 0.0_dp
+        do iq = 1, in_grid%nq
+          iqp = iq + in_grid%iq0
+          call fftinterp_mat2_cmplx(in_grid%xq(:,iq), S, self_R, self_xR, A)
+          call invzmat(S%nat3, A)
+          self_fine(:,:,iqp) = ialpha + id_mat(S%nat3) * wg%en(iw)**2 - A
+          ! self_fine(:,:,iqp) = A + ialpha
+          ! self_fine(:,:,iqp) = A
+          self_fine(:,:,iqp) = matmul(UT_fine(:,:,iqp), matmul(self_fine(:,:,iqp), U_fine(:,:,iqp)))
+        enddo
+        call mpi_bsum(S%nat3, S%nat3, in_grid%nqtot, self_fine)
+        !
+        write(filename, "(A,I4.4,A)") "self_R_", sc_iter, ".dat"
+        open(10, file=filename)
+        do iR = 1, size(self_xR,2)
+          do i = 1, S%nat
+            do j = 1, S%nat
+              write(10, "(3E20.8)") norm2(self_xR(:,iR) + S%tau(:,i)- S%tau(:,j)), sum(abs(self_R((i-1)*3+1:i*3,(j-1)*3+1:j*3,iR)))
+            enddo
+          enddo
+        enddo
+        close(10)
+        !
+        max_diff = 0.0_dp
+        do iq = 1, in_grid%nqtot
+          A = (self_fine(:,:,iq) - conjg(transpose(self_fine(:,:,iq)))) / cmplx(0._dp, 2.0_dp)
+          call mat2_diag(S%nat3, A, eig)
+          max_diff = max(max_diff, maxval(eig))
+        enddo
+        print*, "maximum eig of self_fine", max_diff
+        !
+        ! RL_iter = 0
+        ! do iq = 1, in_grid_full%nqtot
+        !   self_RL(:,:,iq) = self_fine(:,:,wg%e(iq))
+        ! enddo
+        !
+        ! !> RL algorithm
+        ! do
+        !   self_den = 0._dp
+        !   do iq = 1, in_grid_full%nqtot
+        !     do jq = 1, window_count(iq)
+        !       self_den(:,:,iq) = self_den(:,:,iq) + self_RL(:,:,window_ind(jq,iq)) * window_weights(jq,iq) / NQ
+        !     enddo
+        !     ! Pack Re-ratio → real(rest), Im-ratio → aimag(rest)
+        !     rest(:,:,iq) = cmplx( &
+        !       merge(real(self_fine(:,:,wg%e(iq)),dp)  / real(self_den(:,:,iq),dp),  1._dp, &
+        !       abs(real(self_den(:,:,iq),dp))  >= 1e-3_dp*maxval(real(self_den(:,:,iq),dp))), &
+        !       merge(aimag(self_fine(:,:,wg%e(iq))) / aimag(self_den(:,:,iq)), 1._dp, &
+        !       abs(aimag(self_den(:,:,iq))) >= 1e-3_dp*maxval(aimag(self_den(:,:,iq)))), dp)
+        !   enddo
+        !   !
+        !   self_den = 0._dp
+        !   do iq = 1, in_grid_full%nqtot
+        !     do jq = 1, window_count(iq)
+        !       self_den(:,:,iq) = self_den(:,:,iq) + rest(:,:,window_ind(jq,iq)) * window_weights(jq,iq) / NQ
+        !     enddo
+        !   enddo
+        !   print*, sum(self_den) / S%nat3**2 / in_grid_full%nqtot
+        !   !
+        !   do iq = 1, in_grid_full%nqtot
+        !     self_RL(:,:,iq) = cmplx( &
+        !       real(self_RL(:,:,iq),dp)  * real(self_den(:,:,iq),dp), &
+        !       aimag(self_RL(:,:,iq)) * aimag(self_den(:,:,iq)), dp)
+        !   enddo
+        !   print*, "-", sum(self_RL)
+        !   if(all(abs(real(self_den,dp)  - 1._dp) < 1e-5_dp) .and. &
+        !     all(abs(aimag(self_den) - 1._dp) < 1e-5_dp)) exit
+        !   RL_iter = RL_iter + 1
+        !   if(RL_iter > 100) then
+        !     if(ionode) print*, "Warning: inner loop not converging", &
+        !       maxval(abs(real(self_den,dp)-1._dp)), maxval(abs(aimag(self_den)-1._dp))
+        !     exit
+        !   endif
+        ! enddo !> RL loop
+        !
+        ! do iq = 1, Nc
+        !   do jq = 1, NQ
+        !     self_coarse(:,:,iq) = self_coarse(:,:,iq) + self_RL(:,:,kq(jq,iq)) / NQ
+        !   enddo
+        !   self_coarse(:,:,iq) = matmul(UT(:,:,iq), matmul(self_coarse(:,:,iq), U(:,:,iq)))
+        ! enddo
+        !
       enddo ! self-energy SC cycle
       N_ITER_TOT = N_ITER_TOT + sc_iter - 1
-      if(conv) then
+      if(sc_iter - 1 /= MAXITER) then
         if(ionode) print"(A,I4,A,I4,A)", "frequency ", iw, " converged in ", sc_iter-1, " iterations."
       else
         if(ionode) print"(A,I4,A,I4,A,E15.3)", "frequency ", iw, &
