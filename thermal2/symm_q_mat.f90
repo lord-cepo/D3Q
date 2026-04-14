@@ -1,0 +1,350 @@
+module symm_q_mat
+  use kinds, only : DP
+  USE symm_base,          ONLY : s, invs, nsym, find_sym, set_sym_bl, irt, copy_sym, nrot, inverse_s
+  USE cell_base,          ONLY : celldm, ibrav, omega
+  ! USE ions_base,          ONLY : ityp, ntyp => nsp, atm, tau, amass
+  use thutils,            only : cryst2cart
+  ! ====================================================================
+  ! START OF STAR AVERAGING BLOCK
+  ! ====================================================================
+  ! At this point, we have:
+  ! - xq: the irreducible q-point
+  ! - s(:,:,1:nsym): all crystal symmetries
+  ! - invs(:): inverses of the symmetry operations
+  ! - irt, rtau: atom rotations and fractional translations
+  ! - isq(:): maps each symmetry operation to a point in the star
+  ! - sxq(:,iq): the actual q-vectors of the star
+  ! - phi_star(:,:,:,:,iq): the un-averaged matrices at each q-point in the star
+  !
+  ! We want to compute: phi (the perfectly averaged matrix at xq)
+  ! ====================================================================
+  public :: apply_sym
+contains
+  subroutine apply_sym(at, bg, nat, ityp, tau, dyn_in, equiv, grid)
+    real(dp), intent(in) :: at(3,3), bg(3,3)
+    integer, intent(in) :: nat
+    real(dp), intent(in) :: tau(3,nat)
+    integer, intent(in) :: ityp(nat)
+    integer, intent(in) :: equiv(:)
+    real(dp), intent(in) :: grid(:,:)
+    complex(dp), intent(inout) :: dyn_in(:,:,:)
+    real(dp) :: sxq(3,48), diff(3), xq(3), rtau(3,48,nat), &
+      gi(3,48), gimq(3)
+    logical :: sym(48), minus_q
+    logical :: found
+    integer :: isym, iq, i, j, irotmq
+    integer :: nq, nsymq, iq_irr, isq(48), iq_isym, nq_irr, invsm, imq
+    complex(dp) :: phi_in(3,3,nat,nat, size(dyn_in,3))
+    complex(DP) :: phi_tmp(3,3,nat,nat), d2(3*nat, 3*nat)
+    complex(DP), allocatable :: phi_avg(:,:,:,:,:), dyn_star(:,:,:)
+    real(dp), allocatable :: m_loc(:,:)
+    integer, allocatable :: irr_map(:)
+    !
+    nq = size(dyn_in, 3)
+    nq_irr = maxval(equiv)
+    allocate(irr_map(nq_irr))
+    allocate(phi_avg(3,3,nat,nat,nq_irr))
+    do iq = 1, nq
+      call scompact_dyn(nat, dyn_in(:,:,iq), phi_in(:,:,:,:,iq))
+      call trntnsc_ats(phi_in(:,:,:,:,iq), at, bg, -1)
+    enddo
+    !
+    ! ! ######################### symmetry setup #########################
+    ! ~~~~~~~~ setup bravais lattice symmetry ~~~~~~~~
+    !
+    ! ~~~~~~~~ setup crystal symmetry ~~~~~~~~
+    ALLOCATE(m_loc(3,nat))
+    m_loc = 0._dp
+    CALL set_sym_bl ( )
+    CALL find_sym ( nat, tau, ityp, .false., m_loc )
+    !
+    CALL sgam_lr(at, bg, nsym, s, irt, tau, rtau, nat)
+    !
+    !
+    !
+    phi_avg = 0._dp
+    irr_map = 0
+    do iq_irr = 1, nq
+      if(irr_map(equiv(iq_irr)) /= 0) then
+        cycle
+      else
+        irr_map(equiv(iq_irr)) = iq_irr
+      end if
+      !
+      CALL star_q(grid(:,iq_irr), at, bg, nsym, s, invs, nqs, sxq, isq, imq, .false. )
+      ! Loop over all symmetry operations of the crystal
+      do isym = 1, nsym
+        ! Find which q-point in the star this symmetry operation generates
+        found = .false.
+        do iq = 1, nq
+          diff = cryst2cart(sxq(:,isq(isym)) - grid(:,iq), at, -1)
+          if (norm2(diff-NINT(diff)) < 1e-5_dp) then
+            iq_isym = iq
+            found = .true.
+            exit
+          end if
+        enddo
+        if(.not. found) then
+          print*, cryst2cart(sxq(:,isq(isym)), at, -1)
+          print*, "-------------------------------"
+          print*, cryst2cart(grid(:,iq_irr), at, -1)
+          call errore("apply_sym", "not all the star is in the grid", 1)
+        endif
+        ! 1. Take the matrix at that q-point
+        ! 2. Transform it to crystal coordinates
+
+        ! 3. Rotate it BACK to the irreducible point xq
+        ! We use the INVERSE operation (invs(isym)) to map q_eq -> xq.
+        ! Note: rotate_and_add_dyn handles the rtau phases internally.
+        ! The last argument is the wavevector we are coming FROM (sxq(:, iq)).
+        invsm = invs(isym)
+        invs(isym) = isym
+        call rotate_and_add_dyn (phi_in(:,:,:,:,iq_isym), phi_avg(:,:,:,:,equiv(iq_irr)), nat, invs(isym), s, invs, irt, &
+          rtau, sxq(:,isq(isym)) )
+        invs(isym) = invsm
+      enddo
+
+      ! 4. Average over all symmetry operations
+      ! We divide by nsym (total crystal operations) because rotate_and_add_dyn
+      ! just adds the matrices together.
+
+      ! 5. Transform the averaged matrix back to Cartesian coordinates
+      ! do na = 1, nat
+      !   do nb = 1, nat
+      !     call trntnsc (phi_avg(1,1,na,nb), at, bg, +1)
+      !   enddo
+      ! enddo
+
+      ! 6. Overwrite phi with our new properly averaged irreducible matrix
+      ! phi(:,:,:,:) = phi_avg(:,:,:,:)
+      ! ====================================================================
+      ! END OF STAR AVERAGING BLOCK
+      ! ====================================================================
+      ! >>> SAVE THE ORIGINAL SYMMETRY MATRICES <<<
+      ! ~~~~~~~~ setup small group of q symmetry ~~~~~~~~
+    enddo
+    phi_avg = phi_avg / real(nsym, dp)
+    !
+    dyn_in = -1._dp
+    minus_q = .true.
+    do iq_irr = 1, nq_irr
+      CALL set_sym_bl ( )
+      CALL find_sym ( nat, tau, ityp, .false., m_loc )
+      !
+      xq = grid(:,irr_map(iq_irr))
+      sym = .false.
+      sym(1:nsym) = .true.
+      CALL smallg_q(xq, 0, at, bg, nsym, s, sym, minus_q)
+      nsymq = copy_sym(nsym, sym)
+      ! recompute the inverses as the order of sym.ops. has changed
+      CALL inverse_s ( )
+      ! part 2: this computes gi, gimq
+      call set_giq (xq,s,nsymq,nsym,irotmq,minus_q,gi,gimq)
+      !
+      ! finally this does some of the above again and also computes rtau...
+      CALL sgam_lr(at, bg, nsym, s, irt, tau, rtau, nat)
+      !
+      ! ######################### star of q #########################
+      CALL symdynph_gq_new (xq, phi_avg(:,:,:,:,iq_irr), s, invs, rtau, irt, nsymq, nat, &
+        irotmq, minus_q)
+      !
+      CALL star_q(xq, at, bg, nsym, s, invs, nqs, sxq, isq, imq, .true. )
+      !
+      call compact_dyn(nat, d2, phi_avg(:,:,:,:,iq_irr))
+      allocate(dyn_star(3*nat, 3*nat, nqs))
+      CALL q2qstar_ph_nowrite(d2, at, bg, nat, nsym, s, invs, irt, rtau, &
+        nqs, sxq, isq, imq, 1, dyn_star)
+      do iq = 1, nqs
+        found = .false.
+        do iiq = 1, nq
+          diff = cryst2cart(sxq(:,iq) - grid(:,iiq), at, -1)
+          if (norm2(diff-NINT(diff)) < 1e-5_dp) then
+            iq_sym = iiq
+            found = .true.
+            exit
+          end if
+        enddo
+        if(.not. found) call errore("apply_sym", "(2) not all the star is in the grid", 1)
+        if(any(abs(dyn_in(:,:,iq_sym))+1._dp > 1e-10_dp)) call errore("apply_sym", "dyn_in is not empty", 1)
+        dyn_in(:,:,iq_sym) = dyn_star(:,:,iq)
+      enddo
+    enddo
+  end subroutine
+  !
+  subroutine trntnsc_ats(phi_, at_, bg_, sign)
+    complex(dp), intent(inout) :: phi_(:,:,:,:)
+    real(dp), intent(in) :: at_(3,3), bg_(3,3)
+    integer, intent(in) :: sign
+    !
+    integer :: na, nb, nat_
+    nat_ = size(phi_, 3)
+    !
+    do na = 1, nat_
+      do nb = 1, nat_
+        call trntnsc (phi_(1,1,na,nb), at_, bg_, sign)
+      enddo
+    enddo
+  end subroutine
+!
+  subroutine q2qstar_ph_nowrite(dyn, at, bg, nat, nsym, s, invs, irt, rtau, &
+    nq, sxq, isq, imq, iudyn, dyn_grid)
+    !-----------------------------------------------------------------------
+    !! Generates the dynamical matrices for the star of q and writes them on
+    !! disk for later use.
+    !! If there is a symmetry operation such that \(q \rightarrow -q+G \) then
+    !! imposes on dynamical matrix those conditions related to time reversal
+    !! symmetry.
+    !
+    USE kinds, only : DP
+    USE io_dyn_mat, only : write_dyn_mat
+    USE control_ph, only : xmldyn
+    implicit none
+    !
+    integer :: nat
+    !! number of atoms in the unit cell
+    integer :: nsym
+    !! number of symmetry operations
+    integer :: s(3,3,48)
+    !! the symmetry operations
+    integer :: invs(48)
+    !! index of the inverse operations
+    integer :: irt(48,nat)
+    !! index of the rotated atom
+    integer :: nq
+    !! degeneracy of the star of q
+    complex(dp), intent(out) :: dyn_grid(3*nat, 3*nat, nq)
+    integer :: isq(48)
+    !! symmetry op. giving the rotated q
+    integer :: imq
+    !! index of -q in the star (0 if non present)
+    integer :: iudyn
+    !! unit number
+    complex(DP), intent(inout) :: dyn(3*nat,3*nat)
+    !! the input dynamical matrix. If \(\text{imq}\) different
+    !! from 0 the output matrix is symmetrized w.r.t. time-reversal
+    real(DP) :: at (3,3)
+    !! direct lattice vectors
+    real(DP) :: bg (3,3)
+    !! reciprocal lattice vectors
+    real(DP) :: rtau (3,48,nat)
+    !! for each atom and rotation gives the R vector involved
+    real(DP) :: sxq (3,48)
+    !! list of q in the star
+    !
+    ! ... local variables
+    !
+    integer :: na, nb, iq, nsq, isym, icar, jcar, i, j
+    ! counters
+    ! nsq: number of sym.op. giving each q in the list
+
+    complex(DP) :: phi (3, 3, nat, nat), phi2 (3, 3, nat, nat)
+    ! work space
+    complex(dp) :: d2(3*nat, 3*nat)
+    !
+    ! Sets number of symmetry operations giving each q in the list
+    !
+    nsq = nsym / nq
+    if (nsq * nq /= nsym) call errore ('q2star_ph', 'wrong degeneracy', 1)
+    !
+    ! Writes dyn.mat. dyn(3*nat,3*nat) on the 4-index array phi(3,3,nat,nat)
+    !
+    CALL scompact_dyn(nat, dyn, phi)
+    !
+    ! Go to crystal coordinates
+    !
+    ! If -q is in the list impose first of all the conditions coming from
+    ! time reversal symmetry
+    !
+    if (imq /= 0) then
+      phi2 (:,:,:,:) = (0.d0, 0.d0)
+      isym = 1
+      do while (isq (isym) /= imq)
+        isym = isym + 1
+      enddo
+      call rotate_and_add_dyn (phi, phi2, nat, isym, s, invs, irt, &
+        rtau, sxq (1, imq) )
+      do na = 1, nat
+        do nb = 1, nat
+          do i = 1, 3
+            do j = 1, 3
+              phi (i, j, na, nb) = 0.5d0 * (phi (i, j, na, nb) + &
+                CONJG(phi2(i, j, na, nb) ) )
+            enddo
+          enddo
+        enddo
+      enddo
+      phi2 (:,:,:,:) = phi (:,:,:,:)
+      !
+      ! Back to cartesian coordinates
+      !
+      do na = 1, nat
+        do nb = 1, nat
+          call trntnsc (phi2 (1, 1, na, nb), at, bg, + 1)
+        enddo
+      enddo
+      !
+      ! Saves 4-index array phi2(3,3,nat,nat) on the dyn.mat. dyn(3*nat,3*nat)
+      !
+      CALL compact_dyn(nat, dyn, phi2)
+    endif
+    !
+    ! For each q of the star rotates phi with the appropriate sym.op. -> phi
+    !
+    do iq = 1, nq
+      phi2 (:,:,:,:) = (0.d0, 0.d0)
+      do isym = 1, nsym
+        if (isq (isym) == iq) then
+          call rotate_and_add_dyn (phi, phi2, nat, isym, s, invs, irt, &
+            rtau, sxq (1, iq) )
+        endif
+      enddo
+      phi2 (:,:,:,:) = phi2 (:,:,:,:) / DBLE (nsq)
+      !
+      ! Back to cartesian coordinates
+      !
+      do na = 1, nat
+        do nb = 1, nat
+          call trntnsc (phi2 (1, 1, na, nb), at, bg, + 1)
+        enddo
+      enddo
+      call compact_dyn(nat, d2, phi2)
+      dyn_grid(:,:,iq) = d2
+      !
+      ! Writes the dynamical matrix in cartesian coordinates on file
+      !
+      ! IF (xmldyn) THEN
+      !   call write_dyn_mat(nat, counter, sxq(1,iq), phi2)
+      ! ELSE
+      !   call write_dyn_on_file (sxq (1, iq), phi2, nat, iudyn)
+      ! ENDIF
+      if (imq == 0) then
+        !
+        print*, "WARNING: no inversion symmetry"
+        ! if -q is not in the star recovers its matrix by time reversal
+        !
+        ! do na = 1, nat
+        !   do nb = 1, nat
+        !     do i = 1, 3
+        !       do j = 1, 3
+        !         phi2 (i, j, na, nb) = CONJG(phi2 (i, j, na, nb) )
+        !       enddo
+        !     enddo
+        !   enddo
+        ! enddo
+        !
+        ! and writes it (changing temporarily sign to q)
+        !
+        ! sxq (:, iq) = - sxq (:, iq)
+        ! IF (xmldyn) THEN
+        !   call write_dyn_mat(nat, counter, sxq(1,iq), phi2)
+        ! ELSE
+        !   call write_dyn_on_file (sxq (1, iq), phi2, nat, iudyn)
+        ! ENDIF
+        ! sxq (:, iq) = - sxq (:, iq)
+      endif
+    enddo
+    !
+    return
+  end subroutine
+!
+end module

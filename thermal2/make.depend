@@ -71,6 +71,7 @@ quter_defect.o : mpi_thermal.o
 read_md.o : mpi_thermal.o
 rigid_d3.o : mpi_thermal.o
 simtet.o : mpi_thermal.o
+symm_q_mat.o : mpi_thermal.o
 test_print.o : mpi_thermal.o
 tetra_raja.o : mpi_thermal.o
 thfftw.o : mpi_thermal.o
@@ -92,7 +93,6 @@ PROGRAM_bands.o : ./input_fc.o
 PROGRAM_bands.o : ./mpi_thermal.o
 PROGRAM_bands.o : ./q_grids.o
 PROGRAM_bands.o : ./utils.o
-PROGRAM_bands.o : ./quter_defect.o
 PROGRAM_db.o : ./PROGRAM_db.o
 PROGRAM_db.o : ./asr2.o
 PROGRAM_db.o : ./code_input.o
@@ -343,8 +343,10 @@ dca.o : ./merge_degenerate.o
 dca.o : ./mpi_thermal.o
 dca.o : ./ph_velocity.o
 dca.o : ./q_grids.o
+dca.o : ./quter.o
 dca.o : ./quter_defect.o
 dca.o : ./simtet.o
+dca.o : ./symm_q_mat.o
 dca.o : ./test_print.o
 dca.o : ./thtetra.o
 dca.o : ./utils.o
@@ -528,6 +530,7 @@ simtet.o : ./mpi_thermal.o
 simtet.o : ./ph_system.o
 simtet.o : ./q_grids.o
 simtet.o : ./thtetra.o
+symm_q_mat.o : ./utils.o
 tetra_raja.o : ./mpi_thermal.o
 thtetra.o : ./fc2_interp.o
 thtetra.o : ./input_fc.o

@@ -25,6 +25,69 @@ module defect
   !
 contains
   !
+  subroutine tetra_from_self_cart(S, grid, D_plus_Sigma, en2, den_weights, den_UL, den_UR, overlap, mpi)
+    type(ph_system_info), intent(in) :: S
+    type(q_grid), intent(in) :: grid
+    complex(dp), intent(in) :: D_plus_Sigma(S%nat3, S%nat3, grid%nqtot)
+    real(dp), intent(in) :: en2
+    !
+    complex(dp), intent(out), dimension(S%nat3, grid%nqtot) :: den_weights
+    complex(dp), optional, intent(out), dimension(S%nat3,S%nat3,grid%nqtot) :: den_UL, den_UR
+    complex(dp), optional, intent(out), dimension(S%nat3, grid%nqtot) :: overlap
+    logical, optional, intent(in) :: mpi
+    !
+    complex(dp), dimension(S%nat3, S%nat3) :: DL, DR, temp_U_idx
+    integer :: iq, i, idx(S%nat3), iqp
+    complex(dp) :: den_eig(S%nat3, grid%nqtot)
+    real(dp) :: real_eig(S%nat3)
+    logical :: mpi_
+    !
+    if(present(mpi)) then
+      mpi_ = mpi
+    else
+      mpi_ = .false.
+    endif
+    !
+    den_eig = 0._dp
+    if(present(den_UL)) den_UL = 0._dp
+    if(present(den_UR)) den_UR = 0._dp
+    if(present(overlap)) overlap = 0._dp
+    !
+    do iq = 1, grid%nq
+      iqp = iq + grid%iq0
+      DL = D_plus_Sigma(:,:,iqp)
+      call mat2_diag(S%nat3, DL, DR, den_eig(:,iqp))
+      real_eig = real(den_eig(:,iqp),dp)
+      idx = 0
+      CALL hpsort(S%nat3, real_eig, idx)
+      den_eig(:,iqp) = den_eig(idx,iqp)
+      if(present(den_UL)) then
+        den_UL(:,:,iqp) = DL
+        den_UR(:,:,iqp) = DR
+        temp_U_idx = den_UR(:, idx, iqp)
+        den_UR(:, :, iqp) = temp_U_idx
+        temp_U_idx = den_UL(:, idx, iqp)
+        den_UL(:, :, iqp) = temp_U_idx
+        do i = 1, S%nat3
+          overlap(i,iqp) = dot_product(den_UL(:,i,iqp), den_UR(:,i,iqp))
+        enddo
+      endif
+      ! call merge_degen(S%nat3, den_eig(:,iq), den_eig(:,iq))
+    enddo
+    if (grid%scattered) then
+      call mpi_bsum(S%nat3, grid%nqtot, den_eig)
+      if(present(den_UL)) call mpi_bsum(S%nat3, S%nat3, grid%nqtot, den_UL)
+      if(present(den_UR)) call mpi_bsum(S%nat3, S%nat3, grid%nqtot, den_UR)
+      if(present(overlap)) call mpi_bsum(S%nat3, grid%nqtot, overlap)
+    endif
+    where(aimag(den_eig)> 0._dp) den_eig = conjg(den_eig)
+    !
+    !{ weights of diagonal tetra
+    call tetra_init_sym_cmplx(grid, S, den_eig, mpi=mpi_)
+    den_weights = tetra_weights_green_cmplx(en2)
+    where(isnan(abs(den_weights))) den_weights = 0._dp
+  end subroutine
+  !
   subroutine tetra_from_self(S, grid, freqs, self, en2, den_weights, den_UL, den_UR, overlap, mpi)
     type(ph_system_info), intent(in) :: S
     type(q_grid), intent(in) :: grid
