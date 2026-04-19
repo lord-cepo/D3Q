@@ -238,7 +238,7 @@ program defectp
   deallocate(DRR)
   !
   if(contain(input%mode, 'dca')) &
-    call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, in_grid_sym_scat, out_grid)
+    call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, out_grid)
   CALL fc2_sc%center(sc_grid, S)
   if(contain(input%mode, '1b')) &
     call main_defect(S, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid, input)

@@ -1,9 +1,11 @@
 module symm_q_mat
   use kinds, only : DP
   USE symm_base,          ONLY : s, invs, nsym, find_sym, set_sym_bl, irt, copy_sym, nrot, inverse_s
-  USE cell_base,          ONLY : celldm, ibrav, omega
-  ! USE ions_base,          ONLY : ityp, ntyp => nsp, atm, tau, amass
+  USE cell_base,          ONLY :  at, bg, celldm, ibrav, omega
+  USE ions_base,          ONLY : ityp, ntyp => nsp, atm, tau, amass
   use thutils,            only : cryst2cart
+  USE lr_symm_base,       ONLY : rtau, nsymq, minus_q, irotmq, gi, gimq
+
   ! ====================================================================
   ! START OF STAR AVERAGING BLOCK
   ! ====================================================================
@@ -20,47 +22,53 @@ module symm_q_mat
   ! ====================================================================
   public :: apply_sym
 contains
-  subroutine apply_sym(at, bg, nat, ityp, tau, dyn_in, equiv, grid)
-    real(dp), intent(in) :: at(3,3), bg(3,3)
+  subroutine apply_sym(at_, bg_, nat, ityp_, tau_, dyn_in, equiv, grid, average)
+    real(dp), intent(in) :: at_(3,3), bg_(3,3)
     integer, intent(in) :: nat
-    real(dp), intent(in) :: tau(3,nat)
-    integer, intent(in) :: ityp(nat)
+    real(dp), intent(in) :: tau_(3,nat)
+    integer, intent(in) :: ityp_(nat)
     integer, intent(in) :: equiv(:)
     real(dp), intent(in) :: grid(:,:)
-    complex(dp), intent(inout) :: dyn_in(:,:,:)
-    real(dp) :: sxq(3,48), diff(3), xq(3), rtau(3,48,nat), &
-      gi(3,48), gimq(3)
-    logical :: sym(48), minus_q
+    complex(dp), allocatable, intent(inout) :: dyn_in(:,:,:)
+    logical, intent(in) :: average
+    !
+    real(dp) :: sxq(3,48), diff(3), xq(3)
+    logical :: sym(48)
     logical :: found
-    integer :: isym, iq, i, j, irotmq
-    integer :: nq, nsymq, iq_irr, isq(48), iq_isym, nq_irr, invsm, imq
+    integer :: isym, iq, i, j, nqs, iiq, iq_sym
+    integer :: nq, iq_irr, isq(48), iq_isym, nq_irr, invsm, imq
     complex(dp) :: phi_in(3,3,nat,nat, size(dyn_in,3))
     complex(DP) :: phi_tmp(3,3,nat,nat), d2(3*nat, 3*nat)
     complex(DP), allocatable :: phi_avg(:,:,:,:,:), dyn_star(:,:,:)
     real(dp), allocatable :: m_loc(:,:)
     integer, allocatable :: irr_map(:)
     !
-    nq = size(dyn_in, 3)
-    nq_irr = maxval(equiv)
-    allocate(irr_map(nq_irr))
-    allocate(phi_avg(3,3,nat,nat,nq_irr))
-    do iq = 1, nq
+    at = at_
+    bg = bg_
+    ityp = ityp_
+    tau = tau_
+    !
+    if(.not. allocated(rtau)) allocate(rtau(3, 48, nat))
+    ALLOCATE(m_loc(3,nat))
+    m_loc = 0._dp
+    do iq = 1, size(dyn_in, 3)
       call scompact_dyn(nat, dyn_in(:,:,iq), phi_in(:,:,:,:,iq))
       call trntnsc_ats(phi_in(:,:,:,:,iq), at, bg, -1)
     enddo
+    nq = size(grid, 2)
+    !
+    nq_irr = maxval(equiv)
+    allocate(irr_map(nq_irr))
+    allocate(phi_avg(3,3,nat,nat,nq_irr))
     !
     ! ! ######################### symmetry setup #########################
     ! ~~~~~~~~ setup bravais lattice symmetry ~~~~~~~~
     !
     ! ~~~~~~~~ setup crystal symmetry ~~~~~~~~
-    ALLOCATE(m_loc(3,nat))
-    m_loc = 0._dp
     CALL set_sym_bl ( )
     CALL find_sym ( nat, tau, ityp, .false., m_loc )
     !
     CALL sgam_lr(at, bg, nsym, s, irt, tau, rtau, nat)
-    !
-    !
     !
     phi_avg = 0._dp
     irr_map = 0
@@ -71,61 +79,52 @@ contains
         irr_map(equiv(iq_irr)) = iq_irr
       end if
       !
-      CALL star_q(grid(:,iq_irr), at, bg, nsym, s, invs, nqs, sxq, isq, imq, .false. )
-      ! Loop over all symmetry operations of the crystal
-      do isym = 1, nsym
-        ! Find which q-point in the star this symmetry operation generates
-        found = .false.
-        do iq = 1, nq
-          diff = cryst2cart(sxq(:,isq(isym)) - grid(:,iq), at, -1)
-          if (norm2(diff-NINT(diff)) < 1e-5_dp) then
-            iq_isym = iq
-            found = .true.
-            exit
-          end if
+      if(average) then
+        CALL star_q(grid(:,iq_irr), at, bg, nsym, s, invs, nqs, sxq, isq, imq, .false. )
+        ! Loop over all symmetry operations of the crystal
+        do isym = 1, nsym
+          ! Find which q-point in the star this symmetry operation generates
+          found = .false.
+          do iq = 1, nq
+            diff = cryst2cart(sxq(:,isq(isym)) - grid(:,iq), at, -1)
+            if (norm2(diff-NINT(diff)) < 1e-5_dp) then
+              iq_isym = iq
+              found = .true.
+              exit
+            end if
+          enddo
+          if(.not. found) then
+            print*, cryst2cart(sxq(:,isq(isym)), at, -1)
+            print*, "-------------------------------"
+            print*, cryst2cart(grid(:,iq_irr), at, -1)
+            call errore("apply_sym", "not all the star is in the grid", 1)
+          endif
+          ! 1. Take the matrix at that q-point
+          ! 2. Transform it to crystal coordinates
+
+          ! 3. Rotate it BACK to the irreducible point xq
+          ! We use the INVERSE operation (invs(isym)) to map q_eq -> xq.
+          ! Note: rotate_and_add_dyn handles the rtau phases internally.
+          ! The last argument is the wavevector we are coming FROM (sxq(:, iq)).
+          call rotate_and_add_dyn (phi_in(:,:,:,:,iq_isym), phi_avg(:,:,:,:,equiv(iq_irr)), &
+            nat, invs(isym), s, invs, irt, rtau, sxq(:,isq(isym)) )
         enddo
-        if(.not. found) then
-          print*, cryst2cart(sxq(:,isq(isym)), at, -1)
-          print*, "-------------------------------"
-          print*, cryst2cart(grid(:,iq_irr), at, -1)
-          call errore("apply_sym", "not all the star is in the grid", 1)
-        endif
-        ! 1. Take the matrix at that q-point
-        ! 2. Transform it to crystal coordinates
-
-        ! 3. Rotate it BACK to the irreducible point xq
-        ! We use the INVERSE operation (invs(isym)) to map q_eq -> xq.
-        ! Note: rotate_and_add_dyn handles the rtau phases internally.
-        ! The last argument is the wavevector we are coming FROM (sxq(:, iq)).
-        invsm = invs(isym)
-        invs(isym) = isym
-        call rotate_and_add_dyn (phi_in(:,:,:,:,iq_isym), phi_avg(:,:,:,:,equiv(iq_irr)), nat, invs(isym), s, invs, irt, &
-          rtau, sxq(:,isq(isym)) )
-        invs(isym) = invsm
-      enddo
-
-      ! 4. Average over all symmetry operations
-      ! We divide by nsym (total crystal operations) because rotate_and_add_dyn
-      ! just adds the matrices together.
-
-      ! 5. Transform the averaged matrix back to Cartesian coordinates
-      ! do na = 1, nat
-      !   do nb = 1, nat
-      !     call trntnsc (phi_avg(1,1,na,nb), at, bg, +1)
-      !   enddo
-      ! enddo
-
-      ! 6. Overwrite phi with our new properly averaged irreducible matrix
-      ! phi(:,:,:,:) = phi_avg(:,:,:,:)
+      endif
       ! ====================================================================
       ! END OF STAR AVERAGING BLOCK
       ! ====================================================================
-      ! >>> SAVE THE ORIGINAL SYMMETRY MATRICES <<<
-      ! ~~~~~~~~ setup small group of q symmetry ~~~~~~~~
     enddo
     phi_avg = phi_avg / real(nsym, dp)
     !
-    dyn_in = -1._dp
+    if (.not. average) then
+      do iq = 1, nq_irr
+        phi_avg(:,:,:,:,iq) = phi_in(:,:,:,:,iq)
+      enddo
+      deallocate(dyn_in)
+      allocate(dyn_in(3*nat, 3*nat, nq))
+    endif
+    !
+    dyn_in = (1._dp, 0._dp)
     minus_q = .true.
     do iq_irr = 1, nq_irr
       CALL set_sym_bl ( )
@@ -148,12 +147,14 @@ contains
       CALL symdynph_gq_new (xq, phi_avg(:,:,:,:,iq_irr), s, invs, rtau, irt, nsymq, nat, &
         irotmq, minus_q)
       !
-      CALL star_q(xq, at, bg, nsym, s, invs, nqs, sxq, isq, imq, .true. )
+      CALL star_q(xq, at, bg, nsym, s, invs, nqs, sxq, isq, imq, .false. )
       !
       call compact_dyn(nat, d2, phi_avg(:,:,:,:,iq_irr))
       allocate(dyn_star(3*nat, 3*nat, nqs))
       CALL q2qstar_ph_nowrite(d2, at, bg, nat, nsym, s, invs, irt, rtau, &
         nqs, sxq, isq, imq, 1, dyn_star)
+      ! dyn_star(:,:,1) = d2
+
       do iq = 1, nqs
         found = .false.
         do iiq = 1, nq
@@ -165,9 +166,10 @@ contains
           end if
         enddo
         if(.not. found) call errore("apply_sym", "(2) not all the star is in the grid", 1)
-        if(any(abs(dyn_in(:,:,iq_sym))+1._dp > 1e-10_dp)) call errore("apply_sym", "dyn_in is not empty", 1)
+        if(any(abs(dyn_in(:,:,iq_sym))-1._dp > 1e-10_dp)) call errore("apply_sym", "dyn_in is not empty", 1)
         dyn_in(:,:,iq_sym) = dyn_star(:,:,iq)
       enddo
+      deallocate(dyn_star)
     enddo
   end subroutine
   !
