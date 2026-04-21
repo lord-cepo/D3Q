@@ -187,8 +187,8 @@ contains
     integer, allocatable :: pos(:), kq(:,:)!, big_iq(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, &
-      cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT, iR, RL_iter, Q_mesh(3)
-    real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff
+      cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT, iR, RL_iter, Q_mesh(3), idx(S%nat3), locations(3)
+    real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff, max_diff_coarse
     real(dp) :: dos(input%n_omega), shift(3), simulated_conc, xqq(3)
     logical :: conv, low_concentration
     complex(dp) :: A(S%nat3,S%nat3), eta, ialpha(S%nat3,S%nat3), eigc(S%nat3)
@@ -202,8 +202,8 @@ contains
     if(input%calculation == "test") call init_random_seed()
     !
     MAXITER = 100
-    ABS_TOLERANCE = 1e-10_dp * input%conc
-    REL_TOLERANCE = 1e-6_dp
+    ABS_TOLERANCE = 1e-10_dp
+    REL_TOLERANCE = 1e-3_dp
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
@@ -254,7 +254,6 @@ contains
     allocate(f(S%nat3,in_grid%nqtot), U(S%nat3,S%nat3,Nc), UT(S%nat3,S%nat3,Nc))
     allocate(D(S%nat3,S%nat3,in_grid%nqtot))
     call freq_in_grid(S, fc2, in_grid, f, U_fine)
-    D = 0._dp
     do iq = 1, in_grid%nq
       iqp = iq + in_grid%iq0
       call fftinterp_mat2(in_grid%xq(:,iq), S, fc2, D(:,:,iqp))
@@ -456,22 +455,28 @@ contains
     if(ionode) print*, "Starting DCA self-energy calculation..."
     if(ionode) print*, ""
     do iw = 1, input%n_omega
+      max_diff = huge(1.0_dp)
       do sc_iter = 1, MAXITER
         !
         if (.not. allocated(weights)) allocate(weights(S%nat3, S%nat3, in_grid%nqtot))
         call tetra_from_self_cart(S, in_grid, D + self_fine, wg%en(iw)**2, weights, mpi=.true.)
-        ! call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, weights, equiv, in_grid_full%xq, .false.)
+        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, weights, equiv, in_grid_full%xq, .false.)
         !
         Gi_coarse = 0.0_dp
         do iq = 1, Nc
           do jq = 1, NQ
-            kkq = wg%e(kq(jq,iq))
+            kkq = kq(jq,iq)
             Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) + weights(:,:,kkq) * Nc
           enddo
+          ! A = (Gi_coarse(:,:,iq) - conjg(transpose(Gi_coarse(:,:,iq)))) / cmplx(0._dp, 2.0_dp)
+          ! call mat2_diag(S%nat3, A, eig)
+          ! print"(6E15.4)", eig
+          !
           call invzmat(S%nat3, Gi_coarse(:,:,iq))
           G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_in(:,:,iq)
         enddo
         !
+        ! call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, G0i_cluster, c_equiv, xq, .true.)
         deallocate(weights)
         !
         Gf0i = 0.0_dp
@@ -513,8 +518,6 @@ contains
         ! print*, "-----------------------------------"
         ! call symmetrize_mat_cmplx(c_equiv, self_out)
         !>
-        print*, maxval(abs(self_out-self_in) - ABS_TOLERANCE - abs(self_in) * REL_TOLERANCE)
-        if(all(abs(self_out - self_in) < ABS_TOLERANCE + abs(self_in) * REL_TOLERANCE)) exit
         !
         ! do iq = 1, Nc
         !   call mat2_diag(S%nat3, self_out(:,:,iq), eigc)
@@ -522,8 +525,11 @@ contains
         ! enddo
         delta_out = reshape(self_out, [S%nat3**2*Nc])
         call mix_broyden_full(S%nat3**2*Nc, delta_out, delta_in, &
-          ALPHA_MIX, sc_iter, MEMORY, df, dv)
+        ALPHA_MIX, sc_iter, MEMORY, df, dv)
         self_in = reshape(delta_in, [S%nat3, S%nat3, Nc])
+        !
+        if(all(abs(real(self_out - self_in, dp)) < ABS_TOLERANCE + abs(real(self_in, dp)) * REL_TOLERANCE) .and. &
+           all(abs(aimag(self_out - self_in)) < ABS_TOLERANCE + abs(aimag(self_in)) * REL_TOLERANCE)) exit
         ! do iq = 1, Nc
         !   self_in(:,:,iq) = matmul(self_out(:,:,iq), matmul( &
         !     diag_cmplx(delta_in((iq-1)*S%nat3+1:iq*S%nat3)), conjg(transpose(self_out(:,:,iq)))))
@@ -644,40 +650,42 @@ contains
         !   endif
         ! enddo !> RL loop
         !
-        ! if(allocated(self_full)) deallocate(self_full)
-        ! allocate(self_full, source=self_fine)
-        ! self_full = self_fine
-        ! call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_full, equiv, in_grid_full%xq, .false.)
-        ! A = self_fine(:,:,2)
-        ! call mat2_diag(S%nat3, A, eigc)
-        ! do i = 1, S%nat3
-        !   do j = 1, S%nat3
-        !     print*, U_fine(i,j,2), A(i,j)
-        !   enddo
-        ! enddo
-        ! do iq = 1, size(self_full,3)
-        !   A = self_full(:,:,iq)
-        !   call mat2_diag(S%nat3, A, eig)
-        !   print*, sum(abs(eig)), equiv(iq)
-        ! enddo
+        if(allocated(self_full)) deallocate(self_full)
+        allocate(self_full, source=self_fine)
+        self_full = self_fine
+        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_full, equiv, in_grid_full%xq, .false.)
         !
-        ! self_coarse = 0.0_dp
+        self_coarse = 0.0_dp
+        do iq = 1, Nc
+          do jq = 1, NQ
+            self_coarse(:,:,iq) = self_coarse(:,:,iq) + self_full(:,:,kq(jq,iq)) / NQ
+          enddo
+          ! self_coarse(:,:,iq) = matmul(UT(:,:,iq), matmul(self_coarse(:,:,iq), U(:,:,iq)))
+        enddo
+        !
+        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_coarse, c_equiv, xq, .true.)
         ! do iq = 1, Nc
-        !   do jq = 1, NQ
-        !     self_coarse(:,:,iq) = self_coarse(:,:,iq) + self_full(:,:,kq(jq,iq)) / NQ
-        !   enddo
-        !   ! self_coarse(:,:,iq) = matmul(UT(:,:,iq), matmul(self_coarse(:,:,iq), U(:,:,iq)))
+        !   A = (self_out(:,:,iq) - conjg(transpose(self_out(:,:,iq)))) / cmplx(0._dp, 2.0_dp)
+        !   call mat2_diag(S%nat3, A, eig)
+        !   if(ionode) print*, eig
         ! enddo
-        !
         ! do iq = 1, in_grid%nqtot
         !   self_fine(:,:,iq) = matmul(UT_fine(:,:,iq), matmul(self_fine(:,:,iq), U_fine(:,:,iq)))
         ! enddo
         ! A = self_in(:,:,10)
         ! call mat2_diag(S%nat3, A, eigc)
-        ! if(ionode) print"(A,2E20.8)", "in    ", sum(eigc)
+        ! eig = real(eigc, dp)
+        ! idx = 0
+        ! CALL hpsort(S%nat3, eig, idx)
+        ! eigc = eigc(idx)
+        ! if(ionode) print"(A,12E20.8)", "in    ",  eigc
         ! A = self_coarse(:,:,10)
         ! call mat2_diag(S%nat3, A, eigc)
-        ! if(ionode) print"(A,2E20.8)", "coarse", sum(eigc)
+        ! eig = real(eigc, dp)
+        ! idx = 0
+        ! CALL hpsort(S%nat3, eig, idx)
+        ! eigc = eigc(idx)
+        ! if(ionode) print"(A,12E20.8)", "coarse",  eigc
         !
       enddo ! self-energy SC cycle
       N_ITER_TOT = N_ITER_TOT + sc_iter - 1
@@ -793,11 +801,18 @@ contains
     integer, intent(out) :: pos(N)
     !
     real(dp) :: r
-    integer :: i
+    integer :: i, j, tmp
     !
+    if (Npos > N) call errore("sample_canonical", "Npos cannot be larger than N", 1)
+    do i = 1, N
+      pos(i) = i
+    enddo
     do i = 1, Npos
       call random_number(r)
-      pos(i) = 1 + floor(r * N)
+      j = i + floor(r * (N - i + 1))
+      tmp = pos(i)
+      pos(i) = pos(j)
+      pos(j) = tmp
     enddo
   end subroutine
   !
