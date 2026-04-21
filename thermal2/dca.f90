@@ -202,8 +202,8 @@ contains
     if(input%calculation == "test") call init_random_seed()
     !
     MAXITER = 100
-    ABS_TOLERANCE = 1e-10_dp
-    REL_TOLERANCE = 1e-3_dp
+    ABS_TOLERANCE = 1e-12_dp
+    REL_TOLERANCE = 1e-5_dp
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
@@ -483,19 +483,42 @@ contains
         do iq = 1, Nc
           Gf0i((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = G0i_cluster(:,:,iq)
         enddo
-        Gf_avg = 0.0_dp
-        do it = 1+my_id, NSAMPLES, num_procs
-          ! > construction of G_conf for a given configuration
-          ! Gi_conf = 0.0_dp
-          !
-          Gf_conf = Gf0i - V_conf(:,:,it)
-          call invzmat(S%nat3*Nc, Gf_conf)
-          !
-          Gf_avg = Gf_avg + Gf_conf
-          !
-        enddo
-        call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf_avg)
-        Gf_avg = Gf_avg / real(NSAMPLES, dp)
+        if(low_concentration) then
+          Gi_conf = 0.0_dp
+          do iq = 1, Nc
+            A = G0i_cluster(:,:,iq)
+            call invzmat(S%nat3, A)
+            Gi_conf(:,:,iq,iq) = A
+          enddo
+          Gf_conf = flatten_RR_cmplx(Gi_conf)
+          Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
+          do idef = 1, 1
+            Gi_conf = 0.0_dp
+            do iq = 1, Nc
+              Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
+              do jq = 1, Nc
+                Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef)
+              enddo
+            enddo
+            Gf_conf = flatten_RR_cmplx(Gi_conf)
+            call invzmat(S%nat3*Nc, Gf_conf)
+            Gf_avg = Gf_avg + Gf_conf * (conc * Nc * n_eq_sites)
+          enddo
+        else
+          Gf_avg = 0.0_dp
+          do it = 1+my_id, NSAMPLES, num_procs
+            ! > construction of G_conf for a given configuration
+            ! Gi_conf = 0.0_dp
+            !
+            Gf_conf = Gf0i - V_conf(:,:,it)
+            call invzmat(S%nat3*Nc, Gf_conf)
+            !
+            Gf_avg = Gf_avg + Gf_conf
+            !
+          enddo
+          call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf_avg)
+          Gf_avg = Gf_avg / real(NSAMPLES, dp)
+        endif
         !
         !> self energy is G0_cluster^-1 - <G>^-1
         Gi_avg = unflatten_RR_cmplx(Gf_avg, Nc, Nc)
@@ -525,11 +548,11 @@ contains
         ! enddo
         delta_out = reshape(self_out, [S%nat3**2*Nc])
         call mix_broyden_full(S%nat3**2*Nc, delta_out, delta_in, &
-        ALPHA_MIX, sc_iter, MEMORY, df, dv)
+          ALPHA_MIX, sc_iter, MEMORY, df, dv)
         self_in = reshape(delta_in, [S%nat3, S%nat3, Nc])
         !
         if(all(abs(real(self_out - self_in, dp)) < ABS_TOLERANCE + abs(real(self_in, dp)) * REL_TOLERANCE) .and. &
-           all(abs(aimag(self_out - self_in)) < ABS_TOLERANCE + abs(aimag(self_in)) * REL_TOLERANCE)) exit
+          all(abs(aimag(self_out - self_in)) < ABS_TOLERANCE + abs(aimag(self_in)) * REL_TOLERANCE)) exit
         ! do iq = 1, Nc
         !   self_in(:,:,iq) = matmul(self_out(:,:,iq), matmul( &
         !     diag_cmplx(delta_in((iq-1)*S%nat3+1:iq*S%nat3)), conjg(transpose(self_out(:,:,iq)))))
@@ -699,7 +722,8 @@ contains
         call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, A)
         ! call invzmat(S%nat3, A)
         ! A = A + ialpha
-        self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(A, U_out(:,:,iq)))
+        self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(A, U_out(:,:,iq))) * &
+          conc / simulated_conc
         do i = 1, S%nat3
           self_out_diag(i,iq,iw) = self_out_grid(i,i,iq,iw)
         enddo
