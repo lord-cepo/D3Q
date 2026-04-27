@@ -6,7 +6,8 @@ module dca
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
     fc2_recenter, fftinterp_mat2, mat2_diag
   use thutils, only: bz2simple, grid_vec_cart, &
-    e_iqr, index2v, cryst2cart, v2index, freq_in_grid, diag_cmplx, diag, id_mat
+    e_iqr, index2v, cryst2cart, v2index, freq_in_grid, diag_cmplx, diag, &
+    id_mat
   use defutils, only : flatten_RR_cmplx, unflatten_RR_cmplx, &
     quter_cmplx, fftinterp_mat2_cmplx
   use defect, only : tetra_from_self_cart, write_spf_ndiag, write_spf, &
@@ -169,11 +170,11 @@ contains
     ! real(dp), allocatable, intent(in) :: xR_fb(:,:)
     type(tetra_output) :: wg, wg_out
     !
-    complex(dp), allocatable, dimension(:) :: delta_in, delta_out, self_diff, eig_proj
+    complex(dp), allocatable, dimension(:) :: delta_in, delta_out, self_diff
     complex(dp), allocatable, dimension(:,:) :: den_weights, &
       Gf_conf, Gf_avg, overlap, &
       out_den_weights, self_diag, &
-      w2_plus_self, Gf0i, dv, df
+      w2_plus_self, Gf0i, dv, df, self_full_mat, self_full_mat_out
     complex(dp), allocatable, dimension(:,:,:) :: den_UL, den_UR, &
       self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, &
       self_out_diag, V_conf, self_in, self_out, G0i_cluster, Gi_coarse, &
@@ -197,7 +198,8 @@ contains
       ind(:), equiv_full(:), window_count(:), equiv(:)
     character(len=100) :: filename
     type(q_grid) :: c_grid, in_grid_full
-    complex(dp), allocatable :: proj(:,:)
+    complex(dp), allocatable :: proj(:,:), proj_fine(:,:)
+    real(dp), allocatable :: eig_proj(:)
     !
     if(input%calculation == "test") call init_random_seed()
     !
@@ -215,7 +217,7 @@ contains
     Q_mesh = input%nk_in / cluster_mesh
     xq = grid_vec_cart(cluster_mesh, S%bg, divide=.true.)
     shift = xq(:,v2index([1,1,1],cluster_mesh))
-    call cryst_to_cart(shift, S%at, -1)
+    shift = cryst2cart(shift, S%at, -1)
     shift = shift * (Q_mesh-1) / 2 / Q_mesh
     shift = cryst2cart(shift, S%bg, 1)
     ! do iq = 1, size(xq,2)
@@ -227,7 +229,7 @@ contains
     call in_grid%symmetrize(S)
     call equiv_grid(in_grid, S, equiv)
     if(num_procs > 1) call in_grid%scatter()
-    if(num_procs > 1) call in_grid_full%scatter()
+    !if(num_procs > 1) call in_grid_full%scatter()
     ! call in_grid_full%symmetrize(S)
     ! call equiv_grid(in_grid_full, S, equiv_full)
     ! call in_grid_full%destroy()
@@ -312,6 +314,8 @@ contains
     allocate(rest(S%nat3, S%nat3, in_grid_full%nqtot))
     allocate(self_RL(S%nat3, S%nat3, in_grid_full%nqtot))
     allocate(self_den(S%nat3, S%nat3, in_grid_full%nqtot))
+    allocate(self_full_mat(S%nat3**2, in_grid_full%nqtot))
+    allocate(self_full_mat_out(S%nat3**2, in_grid_full%nqtot))
     !
     allocate(df(S%nat3**2*Nc, MEMORY))
     allocate(dv(S%nat3**2*Nc, MEMORY))
@@ -432,6 +436,27 @@ contains
     ! do iq = 1, Nc
     !   print*, eig_proj(iq)
     ! enddo
+
+    allocate(proj_fine(in_grid_full%nqtot, in_grid_full%nqtot))
+    proj_fine = 0._dp
+    do jq = 1, in_grid_full%nqtot
+      do iq = 1, in_grid_full%nqtot
+        xqq = cryst2cart(in_grid_full%xq(:,jq) - in_grid_full%xq(:,iq), S%at, -1) * &
+          in_grid_full%n
+        if(all(2*NINT(ABS(xqq)) + 1 <= Q_mesh)) proj_fine(iq,jq) = 1._dp / NQ
+      enddo
+    enddo
+    !
+    call invzmat(in_grid_full%nqtot, proj_fine)
+    proj_fine = transpose(proj_fine)
+    ! allocate(eig_proj(in_grid_full%nqtot))
+    ! call mat2_diag(in_grid_full%nqtot, proj_fine, eig_proj)
+    ! open(10, file='eig_proj.dat')
+    ! do iq = 1, in_grid_full%nqtot
+    !   write(10, *) eig_proj(iq)
+    ! enddo
+    ! close(10)
+    ! stop 1
     ! do jq = 1, NQ
     !   print*, cryst2cart(in_grid_full%xq(:,kq(jq,1)), S%at, -1)
     ! enddo
@@ -473,7 +498,7 @@ contains
           ! print"(6E15.4)", eig
           !
           call invzmat(S%nat3, Gi_coarse(:,:,iq))
-          G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_in(:,:,iq)
+          G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_coarse(:,:,iq)
         enddo
         !
         ! call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, G0i_cluster, c_equiv, xq, .true.)
@@ -492,17 +517,17 @@ contains
           enddo
           Gf_conf = flatten_RR_cmplx(Gi_conf)
           Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
-          do idef = 1, 1
+          do idef = 1, n_eq_sites
             Gi_conf = 0.0_dp
             do iq = 1, Nc
               Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
               do jq = 1, Nc
-                Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef)
+                Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef) / Nc
               enddo
             enddo
             Gf_conf = flatten_RR_cmplx(Gi_conf)
             call invzmat(S%nat3*Nc, Gf_conf)
-            Gf_avg = Gf_avg + Gf_conf * (conc * Nc * n_eq_sites)
+            Gf_avg = Gf_avg + Gf_conf * (conc * Nc)
           enddo
         else
           Gf_avg = 0.0_dp
@@ -551,14 +576,15 @@ contains
           ALPHA_MIX, sc_iter, MEMORY, df, dv)
         self_in = reshape(delta_in, [S%nat3, S%nat3, Nc])
         !
-        if(all(abs(real(self_out - self_in, dp)) < ABS_TOLERANCE + abs(real(self_in, dp)) * REL_TOLERANCE) .and. &
-          all(abs(aimag(self_out - self_in)) < ABS_TOLERANCE + abs(aimag(self_in)) * REL_TOLERANCE)) exit
+        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_in, c_equiv, xq, .true.)
+
+        if(all(abs(real(self_in - self_coarse, dp)) < ABS_TOLERANCE + abs(real(self_coarse, dp)) * REL_TOLERANCE) .and. &
+          all(abs(aimag(self_in - self_coarse)) < ABS_TOLERANCE + abs(aimag(self_coarse)) * REL_TOLERANCE)) exit
         ! do iq = 1, Nc
         !   self_in(:,:,iq) = matmul(self_out(:,:,iq), matmul( &
         !     diag_cmplx(delta_in((iq-1)*S%nat3+1:iq*S%nat3)), conjg(transpose(self_out(:,:,iq)))))
         ! enddo
 
-        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_in, c_equiv, xq, .true.)
         ! do iq = 1, Nc
         !   A = self_in(:,:,iq)
         !   call mat2_diag(S%nat3, A, eig)
@@ -673,10 +699,24 @@ contains
         !   endif
         ! enddo !> RL loop
         !
+        ! jq = v2index((Q_mesh - 1) / 2, Q_mesh)
+        ! iq = 10
         if(allocated(self_full)) deallocate(self_full)
         allocate(self_full, source=self_fine)
         self_full = self_fine
         call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_full, equiv, in_grid_full%xq, .false.)
+        ! print*, in_grid_full%xq(:,kq(jq,iq))
+        ! print*, sum(self_full(:,:,kq(jq,iq)))
+        ! print*, sum(self_in(:,:,iq))
+        self_full_mat = reshape(self_full, [S%nat3**2, in_grid_full%nqtot])
+        self_full_mat_out = 0._dp
+        call zgemm('N','N', S%nat3**2, in_grid_full%nqtot, in_grid_full%nqtot, (1._dp, 0._dp), &
+          self_full_mat, S%nat3**2, proj_fine, in_grid_full%nqtot, (1._dp, 0._dp), self_full_mat_out, S%nat3**2)
+        self_full = reshape(self_full_mat_out, [S%nat3, S%nat3, in_grid_full%nqtot])
+        ! call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_full, equiv, in_grid_full%xq, .true.)
+        do iq = 1, in_grid%nqtot
+          self_fine(:,:,iq) = self_full(:,:,wg%e(iq))
+        enddo
         !
         self_coarse = 0.0_dp
         do iq = 1, Nc
@@ -686,7 +726,8 @@ contains
           ! self_coarse(:,:,iq) = matmul(UT(:,:,iq), matmul(self_coarse(:,:,iq), U(:,:,iq)))
         enddo
         !
-        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_coarse, c_equiv, xq, .true.)
+        ! print*, sum(self_coarse(:,:,10))
+        ! call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_coarse, c_equiv, xq, .true.)
         ! do iq = 1, Nc
         !   A = (self_out(:,:,iq) - conjg(transpose(self_out(:,:,iq)))) / cmplx(0._dp, 2.0_dp)
         !   call mat2_diag(S%nat3, A, eig)

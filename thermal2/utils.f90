@@ -19,6 +19,17 @@ contains
     contain = index(str, sub_str) > 0
   end function
   !
+  subroutine zgemm_N(N, A, B, C)
+    integer, intent(in) :: N
+    complex(dp), intent(in) :: A(N,N), B(N,N)
+    complex(dp), intent(out) :: C(N,N)
+    !
+    complex(dp) :: one
+    one = (1.0_dp, 0.0_dp)
+    C = 0._dp
+    call zgemm('N','N', N, N, N, one, A, N, B, N, one, C, N)
+  end subroutine
+  !
   subroutine freq_in_grid(S, fc2, grid, freqs, Us)
     use merge_degenerate, only: merge_degen
     !

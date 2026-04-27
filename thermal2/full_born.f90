@@ -191,16 +191,6 @@ contains
     !
   end subroutine
   !
-  subroutine zgemm_N(N, A, B, C)
-    integer, intent(in) :: N
-    complex(dp), intent(in) :: A(N,N), B(N,N)
-    complex(dp), intent(inout) :: C(N,N)
-    !
-    complex(dp) :: one
-    one = (1.0_dp, 0.0_dp)
-    call zgemm('N','N', N, N, N, one, A, N, B, N, one, C, N)
-  end subroutine
-  !
   subroutine symmetrize_t(sc_grid, TRR, TR)
     integer, intent(in) :: sc_grid(3)
     complex(dp), intent(in) :: TRR(:,:,:,:)

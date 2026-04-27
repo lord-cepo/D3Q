@@ -503,17 +503,6 @@ contains
       enddo
     end subroutine
     !
-    subroutine zgemm_N(N, A, B, C)
-      integer, intent(in) :: N
-      complex(dp), intent(in) :: A(N,N), B(N,N)
-      complex(dp), intent(out) :: C(N,N)
-      !
-      complex(dp) :: one
-      one = (1.0_dp, 0.0_dp)
-      C = 0._dp
-      call zgemm('N','N', N, N, N, one, A, N, B, N, one, C, N)
-    end subroutine
-    !
     function green_0_c(iw, wg, S, grid, U, diffs, g0_iR) result(g0)
       use thfftw, only: fft_1d_3d
       integer, intent(in) :: iw
