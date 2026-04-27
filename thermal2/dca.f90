@@ -200,6 +200,7 @@ contains
     type(q_grid) :: c_grid, in_grid_full
     complex(dp), allocatable :: proj(:,:), proj_fine(:,:)
     real(dp), allocatable :: eig_proj(:)
+    complex(dp), allocatable :: self_uncoarsed(:,:)
     !
     if(input%calculation == "test") call init_random_seed()
     !
@@ -324,10 +325,12 @@ contains
     allocate(self_diff(S%nat3**2*Nc))
     allocate(self_full(S%nat3, S%nat3, in_grid_full%nqtot))
     allocate(weights(S%nat3, S%nat3, in_grid_full%nqtot))
+    allocate(self_uncoarsed(S%nat3, input%n_omega))
     df = 0._dp
     dv = 0._dp
     delta_in = 0._dp
     delta_out = 0._dp
+    self_uncoarsed = 0._dp
     !
     call center_V(xq, S, S_sc, fc2_sc, Vqqs)
     ! do idef = 1, n_eq_sites
@@ -759,6 +762,15 @@ contains
         if(ionode) print"(A,I4,A,I4,A,E15.3)", "frequency ", iw, &
           " NOT converged in ", sc_iter-1, " iterations. Max diff: ", max_diff
       end if
+      !
+      jq = v2index((Q_mesh - 1) / 2, Q_mesh)
+      kkq = wg%e(kq(jq,1))
+      A = self_full(:,:,kkq)
+      A = matmul(UT_fine(:,:,kkq), matmul(A, U_fine(:,:,kkq)))
+      do i = 1, S%nat3
+        self_uncoarsed(i,iw) = A(i,i)
+      enddo
+      !
       do iq = 1, out_grid%nqtot
         call fftinterp_mat2_cmplx(out_grid%xq(:,iq), S, self_R, self_xR, A)
         ! call invzmat(S%nat3, A)
@@ -771,6 +783,12 @@ contains
       enddo
     enddo ! frequency loop
 
+    !
+    open(115, file='self_uncoarsed.dat')
+    do iw = 1, input%n_omega
+      if(ionode) write(115, "(I4, 12E20.8)") wg%en(iw), self_uncoarsed(:,iw)
+    enddo
+    close(115)
     !
 
     if(ionode) print*, "Average number of iterations per frequency:", real(N_ITER_TOT,dp) / input%n_omega
