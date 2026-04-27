@@ -764,9 +764,10 @@ contains
       end if
       !
       jq = v2index((Q_mesh - 1) / 2, Q_mesh)
-      kkq = wg%e(kq(jq,1))
+      kkq = kq(jq,1)
+      call freq_phq_safe(in_grid_full%xq(:,kkq), S, fc2, f(:,1), U(:,:,1))
       A = self_full(:,:,kkq)
-      A = matmul(UT_fine(:,:,kkq), matmul(A, U_fine(:,:,kkq)))
+      A = matmul(conjg(transpose(U(:,:,1))), matmul(A, U(:,:,1)))
       do i = 1, S%nat3
         self_uncoarsed(i,iw) = A(i,i)
       enddo
