@@ -787,7 +787,7 @@ contains
     !
     open(115, file='self_uncoarsed.dat')
     do iw = 1, input%n_omega
-      if(ionode) write(115, "(I4, 12E20.8)") wg%en(iw), self_uncoarsed(:,iw)
+      if(ionode) write(115, "(100E20.8)") wg%en(iw), self_uncoarsed(:,iw)
     enddo
     close(115)
     !
