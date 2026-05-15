@@ -1,5 +1,5 @@
 module defutils
-    use constants, only : dp
+  use constants, only : dp
 contains
   function flatten_RR_cmplx(mat) result(mat_flat)
     complex(dp), intent(in) :: mat(:,:,:,:)
@@ -374,6 +374,91 @@ contains
     !
   END SUBROUTINE
   !
+  SUBROUTINE quter_R(nq, nat,tau,at,bg, xR, nR, weight)
+    IMPLICIT NONE
+    ! Dummy arguments
+    INTEGER,INTENT(in)     :: nq(3) ! dimensions of the q-points grid
+    INTEGER,INTENT(in)     :: nat ! number of atoms
+    REAL(DP),INTENT(in)    :: tau(3,nat) ! atom positions (alat units)
+    REAL(DP),INTENT(in)    :: at(3,3), bg(3,3) ! real, reciprocal lattice
+    REAL(DP), allocatable, INTENT(out)    :: xR(:,:,:,:)
+    integer, intent(out) :: nR(nat, nat)
+    real(dp), allocatable, intent(out) :: weight(:,:,:)
+    !
+    REAL(DP),PARAMETER :: eps = 1.d-8
+    INTEGER :: i, na1, na2, iR, l1,l2,l3, far_
+    INTEGER :: nRbig, nqt
+    REAL(DP),ALLOCATABLE :: Rbig(:,:)
+    REAL(DP) :: dist(3), totalweight
+    !
+    ! For the list of used R vectors:
+    INTEGER :: nRout
+    !
+    ! Stuff used to compute Wigner-Seitz weights:
+    INTEGER, PARAMETER:: nrwsx=5000
+    INTEGER :: nrws
+    REAL(DP) :: atws(3,3) ! supercell of size nq1 x nq2 x nq3
+    REAL(DP) :: wg, rws(0:3,nrwsx)
+    REAL(DP),EXTERNAL :: wsweight
+    !
+    !
+    far_ = 2
+    nqt = nq(1)*nq(2)*nq(3)
+    atws(:,1) = nq(1)*at(:,1)
+    atws(:,2) = nq(2)*at(:,2)
+    atws(:,3) = nq(3)*at(:,3)
+    ! initialize WS r-vectors
+    CALL wsinit(rws,nrwsx,nrws,atws)
+    !
+    ! Construct a big enough lattice of Supercell vectors
+    nRbig = (2*far_*nq(1)+1)*(2*far_*nq(2)+1)*(2*far_*nq(3)+1)
+    ALLOCATE(Rbig(3,nRbig))
+    nRbig=0
+    DO l1=-far_*nq(1),far_*nq(1)
+      DO l2=-far_*nq(2),far_*nq(2)
+        DO l3=-far_*nq(3),far_*nq(3)
+          nRbig=nRbig+1
+          Rbig(:, nRbig) = at(:,1)*l1 +at(:,2)*l2 +at(:,3)*l3
+        END DO
+      END DO
+    END DO
+    IF(nRbig/=size(Rbig)/3) call errore('main','wrong nRbig',1)
+    !       WRITE(*,*) "seeking over ", nRbig," vectors"
+    !
+    ! dyn.mat. FFT
+    !
+    allocate(weight(2*product(nq), nat, nat))
+    allocate(xR(3, 2*product(nq), nat, nat))
+    weight = 0._dp
+    nR = 0
+    DO na2=1,nat
+      DO na1=1,nat
+        nRout = 0
+        totalweight = 0._dp
+        DO iR= 1,nRbig
+          !
+          dist(:) = Rbig(:,iR) + tau(:,na1) - tau(:,na2)
+          wg = wsweight(dist,rws,nrws)
+          !wg = wg/DFLOAT(nqt)
+          IF(wg > 0._dp) THEN
+            !
+            nRout = nRout + 1
+            xR(:,nRout,na1,na2) = Rbig(:,iR)
+            weight(nRout,na1,na2) = wg
+            totalweight=totalweight+wg/DFLOAT(nqt)
+            !
+          END IF
+        END DO
+        IF(ABS(totalweight-1._dp)>eps) THEN
+          print*, totalweight, na1, na2
+          CALL errore('main','wrong totalweight',1)
+        ENDIF
+        nR(na1,na2) = nRout
+      ENDDO
+    ENDDO
+    !
+  END SUBROUTINE
+  !
   SUBROUTINE fftinterp_mat2_cmplx(xq, S, fc, xR, D)
     USE input_fc, ONLY : ph_system_info, forceconst2_grid
     USE constants, ONLY : tpi
@@ -411,4 +496,6 @@ contains
     END DO
     !
   END SUBROUTINE
+  !
+
 end module

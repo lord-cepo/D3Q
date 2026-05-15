@@ -94,11 +94,13 @@ program defectp
   !>------------------------------------------------
   allocate(DRR(S%nat3, S%nat3, nR, nR))
   DRR = fc_sc2RR(sc_grid, S, Sd, fc2d%fc(:,:,1))
-  call asr3(DRR)
+  if(input%asr3 /= 'no') call asr3(DRR)
   fc2d%fc(:,:,1) = fc_RR2sc(sc_grid, S, Sd, DRR)
   deallocate(DRR)
   call div_mass_fc2(Sd, fc2d)
-  call print_message("ASR applied to fc2d")
+  if(input%asr3 /= 'no') call print_message("ASR applied to fc2d")
+  ! call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
+  !
   !--------------------------------------------------
   ! call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
   ! open(138, file="band.dat")
@@ -127,7 +129,6 @@ program defectp
   !
   call revert_grid(in_grid)
 
-  ! call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
   ! call project(S, Sd, fc2_centered, fc2d_centered)
   ! call dca_selfnrg(S, input, fc2_treated, fc2_sc, in_grid, out_grid)
   !
