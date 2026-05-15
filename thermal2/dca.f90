@@ -279,6 +279,10 @@ contains
     enddo
     self_out_grid = 0.0_dp
     self_out_diag = 0.0_dp
+    allocate(self_outp_grid(S%nat3,S%nat3,out_grid%nqtot,input%n_omega))
+    allocate(self_outp_diag(S%nat3,out_grid%nqtot,input%n_omega))
+    self_outp_grid = 0.0_dp
+    self_outp_diag = 0.0_dp
     !
     allocate(Gf0i(S%nat3*Nc, S%nat3*Nc))
     allocate(V_conf(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
