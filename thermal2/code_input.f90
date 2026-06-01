@@ -59,6 +59,7 @@ MODULE code_input
     CHARACTER(10)   :: delta_approx
     integer :: n_omega
     real(dp) :: conc
+    integer :: dca_v_rank
     !! can be "tetra" or "gauss"
 
 !threshold to detect degeneracies between phonons, in cm-1
@@ -153,6 +154,7 @@ CONTAINS
     CHARACTER(10)   :: delta_approx = 'tetra'     ! 'gauss': dirac_delta = gaussian, 'tetra' dirac_delta = scattering surface with optimized tetrahedra
     integer :: n_omega = 1
     real(dp) :: conc = 0._dp
+    integer :: dca_v_rank = 0
     INTEGER            :: nconf = -1                 ! number of smearing/temperature couples
     INTEGER            :: nq = -1                    ! number of q-point to read, only for lw
     INTEGER            :: skip_q = 0                 ! skip this many points when computing a BZ path
@@ -249,7 +251,7 @@ CONTAINS
     !
     NAMELIST /definput / &
       calculation, mode, file_mat2, file_mat3, outdir, prefix, asr2, asr3, sc_grid, &
-      nk, n_omega, use_symm, delta_approx, conc
+      nk, n_omega, use_symm, delta_approx, conc, dca_v_rank
     NAMELIST  / lwinput / &
       calculation, outdir, prefix, &
       file_mat2, file_mat3, asr2, &
@@ -409,6 +411,7 @@ CONTAINS
     input%delta_approx                 =  delta_approx
     input%n_omega                      =  n_omega
     input%conc                         =  conc
+    input%dca_v_rank                   =  dca_v_rank
     input%skip_q                       =  skip_q
     input%nconf                        =  nconf
     input%nk                           =  nk
@@ -988,6 +991,7 @@ CONTAINS
       CALL mpi_broadcast(delta_approx)
       CALL mpi_broadcast(n_omega)
       call mpi_broadcast(conc)
+      call mpi_broadcast(dca_v_rank)
       CALL mpi_broadcast(use_symm)
       CALL mpi_broadcast(threshold_f_degeneracy_cmm1)
       CALL mpi_broadcast(intrinsic_scattering)

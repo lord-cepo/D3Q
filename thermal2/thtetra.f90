@@ -147,12 +147,10 @@ CONTAINS
     !
     do iw = 1, n_omega
       wg%w(:,:,iw) = tetra_weights_green(wg%en(iw)**2)
-      do iq = 1, grid%nqtot
+      do iq = 1, size(wg%w,2)
         do ibnd = 1, S%nat3
-          if(isnan(ABS(wg%w(ibnd,wg%e(iq),iw)))) wg%w(ibnd,wg%e(iq),iw) = 0._dp
+          if(isnan(ABS(wg%w(ibnd,iq,iw)))) wg%w(ibnd,iq,iw) = 0._dp
         enddo
-      enddo
-      do iq = 1, grid%nqtot
         call merge_degen(S%nat3, wg%w(:,iq,iw), wg%f(:,iq))
       enddo
     enddo
@@ -500,7 +498,7 @@ CONTAINS
     ! print*, "tetra", nqtot, nqs, symmetry
     wg%ntot = nqtot
     wg%nsym = nqs
-    allocate(wg%e(nqs))
+    allocate(wg%e(nqtot))
     wg%e = equiv
     allocate(wg%qw(nqs))
     wg%qw = grid%w

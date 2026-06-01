@@ -196,26 +196,6 @@ contains
     where(isnan(abs(den_weights))) den_weights = 0._dp
   end subroutine
   !
-  subroutine create_diffs(fc2_sc, diffs)
-    type(forceconst2_sc), intent(in) :: fc2_sc
-    integer, intent(out), pointer :: diffs(:,:)
-    !
-    integer :: ir1, ir2, iR, nR, R(3)
-    !
-    allocate(diffs(3,1))
-    diffs(:,1) = fc2_sc%yR1(:,1,1) - fc2_sc%yR2(:,1)
-    nR = 1
-    !
-    do ir2 = 1, fc2_sc%n_R2
-      do ir1 = 1, fc2_sc%n_R1(ir2)
-        R = fc2_sc%yR1(:,ir1,ir2)-fc2_sc%yR2(:,ir2)
-        call find_where(R, diffs, iR)
-        if (iR == -1) call enlarge_R(R, diffs, nR)
-      enddo
-    enddo
-    !
-  end subroutine
-  !
   subroutine enlarge_R(R, list_of_R, nR)
     integer, intent(in) :: R(3)
     integer, intent(inout) :: nR
@@ -273,6 +253,7 @@ contains
   !
   subroutine full_born_center(S, input, fc2, fc2_sc, grid, sym_grid, out_grid)
     use quter_defect, only: fc_sc2RR, allocate_fc2_sc
+    use symm_q_mat, only: apply_sym_q
     type(ph_system_info), intent(in) :: S
     type(code_input_type), intent(in) :: input
     type(forceconst2_grid), intent(in) :: fc2
@@ -282,12 +263,10 @@ contains
     integer :: iR1, iR2, iR, nR, nR_large
     integer :: i, j, iq, ibnd, N
     real(dp) :: c
-    integer, pointer :: R_list(:,:), diff_list(:,:)
+    integer, pointer :: R_list(:,:)
     integer :: R(3)
     real(dp), allocatable :: Rij_cart(:,:,:)
-    real(dp), allocatable :: diffs(:,:)
     complex(dp), allocatable :: g0(:,:,:)
-    complex(dp), allocatable :: T(:,:,:)
     complex(dp) :: Tq(S%nat3, S%nat3,out_grid%nqtot, input%n_omega)
     complex(dp) :: self_energy(S%nat3, out_grid%nqtot, input%n_omega)
     integer :: iw
@@ -297,7 +276,6 @@ contains
     complex(dp) :: out_Us(S%nat3, S%nat3, out_grid%nqtot)
     complex(dp) :: out_Us_c(S%nat3, S%nat3, out_grid%nqtot)
     real(dp) :: out_freqs(S%nat3, out_grid%nqtot)
-    integer, dimension(maxval(fc2_sc%n_R1),fc2_sc%n_R2):: iR_diff
     integer, pointer :: diff_list_large(:,:)
     real(dp), allocatable :: diff_large(:,:)
     integer, allocatable :: iR_large(:,:)
@@ -307,8 +285,6 @@ contains
     complex(dp), allocatable :: V__(:,:), gV__(:,:), g0__(:,:), T__(:,:), I_gV__(:,:)
     complex(dp), allocatable :: S__(:,:), S1__(:,:), Sg__(:,:), &
       I_Sg__(:,:), Gm__(:,:), GVS__(:,:), I_GVS__(:,:), G__(:,:)
-    integer :: i_list(maxval(fc2_sc%n_R1),fc2_sc%n_R2)
-    integer :: j_list(fc2_sc%n_R2)
     integer, allocatable :: g0_iR(:)
     real(dp), parameter :: alpha = 1.0_dp
     complex(dp) :: w_self(S%nat3, out_grid%nqtot)
@@ -340,10 +316,6 @@ contains
     enddo
     if(ionode) print*, "Number of unique R vectors: ", nR
     !
-    call create_diffs(fc2_sc, diff_list)
-    allocate(diffs(3,size(diff_list,2)))
-    diffs = cryst2cart(real(diff_list,dp), S%at, 1)
-
     nR_large = 1
     allocate(diff_list_large(3,1))
     diff_list_large(:,1) = [0,0,0]
@@ -391,27 +363,20 @@ contains
     Tq = 0._dp
     dos = 0._dp
     self_energy = 0._dp
-    do iR2 = 1, fc2_sc%n_R2
-      do iR1 = 1, fc2_sc%n_R1(iR2)
-        call find_where(fc2_sc%yR1(:,iR1,iR2)-fc2_sc%yR2(:,iR2), diff_list, iR_diff(iR1,iR2))
-      enddo
-    enddo
-
-    allocate(T(S%nat3,S%nat3,size(diff_list,2)))
     !
     do iR2 = 1, fc2_sc%n_R2
       call find_where(fc2_sc%yR2(:,iR2), R_list, j)
-      j_list(iR2) = j
+      ! j_list(iR2) = j
       do iR1 = 1, fc2_sc%n_R1(iR2)
         call find_where(fc2_sc%yR1(:,iR1,iR2), R_list, i)
-        i_list(iR1,iR2) = i
+        ! i_list(iR1,iR2) = i
         V__( (i-1)*S%nat3+1:i*S%nat3, (j-1)*S%nat3+1:j*S%nat3 ) = &
           cmplx( fc2_sc%fc(:,:,iR1,iR2), 0._dp, dp )
       enddo
     enddo
     !
 
-    do iw = 1+my_id, input%n_omega, num_procs
+    do iw = 3+my_id, input%n_omega, num_procs
       print*, "Frequency index: ", iw
       g0 = green_0_c(iw, wg, S, grid, Us, diff_large, g0_iR)
       g0__ = 0._dp
@@ -443,6 +408,7 @@ contains
             TRR__(:,:,iR) * &
             phases_out(iR,iq)
         enddo
+        call apply_sym_q(S, out_grid%xq(:,iq), Tq(:,:,iq,iw))
         Tq(:,:,iq,iw) = matmul(out_Us_c(:,:,iq), matmul(Tq(:,:,iq,iw), out_Us(:,:,iq)))
         do ibnd = 1, S%nat3
           self_energy(ibnd,iq,iw) = Tq(ibnd,ibnd,iq,iw)
@@ -517,13 +483,16 @@ contains
       complex(dp) :: g0_(S%nat3,S%nat3,size(diffs,2))
       complex(dp) :: g0_R(S%nat3, S%nat3, grid%nqtot)
       complex(dp) :: g0_q(S%nat3, S%nat3, grid%nqtot)
-      integer :: iR, iq, ibnd
+      integer :: iR, iq, iq_tetra, ibnd
       !
       allocate(g0(S%nat3, S%nat3, size(diffs,2)))
       g0_q = 0._dp
       do iq = 1, grid%nqtot
+        ! FFT arrays are stored with the first grid index fastest, while the
+        ! tetrahedron equivalence map follows QE's z-fast kpoint_grid order.
+        iq_tetra = v2index_n(index2v(iq, grid%n), grid%n)
         do ibnd = 1, S%nat3
-          g0_q(:,:,iq) = g0_q(:,:,iq) + &
+          g0_q(:,:,iq_tetra) = g0_q(:,:,iq_tetra) + &
             wg%w(ibnd, wg%e(iq), iw) * outer_product(U(:,ibnd,iq))
         enddo
       enddo
@@ -649,7 +618,7 @@ contains
             enddo
           enddo
         enddo
-        ! call merge_degen(S%nat3, lws_out(:,iq), out_freqs(:,iq))
+        call merge_degen(S%nat3, lws_out(:,iq), out_freqs(:,iq))
         !
         self_energy(:,iq,iw) = c*lws_out(:,iq)
         do ibnd = 1, S%nat3

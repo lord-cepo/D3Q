@@ -1332,6 +1332,146 @@ contains
     deallocate(weights_, ind_out_)
   end subroutine
   !
+  subroutine center5_image_weights(nat, tau, taudef, at, bg, grid, xR, nR, weight)
+    use thutils, only : grid_vec_cart, cryst2cart
+    integer, intent(in) :: nat
+    real(dp), intent(in) :: tau(3,nat), taudef(3)
+    real(dp), intent(in) :: at(3,3), bg(3,3)
+    integer, intent(in) :: grid(3)
+    real(dp), allocatable, intent(out) :: xR(:,:,:,:)
+    integer, intent(out) :: nR(nat,nat)
+    real(dp), allocatable, intent(out) :: weight(:,:,:)
+    !
+    integer :: na1, na2, j1, iR1_big, iR2_big, max_nR
+    integer, dimension(3) :: far_mesh
+    integer, allocatable :: inds1(:), inds2(:)
+    real(dp), allocatable :: sum_grid_cart(:,:), diff_grid_cart(:,:)
+    real(dp), allocatable :: weights1(:), weights2(:)
+    real(dp), dimension(3) :: d1, d2, R1_cart, R2_cart, R1, R2, Rdiff
+    real(dp) :: big_at(3,3), w
+    !
+    INTEGER, PARAMETER:: nrwsx=2000
+    INTEGER :: nrws
+    REAL(DP) :: rws(0:3,nrwsx)
+    !
+    far_mesh = 2*nfar+1
+    forall(j1 = 1:3) big_at(:,j1) = at(:,j1) * grid(j1)
+    call wsinit(rws,nrwsx,nrws,big_at)
+    !
+    sum_grid_cart = grid_vec_cart(far_mesh*grid*2, at, center=.true.)/2
+    diff_grid_cart = grid_vec_cart(far_mesh*grid, at, center=.true.)
+    max_nR = size(diff_grid_cart, 2)
+    !
+    allocate(xR(3, max_nR, nat, nat))
+    allocate(weight(max_nR, nat, nat))
+    xR = 0._dp
+    weight = 0._dp
+    nR = 0
+    !
+    do na2 = 1, nat
+      do na1 = 1, nat
+        d2 = tau(:,na1) - tau(:,na2)
+        d1 = (tau(:,na1) + tau(:,na2))/2 - taudef
+        call inside_ws(diff_grid_cart, d2, nrws, rws, weights2, inds2)
+        call inside_ws(sum_grid_cart, d1, nrws, rws, weights1, inds1)
+        !
+        do iR2_big = 1, size(weights2)
+          Rdiff = diff_grid_cart(:,inds2(iR2_big))
+          w = 0._dp
+          do iR1_big = 1, size(weights1)
+            R1_cart = sum_grid_cart(:,inds1(iR1_big)) + Rdiff/2
+            R2_cart = sum_grid_cart(:,inds1(iR1_big)) - Rdiff/2
+            R1 = cryst2cart(R1_cart, bg, -1)
+            R2 = cryst2cart(R2_cart, bg, -1)
+            if(any(abs((NINT(R1*2) - R1*2)) > 1e-10_dp)) &
+              call errore("center5_image_weights", "R1_cart is not integer", 1)
+            if(any(abs((NINT(R2*2) - R2*2)) > 1e-10_dp)) &
+              call errore("center5_image_weights", "R2_cart is not integer", 1)
+            if(any(abs(NINT(R1) - R1) > 1e-10_dp)) cycle
+            if(any(abs(NINT(R2) - R2) > 1e-10_dp)) cycle
+            w = w + weights1(iR1_big) * weights2(iR2_big)
+          enddo
+          if (abs(w) > 1e-12_dp) &
+            call add_center5_image(Rdiff, w, xR(:,:,na1,na2), weight(:,na1,na2), nR(na1,na2))
+        enddo
+        !
+        deallocate(weights1, weights2, inds1, inds2)
+      enddo
+    enddo
+    !
+    deallocate(sum_grid_cart, diff_grid_cart)
+  end subroutine
+  !
+  subroutine full_born_center_images(fc, at, nat, xR, nR, weight)
+    class(forceconst2_sc), intent(in) :: fc
+    real(dp), intent(in) :: at(3,3)
+    integer, intent(in) :: nat
+    real(dp), allocatable, intent(out) :: xR(:,:,:,:)
+    integer, intent(out) :: nR(nat,nat)
+    real(dp), allocatable, intent(out) :: weight(:,:,:)
+    !
+    integer :: i, j, iR, iR1, iR2, na1, na2, nR_list, nR_large, max_R_list
+    integer, allocatable :: R_list(:,:), diff_list_large(:,:)
+    integer :: R(3)
+    real(dp) :: R_cart(3)
+    !
+    max_R_list = fc%n_R2 + sum(fc%n_R1)
+    allocate(R_list(3, max_R_list))
+    nR_list = 0
+    !
+    do iR2 = 1, fc%n_R2
+      call add_R(R_list, fc%yR2(:,iR2), nR_list, iR)
+      do iR1 = 1, fc%n_R1(iR2)
+        call add_R(R_list, fc%yR1(:,iR1,iR2), nR_list, iR)
+      enddo
+    enddo
+    !
+    allocate(diff_list_large(3, nR_list*nR_list))
+    nR_large = 0
+    do j = 1, nR_list
+      do i = 1, nR_list
+        R = R_list(:,i) - R_list(:,j)
+        call add_R(diff_list_large, R, nR_large, iR)
+      enddo
+    enddo
+    !
+    allocate(xR(3, nR_large, nat, nat))
+    allocate(weight(nR_large, nat, nat))
+    nR = nR_large
+    weight = 1._dp
+    do na2 = 1, nat
+      do na1 = 1, nat
+        do iR = 1, nR_large
+          R_cart = real(diff_list_large(:,iR), dp)
+          call cryst_to_cart(1, R_cart, at, 1)
+          xR(:,iR,na1,na2) = R_cart
+        enddo
+      enddo
+    enddo
+    !
+    deallocate(R_list, diff_list_large)
+  end subroutine
+  !
+  subroutine add_center5_image(R, w, xR, weight, nR)
+    real(dp), intent(in) :: R(3), w
+    real(dp), intent(inout) :: xR(:,:), weight(:)
+    integer, intent(inout) :: nR
+    !
+    integer :: iR
+    !
+    do iR = 1, nR
+      if (all(abs(R - xR(:,iR)) < 1e-8_dp)) then
+        weight(iR) = weight(iR) + w
+        return
+      endif
+    enddo
+    !
+    nR = nR + 1
+    if (nR > size(weight)) call errore("add_center5_image", "R list is too small", 1)
+    xR(:,nR) = R
+    weight(nR) = w
+  end subroutine
+  !
   subroutine add_ind(ind_list, ind, nR, iR)
     integer, intent(inout) :: ind_list(:)
     integer, intent(in) :: ind

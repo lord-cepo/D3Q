@@ -1,6 +1,7 @@
 module dca
+  use iso_fortran_env, only: int64
   use kinds, only: dp
-  use symm_q_mat, only : apply_sym
+  use symm_q_mat, only : apply_sym, apply_sym_q
   use thtetra, only: tetra_init_sym, tetra_init, tetra_weights_green, &
     deallocate_tetra, tetra_output, set_wg, equiv_grid
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
@@ -9,16 +10,16 @@ module dca
     e_iqr, index2v, cryst2cart, v2index, freq_in_grid, diag_cmplx, diag, &
     id_mat
   use defutils, only : flatten_RR_cmplx, unflatten_RR_cmplx, &
-    quter_cmplx, fftinterp_mat2_cmplx, quter_R
+    quter_cmplx, fftinterp_mat2_cmplx, quter_R, trace
   use defect, only : tetra_from_self_cart, write_spf_ndiag, write_spf, &
-    write_self, write_dos, tetra_from_self_diag, find_where, tetra_from_self
+    write_self, write_dos, tetra_from_self_diag, find_where, tetra_from_self, enlarge_R
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize, setup_simple_grid
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
   use code_input, only: code_input_type
   use functions, only: invzmat
   use constants, only: tpi, pi
-  use quter_defect, only : forceconst2_sc, inside_ws
+  use quter_defect, only : forceconst2_sc, inside_ws, full_born_center_images
   use functions, only: f_gauss
   use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
   use merge_degenerate, only: merge_degen
@@ -155,6 +156,73 @@ contains
     deallocate(weights_, ind_out_)
   end subroutine
   !
+  integer(int64) function complex_mem_bytes(nel) result(bytes)
+    integer(int64), intent(in) :: nel
+    bytes = 16_int64 * nel
+  end function
+  !
+  integer(int64) function real_mem_bytes(nel) result(bytes)
+    integer(int64), intent(in) :: nel
+    bytes = 8_int64 * nel
+  end function
+  !
+  integer(int64) function int_mem_bytes(nel) result(bytes)
+    integer(int64), intent(in) :: nel
+    bytes = 4_int64 * nel
+  end function
+  !
+  real(dp) function bytes_to_gib(bytes) result(gib)
+    integer(int64), intent(in) :: bytes
+    gib = real(bytes, dp) / 1073741824._dp
+  end function
+  !
+  integer(int64) function mem_available_bytes() result(bytes)
+    character(len=256) :: line, key
+    integer :: unit_, ios
+    integer(int64) :: kb
+    !
+    bytes = 0_int64
+    open(newunit=unit_, file="/proc/meminfo", status="old", action="read", iostat=ios)
+    if(ios /= 0) return
+    do
+      read(unit_, "(A)", iostat=ios) line
+      if(ios /= 0) exit
+      read(line, *, iostat=ios) key, kb
+      if(ios /= 0) cycle
+      if(trim(key) == "MemAvailable:") then
+        bytes = kb * 1024_int64
+        exit
+      endif
+    enddo
+    close(unit_)
+  end function
+  !
+  subroutine check_allocation_fits(where_, bytes_)
+    character(*), intent(in) :: where_
+    integer(int64), intent(in) :: bytes_
+    integer(int64) :: available_
+    character(len=256) :: msg_
+    !
+    if(bytes_ <= 0_int64) then
+      call errore("dca memory check", "invalid or overflowing allocation size for "//trim(where_), 1)
+    endif
+    available_ = mem_available_bytes()
+    if(ionode) then
+      if(available_ > 0_int64) then
+        print"(A,A,A,F10.3,A,F10.3,A)", "Memory check [", trim(where_), "]: ", &
+          bytes_to_gib(bytes_), " GiB requested, ", bytes_to_gib(available_), " GiB available"
+      else
+        print"(A,A,A,F10.3,A)", "Memory check [", trim(where_), "]: ", &
+          bytes_to_gib(bytes_), " GiB requested"
+      endif
+    endif
+    if(available_ > 0_int64 .and. real(bytes_, dp) > 0.80_dp * real(available_, dp)) then
+      write(msg_, "(A,F10.3,A,F10.3,A)") trim(where_)//" requests ", &
+        bytes_to_gib(bytes_), " GiB; available memory is ", bytes_to_gib(available_), " GiB"
+      call errore("dca memory check", trim(msg_), 1)
+    endif
+  end subroutine
+  !
   subroutine dca_selfnrg(S, S_sc, input, fc2, fc2_sc, out_grid)
     type(ph_system_info), intent(in) :: S, S_sc
     type(code_input_type), intent(in) :: input
@@ -172,32 +240,42 @@ contains
     !
     complex(dp), allocatable, dimension(:) :: delta_in, delta_out, self_diff
     complex(dp), allocatable, dimension(:,:) :: &
-      Gf_conf, Gf_avg, out_den_weights, Gf0i, dv, df
+      Gf_conf, Gf_avg, out_den_weights, Gf0i, dv, df, Vi, V_born, self_cluster_flat, &
+      support_V, support_green, support_g0i, support_self, support_self_before, &
+      support_V_modes, support_green_mode, support_self_before_mode
     complex(dp), allocatable, dimension(:,:,:) :: &
-      self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, self_prime, D, weights, &
-      self_out_diag, V_conf, self_before, self_next, G0i_cluster, Gi_coarse, self_outp_diag
+      self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, self_prime, D, G, &
+      self_out_diag, V_conf, self_before, self_next, G0i_cluster, Gi_coarse, &
+      self_outp_diag, self_sym, weights, c_out_atom, c_out_full, c_out_right, &
+      self_support_out, self_support_R, support_green_R, support_mode_fine, support_mode_cluster
     complex(dp), allocatable, dimension(:,:,:,:) :: &
-      Gi_conf, Gi_avg, phase_mat, V, self_out_grid, c_in, c_out, &
-      self_outp_grid
+      Gi_conf, self_QQ, phase_mat, V, self_out_grid, c_in, c_out, &
+      self_outp_grid, self_R, Vout_cluster
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, self_uf
-    real(dp), allocatable, dimension(:,:) :: xq, R, f, out_freqs
-    integer, allocatable :: pos(:), kq(:,:)
+    real(dp), allocatable, dimension(:,:) :: xq, R, f, out_freqs, support_diff_cart, support_R_cart
+    real(dp), allocatable, dimension(:) :: support_V_lambda
+    integer, allocatable :: pos(:), kq(:,:), support_iR_large(:,:), &
+      support_dof_R(:), support_dof_cart(:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, na1, na2, j1, j2, &
-      cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT, iR, jR, RL_iter, Q_mesh(3), idx(S%nat3), locations(3)
-    real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff, max_diff_coarse
-    real(dp) :: dos(input%n_omega), shift(3), simulated_conc, xqq(3)
-    logical :: conv, low_concentration
-    complex(dp) :: A(S%nat3,S%nat3), B(S%nat3,S%nat3), eta, ialpha(S%nat3,S%nat3), eigc(S%nat3)
+      cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT, iR, jR, RL_iter, Q_mesh(3), &
+      idx(S%nat3), locations(3), jq_center, r1, r2
+    real(dp) :: conc, defect_conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff, max_diff_coarse
+    real(dp) :: dos(input%n_omega), shift(3), simulated_conc, xqq(3), eta
+    logical :: conv, low_concentration, use_compressed_QQ
+    complex(dp) :: A(S%nat3,S%nat3), B(S%nat3,S%nat3), A_re(S%nat3,S%nat3), A_im(S%nat3,S%nat3), &
+      ialpha(S%nat3,S%nat3), eigc(S%nat3), &
+      ee(S%nat3,product(input%sc_grid)), ees(S%nat3,product(input%sc_grid))
     integer, allocatable :: N_sites(:,:), c_equiv(:), iq_of(:), window_ind(:,:), &
       ind(:), equiv_full(:), window_count(:), equiv(:)
     character(len=100) :: filename
     type(q_grid) :: c_grid, in_grid_full
+    type(forceconst2_sc) :: fc2_sc_centered
     complex(dp), allocatable :: proj(:,:), proj_fine(:,:)
     real(dp), allocatable :: eig_proj(:)
     complex(dp), allocatable :: self_uncoarsed(:,:)
     !
-    real(dp), allocatable :: img_xR(:,:,:,:), img_weight(:,:,:), xR(:,:)
+    real(dp), allocatable :: img_xR(:,:,:,:), img_weight(:,:,:), diff(:,:)
     integer :: img_nR(S%nat, S%nat)
     complex(dp), allocatable :: W(:,:,:)
     complex(dp), allocatable :: uncoarse(:,:,:,:)
@@ -205,23 +283,24 @@ contains
     if(input%calculation == "test") call init_random_seed()
     !
     MAXITER = 100
-    ABS_TOLERANCE = 1e-12_dp
-    REL_TOLERANCE = 1e-5_dp
+    ABS_TOLERANCE = 1e-17_dp
+    REL_TOLERANCE = 1e-8_dp
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
     cluster_mesh = input%sc_grid
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
+    defect_conc = conc * n_eq_sites
     NSAMPLES = 100
     NQ = product(input%nk_in) / Nc
     Q_mesh = input%nk_in / cluster_mesh
     xq = grid_vec_cart(cluster_mesh, S%bg, divide=.true.)
-    xR = grid_vec_cart(cluster_mesh, S%at)
     shift = xq(:,v2index([1,1,1],cluster_mesh))
     shift = cryst2cart(shift, S%at, -1)
     shift = shift * (Q_mesh-1) / 2 / Q_mesh
     shift = cryst2cart(shift, S%bg, 1)
+    if (all(input%nk_in == cluster_mesh)) shift = 0._dp
     ! do iq = 1, size(xq,2)
     !   xq(:,iq) = xq(:,iq) + shift
     ! enddo
@@ -249,16 +328,24 @@ contains
       call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
     call set_wg(S, fc2, in_grid, input%n_omega, wg)
     !
-    allocate(UT_fine(S%nat3,S%nat3,in_grid%nqtot), U_fine(S%nat3,S%nat3,in_grid%nqtot))
-    allocate(f(S%nat3,in_grid%nqtot), U(S%nat3,S%nat3,Nc), UT(S%nat3,S%nat3,Nc))
-    allocate(D(S%nat3,S%nat3,in_grid%nqtot))
-    call freq_in_grid(S, fc2, in_grid, f, U_fine)
-    do iq = 1, in_grid%nq
-      iqp = iq + in_grid%iq0
-      call fftinterp_mat2(in_grid%xq(:,iq), S, fc2, D(:,:,iqp))
+    call check_allocation_fits("DCA harmonic/grid buffers", &
+      real_mem_bytes(int(S%nat3, int64) * int(in_grid_full%nqtot, int64)) + &
+      complex_mem_bytes(2_int64 * int(S%nat3, int64) * int(S%nat3, int64) * int(Nc, int64)) + &
+      complex_mem_bytes(3_int64 * int(S%nat3, int64) * int(S%nat3, int64) * int(in_grid_full%nqtot, int64)))
+    allocate(f(S%nat3,in_grid_full%nqtot), U(S%nat3,S%nat3,Nc), UT(S%nat3,S%nat3,Nc))
+    allocate(UT_fine(S%nat3,S%nat3,in_grid_full%nqtot), U_fine(S%nat3,S%nat3,in_grid_full%nqtot))
+    allocate(D(S%nat3,S%nat3,in_grid_full%nqtot))
+    call freq_in_grid(S, fc2, in_grid_full, f, U_fine)
+    do iq = 1, in_grid_full%nq
+      iqp = iq + in_grid_full%iq0
+      call fftinterp_mat2(in_grid_full%xq(:,iq), S, fc2, D(:,:,iqp))
+      if(norm2(in_grid_full%xq(:,iq)) < 1e-8_dp) then
+        U_fine(:,:,iq) = D(:,:,iqp)
+        call mat2_diag(S%nat3, U_fine(:,:,iq), f(:,1))
+      endif
     enddo
-    call mpi_bsum(S%nat3, S%nat3, in_grid%nqtot, D)
-    do iq = 1, in_grid%nqtot
+    call mpi_bsum(S%nat3, S%nat3, in_grid_full%nqtot, D)
+    do iq = 1, in_grid_full%nqtot
       UT_fine(:,:,iq) = conjg(transpose(U_fine(:,:,iq)))
     enddo
     deallocate(f)
@@ -270,108 +357,153 @@ contains
     if(ionode) print*, "DCA cluster size:", Nc
     if(ionode) print*, "number of configurations to be averaged:", NSAMPLES
     !
+    call check_allocation_fits("DCA output buffers", &
+      complex_mem_bytes(int(S%nat3, int64) * int(out_grid%nqtot, int64) * int(input%n_omega, int64)) + &
+      complex_mem_bytes(3_int64 * int(S%nat3, int64) * int(S%nat3, int64) * int(out_grid%nqtot, int64)) + &
+      real_mem_bytes(int(S%nat3, int64) * int(out_grid%nqtot, int64)) + &
+      complex_mem_bytes(int(S%nat3, int64) * int(S%nat3, int64) * &
+        int(out_grid%nqtot, int64) * int(input%n_omega, int64)))
     allocate(self_out_diag(S%nat3,out_grid%nqtot,input%n_omega))
     allocate(UT_out(S%nat3,S%nat3,out_grid%nqtot), U_out(S%nat3,S%nat3,out_grid%nqtot))
     allocate(out_freqs(S%nat3,out_grid%nqtot), self_out_grid(S%nat3,S%nat3,out_grid%nqtot,input%n_omega))
+    allocate(self_support_out(S%nat3,S%nat3,out_grid%nqtot))
     call freq_in_grid(S, fc2, out_grid, out_freqs, U_out)
     do iq = 1, out_grid%nqtot
       UT_out(:,:,iq) = conjg(transpose(U_out(:,:,iq)))
     enddo
     self_out_grid = 0.0_dp
     self_out_diag = 0.0_dp
-    allocate(self_outp_grid(S%nat3,S%nat3,out_grid%nqtot,input%n_omega))
-    allocate(self_outp_diag(S%nat3,out_grid%nqtot,input%n_omega))
-    self_outp_grid = 0.0_dp
-    self_outp_diag = 0.0_dp
     !
-    allocate(Gf0i(S%nat3*Nc, S%nat3*Nc))
-    allocate(V_conf(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
-    allocate(Gi_conf(S%nat3, S%nat3, Nc, Nc))
-    allocate(Gf_conf(S%nat3*Nc, S%nat3*Nc))
-    allocate(Gf_avg(S%nat3*Nc, S%nat3*Nc))
-    allocate(Gi_avg(S%nat3, S%nat3, Nc, Nc))
+    call check_allocation_fits("DCA common SCF buffers", &
+      complex_mem_bytes(4_int64 * int(S%nat3, int64) * int(S%nat3, int64) * int(Nc, int64)) + &
+      complex_mem_bytes(int(S%nat3, int64) * int(S%nat3, int64) * int(in_grid_full%nqtot, int64)) + &
+      complex_mem_bytes(2_int64 * int(S%nat3, int64) * int(S%nat3, int64) * &
+        int(Nc, int64) * int(MEMORY, int64)) + &
+      complex_mem_bytes(2_int64 * int(S%nat3, int64) * int(S%nat3, int64) * int(Nc, int64)) + &
+      int_mem_bytes(int(NQ, int64) * int(Nc, int64) + int(Nc, int64)) + &
+      complex_mem_bytes(int(S%nat3, int64) * int(out_grid%nqtot, int64)))
     allocate(Gi_coarse(S%nat3, S%nat3, Nc))
     allocate(G0i_cluster(S%nat3, S%nat3, Nc))
-    allocate(self_uf(3, 3, S%nat, S%nat, Nc))
-    allocate(self_fine(S%nat3, S%nat3, in_grid%nqtot))
     allocate(self_before(S%nat3, S%nat3, Nc))
     allocate(self_next(S%nat3, S%nat3, Nc))
-    allocate(self_prime(S%nat3, S%nat3, Nc))
-    allocate(V(S%nat3, S%nat3, Nc, Nc))
-    allocate(phase_mat(Nc, Nc, n_eq_sites, NSAMPLES))
     allocate(kq(NQ, Nc))!, big_iq(grid_scat%nqtot))
     allocate(out_den_weights(S%nat3, out_grid%nqtot))
     allocate(pos(Nc))
+    allocate(G(S%nat3, S%nat3, in_grid_full%nqtot))
     !
     allocate(df(S%nat3**2*Nc, MEMORY))
     allocate(dv(S%nat3**2*Nc, MEMORY))
     allocate(delta_in(S%nat3**2*Nc))
     allocate(delta_out(S%nat3**2*Nc))
-    allocate(weights(S%nat3, S%nat3, in_grid_full%nqtot))
     df = 0._dp
     dv = 0._dp
     delta_in = 0._dp
     delta_out = 0._dp
     !
-    call center_V(xq, S, S_sc, fc2_sc, Vqqs)
-    ! !> construction of of the phase, used to translate the potential to
-    ! !> random configurations inside the cluster
-    ntot = 0
-    phase_mat = 0.0_dp
-    !
-    allocate(N_sites(n_eq_sites, NSAMPLES))
-    do idef = 1, n_eq_sites
-      call assign_defect_counts(NSAMPLES, Nc, conc, N_sites(idef,:))
-    enddo
-    call mpi_broadcast(n_eq_sites, NSAMPLES, N_sites)
-    !
-    do it = 1+my_id, NSAMPLES, num_procs
-      do idef = 1, n_eq_sites
-        ! call sample_binomial(Nc, conc, pos, Npos)
-        Npos = N_sites(idef, it)
-        call sample_canonical(Nc, Npos, pos)
-        ntot = ntot + Npos
-        do ipos = 1, Npos
-          do k = 1, Nc
-            do j = 1, Nc
-              phase_mat(j,k,idef,it) = phase_mat(j,k,idef,it) + &
-                e_iqr(xq(:,k)-xq(:,j), R(:,pos(ipos)))
-              !       V(:,:,k,j,it) = V(:,:,k,j,it) + Vqqs(:,:,k,j,idef) * &
-              !         phase_mat(k,j,pos(ipos)) / Nc
-              !       ! e_iqr(xq(:,j)-xq(:,k), R(:,pos(ipos))) / Nc
-            enddo
-          enddo
-        enddo
-      enddo
-    enddo
-    call mpi_bsum(Nc, Nc, n_eq_sites, NSAMPLES, phase_mat)
-    call mpi_bsum(ntot)
-    !
-    V_conf = 0.0_dp
-    do it = 1, NSAMPLES
-      do jq = 1, Nc
-        do iq = 1, Nc
-          do idef = 1, n_eq_sites
-            V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) = &
-              V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) + &
-              Vqqs(:,:,iq,jq,idef) * phase_mat(iq,jq,idef,it) / Nc
-          enddo
-        enddo
-      enddo
-      V_conf(:,:,it) = (V_conf(:,:,it)+conjg(transpose(V_conf(:,:,it)))) / 2.0_dp
-    enddo
-    !
-    simulated_conc = real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
-    if(ionode) print"(A,E15.4)", "simulated concentration:", simulated_conc
-    low_concentration = .false.
-    if(all(N_sites < 2)) then
+    fc2_sc_centered = fc2_sc
+    call fc2_sc_centered%center(cluster_mesh, S)
+	    call prepare_low_concentration_support(fc2_sc_centered, support_V, &
+	      support_iR_large, support_diff_cart, support_R_cart, &
+	      support_dof_R, support_dof_cart)
+	    use_compressed_QQ = input%dca_v_rank > 0
+	    call project_support_potential(support_V, support_iR_large, support_diff_cart, &
+	      support_dof_R, support_dof_cart, defect_conc, out_grid%xq, self_support_out)
+	    !
+	    allocate(N_sites(n_eq_sites, NSAMPLES))
+	    do idef = 1, n_eq_sites
+	      call assign_defect_counts(NSAMPLES, Nc, conc, N_sites(idef,:))
+	    enddo
+	    call mpi_broadcast(n_eq_sites, NSAMPLES, N_sites)
+	    !
+	    ntot = sum(N_sites)
+	    simulated_conc = real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
+	    if(ionode) print"(A,E15.4)", "simulated concentration:", simulated_conc
+	    low_concentration = .false.
+	    if(all(N_sites < 2)) then
       low_concentration = .true.
-      if(ionode) print*, "Using low concentration approximation (at most 1 defect per configuration)"
-      simulated_conc = conc
-    endif
-    !
-    !
-    !> construction of G0_coarse and G0i_coarse, which are averaged over the small
+	      if(ionode) print*, "Using low concentration approximation (at most 1 defect per configuration)"
+	      simulated_conc = conc
+	    endif
+	    if(low_concentration .and. use_compressed_QQ) then
+	      call prepare_support_V_modes(support_V, input%dca_v_rank, support_V_modes, support_V_lambda)
+	      call check_allocation_fits("DCA support-mode moment buffers", &
+	        complex_mem_bytes(int(S%nat3, int64) * int(size(support_V_lambda), int64) * &
+	          (int(in_grid_full%nqtot, int64) + int(Nc, int64))) + &
+	        complex_mem_bytes(2_int64 * int(size(support_V_lambda), int64) * &
+	          int(size(support_V_lambda), int64)))
+	      allocate(support_mode_fine(S%nat3, size(support_V_lambda), in_grid_full%nqtot))
+	      allocate(support_mode_cluster(S%nat3, size(support_V_lambda), Nc))
+	      allocate(support_green_mode(size(support_V_lambda), size(support_V_lambda)))
+	      allocate(support_self_before_mode(size(support_V_lambda), size(support_V_lambda)))
+	      call prepare_support_mode_phase(support_V_modes, support_R_cart, &
+	        support_dof_R, support_dof_cart, in_grid_full%xq, support_mode_fine)
+	      call prepare_support_mode_phase(support_V_modes, support_R_cart, &
+	        support_dof_R, support_dof_cart, xq, support_mode_cluster)
+	    elseif(low_concentration .and. NQ > 1) then
+	      call check_allocation_fits("DCA support-moment dense buffers", &
+	        complex_mem_bytes(4_int64 * int(size(support_V,1), int64) * int(size(support_V,1), int64)) + &
+	        complex_mem_bytes(int(S%nat3, int64) * int(S%nat3, int64) * &
+	          int(size(support_diff_cart,2), int64)))
+	      allocate(support_green(size(support_V,1), size(support_V,1)))
+	      allocate(support_g0i(size(support_V,1), size(support_V,1)))
+	      allocate(support_self(size(support_V,1), size(support_V,1)))
+	      allocate(support_self_before(size(support_V,1), size(support_V,1)))
+	      allocate(support_green_R(S%nat3, S%nat3, size(support_diff_cart,2)))
+	    endif
+	    if(.not. low_concentration) then
+	      call check_allocation_fits("DCA non-low-concentration QQ' buffers", &
+	        complex_mem_bytes(5_int64 * int(S%nat3, int64) * int(Nc, int64) * &
+	          int(S%nat3, int64) * int(Nc, int64)) + &
+	        complex_mem_bytes(int(S%nat3, int64) * int(Nc, int64) * &
+	          int(S%nat3, int64) * int(Nc, int64) * &
+	          int(NSAMPLES, int64)) + &
+	        complex_mem_bytes(int(Nc, int64) * int(Nc, int64) * &
+	          int(n_eq_sites, int64) * int(NSAMPLES, int64)))
+	      allocate(Gf0i(S%nat3*Nc, S%nat3*Nc))
+	      allocate(Gf_conf(S%nat3*Nc, S%nat3*Nc))
+	      allocate(Gf_avg(S%nat3*Nc, S%nat3*Nc))
+	      allocate(self_cluster_flat(S%nat3*Nc, S%nat3*Nc))
+	      allocate(V_born(S%nat3*Nc, S%nat3*Nc))
+	      allocate(V_conf(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
+	      allocate(phase_mat(Nc, Nc, n_eq_sites, NSAMPLES))
+	      !
+	      call center_V(xq, S, S_sc, fc2_sc, Vqqs)
+	      V_born = flatten_RR_cmplx(Vqqs(:,:,:,:,1))
+	      phase_mat = 0.0_dp
+	      do it = 1+my_id, NSAMPLES, num_procs
+	        do idef = 1, n_eq_sites
+	          Npos = N_sites(idef, it)
+	          call sample_canonical(Nc, Npos, pos)
+	          do ipos = 1, Npos
+	            do k = 1, Nc
+	              do j = 1, Nc
+	                phase_mat(j,k,idef,it) = phase_mat(j,k,idef,it) + &
+	                  e_iqr(xq(:,k)-xq(:,j), R(:,pos(ipos)))
+	              enddo
+	            enddo
+	          enddo
+	        enddo
+	      enddo
+	      call mpi_bsum(Nc, Nc, n_eq_sites, NSAMPLES, phase_mat)
+	      !
+	      V_conf = 0.0_dp
+	      do it = 1, NSAMPLES
+	        do jq = 1, Nc
+	          do iq = 1, Nc
+	            do idef = 1, n_eq_sites
+	              V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) = &
+	                V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) + &
+	                Vqqs(:,:,iq,jq,idef) * phase_mat(iq,jq,idef,it) / Nc
+	            enddo
+	          enddo
+	        enddo
+	        V_conf(:,:,it) = (V_conf(:,:,it)+conjg(transpose(V_conf(:,:,it)))) / 2.0_dp
+	      enddo
+	      deallocate(phase_mat, Vqqs)
+	    endif
+	    !
+	    !
+	    !> construction of G0_coarse and G0i_coarse, which are averaged over the small
     !> patch in which self-energy is assumed constant
     do iq = 1, Nc
       do jq = 1, NQ
@@ -380,174 +512,174 @@ contains
       enddo
     enddo
     !
-    call quter_R(cluster_mesh, S%nat, S%tau, S%at, S%bg, img_xR, img_nR, img_weight)
-    allocate(W(Nc, S%nat, S%nat))
-    allocate(uncoarse(S%nat3, S%nat3, Nc, Nc))
-    uncoarse = 0._dp
+    ! The diagonal-Q projector can be tested with pair_diff_projector, but for
+    ! this centered support it is underdetermined: many true differences alias
+    ! onto the same cluster residue.  Keep the full c_out interpolation active.
+    ! allocate(W(Nc, S%nat, S%nat))
+    ! allocate(uncoarse(S%nat3, S%nat3, Nc, Nc))
+    ! uncoarse = 0._dp
     !
-    W = 0._dp
-    do na2 = 1, S%nat
-      do na1 = 1, S%nat
-        do iR = 1, img_nR(na1,na2)
-          jR = v2index(bz2simple(NINT(cryst2cart(img_xR(:,iR,na1,na2), S%bg, -1)), cluster_mesh), cluster_mesh)
-          do jq = 1, NQ
-            W(jR,na1,na2) = W(jR,na1,na2) + &
-              e_iqr(-in_grid_full%xq(:,kq(jq,1)), img_xR(:,iR,na1,na2)) * img_weight(iR,na1,na2) / NQ
-          enddo
-        enddo
-      enddo
-    enddo
+    ! W = 0._dp
+    ! do na2 = 1, S%nat
+    !   do na1 = 1, S%nat
+    !     do iR = 1, img_nR(na1,na2)
+    !       jR = v2index(bz2simple(NINT(cryst2cart(img_xR(:,iR,na1,na2), S%bg, -1)), cluster_mesh), cluster_mesh)
+    !       do jq = 1, NQ
+    !         W(jR,na1,na2) = W(jR,na1,na2) + &
+    !           e_iqr(-in_grid_full%xq(:,kq(jq,1)), img_xR(:,iR,na1,na2)) * img_weight(iR,na1,na2) / NQ
+    !       enddo
+    !     enddo
+    !   enddo
+    ! enddo
     !
-    call fourier_basis(c_in, in_grid)
-    call fourier_basis(c_out, out_grid)
+    ! do jq = 1, Nc
+    !   do iq = 1, Nc
+    !     do na2 = 1, S%nat
+    !       do na1 = 1, S%nat
+    !         do iR = 1, Nc
+    !           if(abs(W(iR,na1,na2)) < 1e-10_dp) print*, W(iR,na1,na2), "is very small, check q-grid and image construction"
+    !           uncoarse(3*(na1-1)+1:3*na1,3*(na2-1)+1:3*na2, iq, jq) = &
+    !             uncoarse(3*(na1-1)+1:3*na1,3*(na2-1)+1:3*na2, iq, jq) + &
+    !             e_iqr(-xq(:,jq) + xq(:,iq), R(:,iR)) / Nc / W(iR,na1,na2)
+    !         enddo
+    !       enddo
+    !     enddo
+    !   enddo
+    ! enddo
     !
-    do jq = 1, Nc
-      do iq = 1, Nc
-        do na2 = 1, S%nat
-          do na1 = 1, S%nat
-            do iR = 1, Nc
-              if(abs(W(iR,na1,na2)) < 1e-10_dp) print*, W(iR,na1,na2), "is very small, check q-grid and image construction"
-              uncoarse(3*(na1-1)+1:3*na1,3*(na2-1)+1:3*na2, iq, jq) = &
-                uncoarse(3*(na1-1)+1:3*na1,3*(na2-1)+1:3*na2, iq, jq) + &
-                e_iqr(-xq(:,jq) + xq(:,iq), xR(:,iR)) / Nc / W(iR,na1,na2)
-            enddo
-          enddo
-        enddo
-      enddo
-    enddo
+	    !>
+	    if(.not. low_concentration) then
+	      call center_V_mixed(out_grid%xq, xq, Vout_cluster)
+	      call fit_potential_cout_full(c_out_full, V_born, Vout_cluster)
+	      deallocate(Vout_cluster)
+	      call center_V_mixed(xq, out_grid%xq, Vout_cluster)
+	      call fit_potential_cout_right(c_out_right, V_born, Vout_cluster)
+	      deallocate(Vout_cluster)
+	    endif
     !
-    !>
     self_next = 1._dp
     self_before = 0._dp
     !
     dos = 0._dp
     N_ITER_TOT = 0
-    self_fine = 0._dp
-    !
-    if(ionode) print*, "Starting DCA self-energy calculation..."
+	    if(ionode) print*, "Starting DCA self-energy calculation..."
+    if(ionode .and. low_concentration .and. NQ > 1 .and. .not. use_compressed_QQ) &
+      print*, "Using support-moment DCA bath for the low-concentration solver."
+    if(ionode .and. low_concentration .and. use_compressed_QQ) &
+      print*, "Using compressed support-moment low-concentration solver with rank:", size(support_V_lambda)
     if(ionode) print*, ""
-    do iw = 1, input%n_omega
-      max_diff = huge(1.0_dp)
+    do iw = 3, input%n_omega
+      do iq = 1, in_grid_full%nqtot
+        G(:,:,iq) = matmul(U_fine(:,:,iq), matmul(diag_cmplx(1/wg%w(:,wg%e(iq),iw)), UT_fine(:,:,iq)))
+        ! call invzmat(S%nat3, G(:,:,iq))
+      enddo
+      !
+      conv = .false.
       do sc_iter = 1, MAXITER
-        !
-        if (.not. allocated(weights)) allocate(weights(S%nat3, S%nat3, in_grid%nqtot))
-        call tetra_from_self_cart(S, in_grid, D + self_fine, wg%en(iw)**2, weights, mpi=.true.)
-        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, weights, equiv, in_grid_full%xq, .false.)
-        !
         Gi_coarse = 0.0_dp
+        if(low_concentration .and. use_compressed_QQ) support_green_mode = 0._dp
+        if(low_concentration .and. NQ > 1 .and. .not. use_compressed_QQ) support_green_R = 0._dp
         do iq = 1, Nc
           do jq = 1, NQ
             kkq = kq(jq,iq)
-            Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) + weights(:,:,kkq) * Nc
+            A = G(:,:,kkq) - self_before(:,:,iq)
+            call invzmat(S%nat3, A)
+            Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) + A
+            if(low_concentration .and. use_compressed_QQ) &
+              call add_support_mode_green(A, support_mode_fine(:,:,kkq), support_green_mode)
+            if(low_concentration .and. NQ > 1 .and. .not. use_compressed_QQ) &
+              call add_support_moment_green_R(A, in_grid_full%xq(:,kkq), &
+                support_diff_cart, support_green_R)
           enddo
-          !
+          Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) / real(NQ, dp)
           call invzmat(S%nat3, Gi_coarse(:,:,iq))
           G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_before(:,:,iq)
         enddo
         !
-        ! call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, G0i_cluster, c_equiv, xq, .true.)
-        deallocate(weights)
-        !
-        Gf0i = 0.0_dp
-        do iq = 1, Nc
-          Gf0i((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = G0i_cluster(:,:,iq)
-        enddo
-        if(low_concentration) then
-          Gi_conf = 0.0_dp
-          do iq = 1, Nc
-            A = G0i_cluster(:,:,iq)
-            call invzmat(S%nat3, A)
-            Gi_conf(:,:,iq,iq) = A
-          enddo
-          Gf_conf = flatten_RR_cmplx(Gi_conf)
-          Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
-          do idef = 1, n_eq_sites
-            Gi_conf = 0.0_dp
-            do iq = 1, Nc
-              Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
-              do jq = 1, Nc
-                Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef) / Nc
-              enddo
-            enddo
-            Gf_conf = flatten_RR_cmplx(Gi_conf)
+	        if(low_concentration) then
+	          if(use_compressed_QQ) then
+	            call support_self_mode_from_cluster(self_before, support_mode_cluster, &
+	              support_self_before_mode)
+	            call low_concentration_support_self_compressed_moment(support_green_mode, &
+	              support_self_before_mode, support_V_modes, support_V_lambda, support_iR_large, &
+              support_dof_R, support_dof_cart, self_support_R)
+          elseif(NQ == 1) then
+            call low_concentration_support_self_R(G0i_cluster, support_V, &
+              support_iR_large, support_diff_cart, support_R_cart, &
+              support_dof_R, support_dof_cart, self_support_R)
+          else
+            call expand_support_matrix(support_green_R, support_iR_large, &
+              support_dof_R, support_dof_cart, support_green)
+            call support_self_from_cluster(self_before, support_diff_cart, support_iR_large, &
+              support_dof_R, support_dof_cart, support_self_before)
+            support_g0i = support_green
+            call invzmat(size(support_V,1), support_g0i)
+            support_g0i = support_g0i + support_self_before
+            support_green = support_g0i
+            call invzmat(size(support_V,1), support_green)
+            call low_concentration_support_self_dense(support_green, support_V, &
+              support_iR_large, support_dof_R, support_dof_cart, self_support_R, support_self)
+          endif
+	          call project_support_self(self_support_R, support_diff_cart, xq, self_next)
+	          call project_support_self(self_support_R, support_diff_cart, out_grid%xq, self_support_out)
+	        else
+	          Gf0i = 0._dp
+	          do iq = 1, Nc
+	            Gf0i((iq-1)*S%nat3+1:iq*S%nat3, (iq-1)*S%nat3+1:iq*S%nat3) = &
+	              G0i_cluster(:,:,iq)
+	          enddo
+	          Gf_avg = 0.0_dp
+	          do it = 1+my_id, NSAMPLES, num_procs
+	            Gf_conf = Gf0i - V_conf(:,:,it)
             call invzmat(S%nat3*Nc, Gf_conf)
-            Gf_avg = Gf_avg + Gf_conf * (conc * Nc)
-          enddo
-        else
-          Gf_avg = 0.0_dp
-          do it = 1+my_id, NSAMPLES, num_procs
-            ! > construction of G_conf for a given configuration
-            ! Gi_conf = 0.0_dp
-            !
-            Gf_conf = Gf0i - V_conf(:,:,it)
-            call invzmat(S%nat3*Nc, Gf_conf)
-            !
             Gf_avg = Gf_avg + Gf_conf
-            !
           enddo
           call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf_avg)
           Gf_avg = Gf_avg / real(NSAMPLES, dp)
-        endif
+	          Gf_conf = Gf_avg
+	          call invzmat(S%nat3*Nc, Gf_conf)
+	          self_cluster_flat = Gf0i - Gf_conf
+	          do iq = 1, Nc
+	            self_next(:,:,iq) = self_cluster_flat((iq-1)*S%nat3+1:iq*S%nat3, &
+	              (iq-1)*S%nat3+1:iq*S%nat3)
+	          enddo
+	        endif
         !
-        !> self energy is G0_cluster^-1 - <G>^-1
-        Gi_avg = unflatten_RR_cmplx(Gf_avg, Nc, Nc)
-        do iq = 1, Nc
-          call invzmat(S%nat3, Gi_avg(:,:,iq,iq))
-          self_next(:,:,iq) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
-        enddo
+        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_next, c_equiv, xq, .true.)
+        max_diff = maxval(abs(self_before - self_next))
+        if(all(abs(real(self_before - self_next, dp)) < ABS_TOLERANCE + abs(real(self_next, dp)) * REL_TOLERANCE) .and. &
+          all(abs(aimag(self_before - self_next)) < ABS_TOLERANCE + abs(aimag(self_next)) * REL_TOLERANCE)) conv = .true.
+        if(conv) then
+          self_before = self_next
+          exit
+        endif
         !
         delta_out = reshape(self_next, [S%nat3**2*Nc])
         call mix_broyden_full(S%nat3**2*Nc, delta_out, delta_in, &
           ALPHA_MIX, sc_iter, MEMORY, df, dv)
         self_before = reshape(delta_in, [S%nat3, S%nat3, Nc])
-        !
-        !
-        if(all(abs(real(self_before - self_next, dp)) < ABS_TOLERANCE + abs(real(self_next, dp)) * REL_TOLERANCE) .and. &
-          all(abs(aimag(self_before - self_next)) < ABS_TOLERANCE + abs(aimag(self_next)) * REL_TOLERANCE)) exit
-        !
-        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_before, c_equiv, xq, .true.)
-        self_prime = 0.0_dp
-        do iq = 1, Nc
-          do jq = 1, Nc
-            self_prime(:,:,iq) = self_prime(:,:,iq) + self_before(:,:,jq) * uncoarse(:,:,jq,iq)
-          enddo
-        enddo
-        !
-        !
-        self_fine = 0._dp
-        do jq = 1, in_grid%nq
-          iqp = jq + in_grid%iq0
-          do iq = 1, Nc
-            self_fine(:,:,iqp) = self_fine(:,:,iqp) + c_in(:,:,iq,iqp) * self_prime(:,:,iq)
-          enddo
-        enddo
-        call mpi_bsum(S%nat3, S%nat3, in_grid%nqtot, self_fine)
-        !
       enddo ! self-energy SC cycle
-      N_ITER_TOT = N_ITER_TOT + sc_iter - 1
-      if(sc_iter - 1 /= MAXITER) then
-        if(ionode) print"(A,I4,A,I4,A)", "frequency ", iw, " converged in ", sc_iter-1, " iterations."
+      !
+      N_ITER_TOT = N_ITER_TOT + min(sc_iter, MAXITER)
+      if(conv) then
+        if(ionode) print"(A,I4,A,I4,A)", "frequency ", iw, " converged in ", sc_iter, " iterations."
       else
         if(ionode) print"(A,I4,A,I4,A,E15.3)", "frequency ", iw, &
-          " NOT converged in ", sc_iter-1, " iterations. Max diff: ", max_diff
+          " NOT converged in ", MAXITER, " iterations. Max diff: ", max_diff
       end if
       !
       do iq = 1, out_grid%nqtot
-        A = 0._dp
-        B = 0._dp
-        do jq = 1, Nc
-          A = A + self_before(:,:,jq) * c_out(:,:,jq,iq)
-          B = B + self_prime(:,:,jq) * c_out(:,:,jq,iq)
-        enddo
-        ! call invzmat(S%nat3, A)
-        ! A = A + ialpha
-        self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(A, U_out(:,:,iq))) * &
-          conc / simulated_conc
-        self_outp_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(B, U_out(:,:,iq))) * &
-          conc / simulated_conc
+        if(low_concentration) then
+          A = self_support_out(:,:,iq)
+        else
+          Gf_conf = self_cluster_flat - defect_conc * V_born
+          A = self_support_out(:,:,iq) + &
+            matmul(c_out_full(:,:,iq), matmul(Gf_conf, c_out_right(:,:,iq)))
+        endif
+        call apply_sym_q(S, out_grid%xq(:,iq), A)
+        self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(A, U_out(:,:,iq)))
         do i = 1, S%nat3
           self_out_diag(i,iq,iw) = self_out_grid(i,i,iq,iw)
-          self_outp_diag(i,iq,iw) = self_outp_grid(i,i,iq,iw)
         enddo
       enddo
     enddo ! frequency loop
@@ -560,7 +692,7 @@ contains
       call write_self('self-dca.dat', wg%en, self_out_diag)
      case('self')
       call write_self('self-dca.dat', wg%en, self_out_diag)
-      call write_self('selfp-dca.dat', wg%en, self_outp_diag)
+      ! call write_self('selfp-dca.dat', wg%en, self_outp_diag)
      case('dos')
       do iw = 1+my_id, input%n_omega, num_procs
         call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg_out%en(iw)**2, out_den_weights)
@@ -583,20 +715,1167 @@ contains
     end select
     !
   contains
+    subroutine low_concentration_cluster_self(G0i_flat_, V_cluster_flat_, c_cluster_, self_flat_)
+      ! Fast cluster-DCA update:
+      ! <G> = (1-c) g + c (g^-1 - V)^-1, using the same unnormalised
+      ! Fourier convention as full_born_center.
+      complex(dp), intent(in) :: G0i_flat_(:,:), V_cluster_flat_(:,:)
+      real(dp), intent(in) :: c_cluster_
+      complex(dp), intent(out) :: self_flat_(:,:)
+      !
+      complex(dp), allocatable :: G_clean_(:,:), G1_(:,:), Gavg_(:,:)
+      integer :: nflat_
+      !
+      nflat_ = S%nat3 * Nc
+      if(size(G0i_flat_, 1) /= nflat_ .or. size(G0i_flat_, 2) /= nflat_) &
+        call errore("low_concentration_cluster_self", "bad G0 size", 1)
+      if(size(V_cluster_flat_, 1) /= nflat_ .or. size(V_cluster_flat_, 2) /= nflat_) &
+        call errore("low_concentration_cluster_self", "bad V size", 1)
+      if(size(self_flat_, 1) /= nflat_ .or. size(self_flat_, 2) /= nflat_) &
+        call errore("low_concentration_cluster_self", "bad Sigma size", 1)
+      !
+      allocate(G_clean_(nflat_,nflat_), G1_(nflat_,nflat_), Gavg_(nflat_,nflat_))
+      G_clean_ = G0i_flat_
+      call invzmat(nflat_, G_clean_)
+      G1_ = G0i_flat_ - V_cluster_flat_
+      call invzmat(nflat_, G1_)
+      Gavg_ = (1._dp - c_cluster_) * G_clean_ + c_cluster_ * G1_
+      self_flat_ = Gavg_
+      call invzmat(nflat_, self_flat_)
+      self_flat_ = G0i_flat_ - self_flat_
+      !
+      deallocate(G_clean_, G1_, Gavg_)
+    end subroutine
+    !
+    subroutine prepare_low_concentration_support(fc2sc_, V_support_, iR_large_, diff_cart_, R_cart_, &
+      dof_R_, dof_cart_)
+      ! Build the frequency-independent centered support used by full_born_center.
+      type(forceconst2_sc), intent(in) :: fc2sc_
+      complex(dp), allocatable, intent(out) :: V_support_(:,:)
+      integer, allocatable, intent(out) :: iR_large_(:,:)
+      real(dp), allocatable, intent(out) :: diff_cart_(:,:), R_cart_(:,:)
+      integer, allocatable, intent(out) :: dof_R_(:), dof_cart_(:)
+      !
+      integer, pointer :: R_list_(:,:), diff_list_large_(:,:)
+      complex(dp), allocatable :: V_full_(:,:)
+      logical, allocatable :: active_(:)
+      integer, allocatable :: active_idx_(:)
+      integer :: iR1_, iR2_, iR_, nR_, nR_large_, i_, j_, N_, nactive_, idx_
+      integer :: Rdiff_(3)
+      real(dp), parameter :: support_tol_ = 1e-14_dp
+      !
+      allocate(R_list_(3,1))
+      R_list_(:,1) = fc2sc_%yR2(:,1)
+      nR_ = 1
+      do iR2_ = 1, fc2sc_%n_R2
+        call find_where(fc2sc_%yR2(:,iR2_), R_list_, iR_)
+        if(iR_ == -1) call enlarge_R(fc2sc_%yR2(:,iR2_), R_list_, nR_)
+        do iR1_ = 1, fc2sc_%n_R1(iR2_)
+          call find_where(fc2sc_%yR1(:,iR1_,iR2_), R_list_, iR_)
+          if(iR_ == -1) call enlarge_R(fc2sc_%yR1(:,iR1_,iR2_), R_list_, nR_)
+        enddo
+      enddo
+      !
+      nR_large_ = 1
+      allocate(diff_list_large_(3,1))
+      diff_list_large_(:,1) = [0,0,0]
+      do i_ = 1, nR_
+        do j_ = 1, nR_
+          Rdiff_ = R_list_(:,i_) - R_list_(:,j_)
+          call find_where(Rdiff_, diff_list_large_, iR_)
+          if(iR_ == -1) call enlarge_R(Rdiff_, diff_list_large_, nR_large_)
+        enddo
+      enddo
+      !
+      allocate(iR_large_(nR_,nR_))
+      allocate(diff_cart_(3,nR_large_))
+      allocate(R_cart_(3,nR_))
+      do iR_ = 1, nR_
+        R_cart_(:,iR_) = cryst2cart(real(R_list_(:,iR_), dp), S%at, 1)
+      enddo
+      do iR_ = 1, nR_large_
+        diff_cart_(:,iR_) = cryst2cart(real(diff_list_large_(:,iR_), dp), S%at, 1)
+      enddo
+      do j_ = 1, nR_
+        do i_ = 1, nR_
+          call find_where(R_list_(:,i_) - R_list_(:,j_), diff_list_large_, iR_)
+          iR_large_(i_,j_) = iR_
+        enddo
+      enddo
+	      !
+	      N_ = S%nat3 * nR_
+	      call check_allocation_fits("DCA centered support V_full", &
+	        complex_mem_bytes(int(N_, int64) * int(N_, int64)))
+	      allocate(V_full_(N_,N_))
+      V_full_ = 0._dp
+      do iR2_ = 1, fc2sc_%n_R2
+        call find_where(fc2sc_%yR2(:,iR2_), R_list_, j_)
+        do iR1_ = 1, fc2sc_%n_R1(iR2_)
+          call find_where(fc2sc_%yR1(:,iR1_,iR2_), R_list_, i_)
+          V_full_((i_-1)*S%nat3+1:i_*S%nat3, (j_-1)*S%nat3+1:j_*S%nat3) = &
+            cmplx(fc2sc_%fc(:,:,iR1_,iR2_), 0._dp, dp)
+        enddo
+      enddo
+      !
+      allocate(active_(N_), active_idx_(N_))
+      active_ = .false.
+      do i_ = 1, N_
+        active_(i_) = any(abs(V_full_(i_,:)) > support_tol_) .or. &
+          any(abs(V_full_(:,i_)) > support_tol_)
+      enddo
+      nactive_ = count(active_)
+      if(nactive_ == 0) call errore("prepare_low_concentration_support", "empty active support", 1)
+      !
+      j_ = 0
+      do i_ = 1, N_
+        if(.not. active_(i_)) cycle
+        j_ = j_ + 1
+        active_idx_(j_) = i_
+      enddo
+	      call check_allocation_fits("DCA active centered support V", &
+	        complex_mem_bytes(int(nactive_, int64) * int(nactive_, int64)) + &
+	        int_mem_bytes(2_int64 * int(nactive_, int64)))
+	      allocate(V_support_(nactive_,nactive_))
+      allocate(dof_R_(nactive_), dof_cart_(nactive_))
+      do i_ = 1, nactive_
+        idx_ = active_idx_(i_)
+        dof_R_(i_) = (idx_ - 1) / S%nat3 + 1
+        dof_cart_(i_) = mod(idx_ - 1, S%nat3) + 1
+        do j_ = 1, nactive_
+          V_support_(i_,j_) = V_full_(idx_, active_idx_(j_))
+        enddo
+      enddo
+      if(ionode) print"(A,I8,A,I8)", &
+        "Low-concentration active support dimension: ", nactive_, " / ", N_
+      !
+      deallocate(V_full_, active_, active_idx_)
+      deallocate(R_list_, diff_list_large_)
+    end subroutine
+    !
+    subroutine prepare_support_V_modes(V_support_, requested_rank_, V_modes_, V_lambda_)
+      ! Diagonalize the centered Hermitian support potential and keep the
+      ! strongest modes by absolute eigenvalue.  This gives
+      ! V_support ~= V_modes * diag(V_lambda) * V_modes^dagger.
+      complex(dp), intent(in) :: V_support_(:,:)
+      integer, intent(in) :: requested_rank_
+      complex(dp), allocatable, intent(out) :: V_modes_(:,:)
+      real(dp), allocatable, intent(out) :: V_lambda_(:)
+      !
+      complex(dp), allocatable :: eigvec_(:,:), work_(:)
+      complex(dp) :: work_query_(1)
+      real(dp), allocatable :: eigval_(:), rwork_(:)
+      logical, allocatable :: used_(:)
+      integer :: N_, M_, info_, lwork_, im_, i_, best_
+      real(dp) :: best_abs_, total_norm_, kept_norm_
+      external :: zheev
+      !
+      N_ = size(V_support_, 1)
+	      if(size(V_support_, 2) /= N_) call errore("prepare_support_V_modes", "bad support V", 1)
+	      M_ = min(max(requested_rank_, 1), N_)
+	      !
+	      call check_allocation_fits("DCA support-V eigensolver dense copy", &
+	        complex_mem_bytes(int(N_, int64) * int(N_, int64)) + &
+	        real_mem_bytes(int(N_, int64) + int(max(1,3*N_-2), int64)))
+	      allocate(eigvec_(N_,N_), eigval_(N_), rwork_(max(1,3*N_-2)))
+	      eigvec_ = V_support_
+	      call zheev('V', 'U', N_, eigvec_, N_, eigval_, work_query_, -1, rwork_, info_)
+	      call errore("prepare_support_V_modes", "ZHEEV workspace query failed", abs(info_))
+	      lwork_ = max(1, int(real(work_query_(1), dp)))
+	      call check_allocation_fits("DCA support-V eigensolver workspace", &
+	        complex_mem_bytes(int(lwork_, int64)))
+	      allocate(work_(lwork_))
+      call zheev('V', 'U', N_, eigvec_, N_, eigval_, work_, lwork_, rwork_, info_)
+      call errore("prepare_support_V_modes", "ZHEEV failed", abs(info_))
+      !
+	      call check_allocation_fits("DCA compressed support-V modes", &
+	        complex_mem_bytes(int(N_, int64) * int(M_, int64)) + &
+	        real_mem_bytes(int(M_, int64)) + int_mem_bytes(int(N_, int64)))
+	      allocate(V_modes_(N_,M_), V_lambda_(M_), used_(N_))
+      used_ = .false.
+      total_norm_ = sum(eigval_**2)
+      kept_norm_ = 0._dp
+      do im_ = 1, M_
+        best_ = 1
+        best_abs_ = -1._dp
+        do i_ = 1, N_
+          if(used_(i_)) cycle
+          if(abs(eigval_(i_)) > best_abs_) then
+            best_abs_ = abs(eigval_(i_))
+            best_ = i_
+          endif
+        enddo
+        used_(best_) = .true.
+        V_modes_(:,im_) = eigvec_(:,best_)
+        V_lambda_(im_) = eigval_(best_)
+        kept_norm_ = kept_norm_ + eigval_(best_)**2
+      enddo
+      !
+      if(ionode) then
+        print"(A,I8,A,I8)", "Compressed centered V modes: ", M_, " / ", N_
+        if(total_norm_ > 0._dp) print"(A,F12.8)", &
+          "Captured Frobenius-norm weight of V: ", kept_norm_ / total_norm_
+        print"(A,ES16.8)", "Largest retained |lambda|: ", maxval(abs(V_lambda_))
+        print"(A,ES16.8)", "Smallest retained |lambda|: ", minval(abs(V_lambda_))
+      endif
+      !
+      deallocate(eigvec_, eigval_, rwork_, work_, used_)
+    end subroutine
+    !
+    subroutine project_support_potential(V_support_, iR_large_, diff_cart_, &
+      dof_R_, dof_cart_, prefactor_, xq_target_, self_cart_)
+      complex(dp), intent(in) :: V_support_(:,:)
+      integer, intent(in) :: iR_large_(:,:)
+      real(dp), intent(in) :: diff_cart_(:,:), xq_target_(:,:)
+      integer, intent(in) :: dof_R_(:), dof_cart_(:)
+      real(dp), intent(in) :: prefactor_
+      complex(dp), intent(out) :: self_cart_(:,:,:)
+      !
+      complex(dp), allocatable :: self_R_(:,:,:)
+      integer :: i_, j_, N_, nR_large_
+      !
+      N_ = size(dof_R_)
+      nR_large_ = size(diff_cart_, 2)
+      if(size(dof_cart_) /= N_) call errore("project_support_potential", "bad active map", 1)
+	      if(size(V_support_, 1) /= N_ .or. size(V_support_, 2) /= N_) &
+	        call errore("project_support_potential", "bad support V", 1)
+	      !
+	      call check_allocation_fits("DCA projected support potential", &
+	        complex_mem_bytes(int(S%nat3, int64) * int(S%nat3, int64) * int(nR_large_, int64)))
+	      allocate(self_R_(S%nat3,S%nat3,nR_large_))
+      self_R_ = 0._dp
+      do j_ = 1, N_
+        do i_ = 1, N_
+          self_R_(dof_cart_(i_),dof_cart_(j_),iR_large_(dof_R_(i_),dof_R_(j_))) = &
+            self_R_(dof_cart_(i_),dof_cart_(j_),iR_large_(dof_R_(i_),dof_R_(j_))) + &
+            prefactor_ * V_support_(i_,j_)
+        enddo
+      enddo
+      call project_support_self(self_R_, diff_cart_, xq_target_, self_cart_)
+      deallocate(self_R_)
+    end subroutine
+    !
+    subroutine add_support_moment_green_R(gq_, xq_fine_, diff_cart_, G_R_)
+      ! Add exp(i q d) G(q) to every unique support difference d = R-R'.
+      ! The dense support matrix is expanded only once after the fine-q loop.
+      complex(dp), intent(in) :: gq_(:,:)
+      real(dp), intent(in) :: xq_fine_(3), diff_cart_(:,:)
+      complex(dp), intent(inout) :: G_R_(:,:,:)
+      !
+      integer :: iR_
+      !
+      if(size(G_R_, 1) /= S%nat3 .or. size(G_R_, 2) /= S%nat3 .or. &
+        size(G_R_, 3) /= size(diff_cart_, 2)) &
+        call errore("add_support_moment_green_R", "bad real-space support G", 1)
+      do iR_ = 1, size(diff_cart_, 2)
+        G_R_(:,:,iR_) = G_R_(:,:,iR_) + gq_ * e_iqr(xq_fine_, diff_cart_(:,iR_))
+      enddo
+    end subroutine
+    !
+    subroutine expand_support_matrix(mat_R_, iR_large_, dof_R_, dof_cart_, mat_support_)
+      complex(dp), intent(in) :: mat_R_(:,:,:)
+      integer, intent(in) :: iR_large_(:,:), dof_R_(:), dof_cart_(:)
+      complex(dp), intent(out) :: mat_support_(:,:)
+      !
+      integer :: i_, j_, N_
+      !
+      N_ = size(dof_R_)
+      if(size(dof_cart_) /= N_) call errore("expand_support_matrix", "bad active map", 1)
+      if(size(mat_support_, 1) /= N_ .or. size(mat_support_, 2) /= N_) &
+        call errore("expand_support_matrix", "bad support matrix", 1)
+      !
+      do j_ = 1, N_
+        do i_ = 1, N_
+          mat_support_(i_,j_) = mat_R_(dof_cart_(i_),dof_cart_(j_), &
+            iR_large_(dof_R_(i_),dof_R_(j_)))
+        enddo
+      enddo
+    end subroutine
+    !
+    subroutine support_self_from_cluster(self_cluster_, diff_cart_, iR_large_, dof_R_, dof_cart_, self_support_)
+      ! Periodize the current diagonal DCA self-energy to the support.  The
+      ! 1/Nc is the inverse transform paired with project_support_self.
+      complex(dp), intent(in) :: self_cluster_(:,:,:)
+      real(dp), intent(in) :: diff_cart_(:,:)
+      integer, intent(in) :: iR_large_(:,:), dof_R_(:), dof_cart_(:)
+      complex(dp), intent(out) :: self_support_(:,:)
+      !
+      complex(dp), allocatable :: self_R_(:,:,:)
+      integer :: iq_, iR_, N_
+      !
+      N_ = size(dof_R_)
+      if(size(dof_cart_) /= N_) call errore("support_self_from_cluster", "bad active map", 1)
+	      if(size(self_support_, 1) /= N_ .or. size(self_support_, 2) /= N_) &
+	        call errore("support_self_from_cluster", "bad support Sigma", 1)
+	      !
+	      call check_allocation_fits("DCA cluster self-energy support projection", &
+	        complex_mem_bytes(int(S%nat3, int64) * int(S%nat3, int64) * int(size(diff_cart_,2), int64)))
+	      allocate(self_R_(S%nat3,S%nat3,size(diff_cart_,2)))
+      self_R_ = 0._dp
+      do iR_ = 1, size(diff_cart_, 2)
+        do iq_ = 1, Nc
+          self_R_(:,:,iR_) = self_R_(:,:,iR_) + &
+            e_iqr(xq(:,iq_), diff_cart_(:,iR_)) * self_cluster_(:,:,iq_) / real(Nc, dp)
+        enddo
+      enddo
+      call expand_support_matrix(self_R_, iR_large_, dof_R_, dof_cart_, self_support_)
+      deallocate(self_R_)
+    end subroutine
+    !
+    subroutine prepare_support_mode_phase(V_modes_, R_cart_, dof_R_, dof_cart_, xq_grid_, Bmode_)
+      ! B_alpha,m(q) = sum_i exp(-i q R_i) U_i,m for active support rows
+      ! with cartesian index alpha.  This projects support moments without
+      ! forming the dense support matrix.
+      complex(dp), intent(in) :: V_modes_(:,:)
+      real(dp), intent(in) :: R_cart_(:,:), xq_grid_(:,:)
+      integer, intent(in) :: dof_R_(:), dof_cart_(:)
+      complex(dp), intent(out) :: Bmode_(:,:,:)
+      !
+      complex(dp) :: phase_
+      integer :: iq_, i_, N_, M_, nq_
+      !
+      N_ = size(dof_R_)
+      M_ = size(V_modes_, 2)
+      nq_ = size(xq_grid_, 2)
+      if(size(dof_cart_) /= N_) call errore("prepare_support_mode_phase", "bad active map", 1)
+      if(size(V_modes_, 1) /= N_) call errore("prepare_support_mode_phase", "bad mode matrix", 1)
+      if(size(Bmode_, 1) /= S%nat3 .or. size(Bmode_, 2) /= M_ .or. size(Bmode_, 3) /= nq_) &
+        call errore("prepare_support_mode_phase", "bad phase buffer", 1)
+      if(any(dof_R_ < 1) .or. any(dof_R_ > size(R_cart_, 2))) &
+        call errore("prepare_support_mode_phase", "active R out of range", 1)
+      if(any(dof_cart_ < 1) .or. any(dof_cart_ > S%nat3)) &
+        call errore("prepare_support_mode_phase", "active cartesian index out of range", 1)
+      !
+      Bmode_ = 0._dp
+      do iq_ = 1, nq_
+        do i_ = 1, N_
+          phase_ = e_iqr(xq_grid_(:,iq_), -R_cart_(:,dof_R_(i_)))
+          Bmode_(dof_cart_(i_),:,iq_) = Bmode_(dof_cart_(i_),:,iq_) + &
+            phase_ * V_modes_(i_,:)
+        enddo
+      enddo
+    end subroutine
+    !
+    subroutine add_support_mode_green(gq_, Bmode_q_, Gmode_)
+      complex(dp), intent(in) :: gq_(:,:), Bmode_q_(:,:)
+      complex(dp), intent(inout) :: Gmode_(:,:)
+      !
+      complex(dp) :: tmp_(size(Bmode_q_,1), size(Bmode_q_,2))
+      integer :: M_
+      !
+      M_ = size(Bmode_q_, 2)
+      if(size(Bmode_q_, 1) /= S%nat3) call errore("add_support_mode_green", "bad mode phase", 1)
+      if(size(gq_, 1) /= S%nat3 .or. size(gq_, 2) /= S%nat3) &
+        call errore("add_support_mode_green", "bad Green block", 1)
+      if(size(Gmode_, 1) /= M_ .or. size(Gmode_, 2) /= M_) &
+        call errore("add_support_mode_green", "bad mode Green", 1)
+      !
+      tmp_ = matmul(gq_, Bmode_q_)
+      Gmode_ = Gmode_ + matmul(conjg(transpose(Bmode_q_)), tmp_)
+    end subroutine
+    !
+    subroutine support_self_mode_from_cluster(self_cluster_, Bmode_cluster_, self_mode_)
+      complex(dp), intent(in) :: self_cluster_(:,:,:), Bmode_cluster_(:,:,:)
+      complex(dp), intent(out) :: self_mode_(:,:)
+      !
+      complex(dp) :: tmp_(size(Bmode_cluster_,1), size(Bmode_cluster_,2))
+      integer :: iq_, M_
+      !
+      M_ = size(Bmode_cluster_, 2)
+      if(size(Bmode_cluster_, 1) /= S%nat3 .or. size(Bmode_cluster_, 3) /= Nc) &
+        call errore("support_self_mode_from_cluster", "bad mode phase", 1)
+      if(size(self_cluster_, 1) /= S%nat3 .or. size(self_cluster_, 2) /= S%nat3 .or. &
+        size(self_cluster_, 3) /= Nc) call errore("support_self_mode_from_cluster", "bad Sigma", 1)
+      if(size(self_mode_, 1) /= M_ .or. size(self_mode_, 2) /= M_) &
+        call errore("support_self_mode_from_cluster", "bad mode Sigma", 1)
+      !
+      self_mode_ = 0._dp
+      do iq_ = 1, Nc
+        tmp_ = matmul(self_cluster_(:,:,iq_), Bmode_cluster_(:,:,iq_))
+        self_mode_ = self_mode_ + &
+          matmul(conjg(transpose(Bmode_cluster_(:,:,iq_))), tmp_) / real(Nc, dp)
+      enddo
+    end subroutine
+    !
+    subroutine low_concentration_support_self_compressed_moment(G_int_mode_, self_before_mode_, &
+      V_modes_, V_lambda_, iR_large_, dof_R_, dof_cart_, self_R_)
+      complex(dp), intent(in) :: G_int_mode_(:,:), self_before_mode_(:,:), V_modes_(:,:)
+      real(dp), intent(in) :: V_lambda_(:)
+      integer, intent(in) :: iR_large_(:,:), dof_R_(:), dof_cart_(:)
+      complex(dp), allocatable, intent(out) :: self_R_(:,:,:)
+      !
+      complex(dp), allocatable :: G_bath_mode_(:,:), Kmode_(:,:), Taumode_(:,:), row_tau_(:)
+      complex(dp) :: sigma_ij_
+      integer :: i_, j_, im_, N_, M_, nR_large_
+      !
+      N_ = size(dof_R_)
+      M_ = size(V_lambda_)
+      nR_large_ = maxval(iR_large_)
+      if(size(dof_cart_) /= N_) &
+        call errore("low_concentration_support_self_compressed_moment", "bad active map", 1)
+      if(size(V_modes_, 1) /= N_ .or. size(V_modes_, 2) /= M_) &
+        call errore("low_concentration_support_self_compressed_moment", "bad mode matrix", 1)
+      if(size(G_int_mode_, 1) /= M_ .or. size(G_int_mode_, 2) /= M_) &
+        call errore("low_concentration_support_self_compressed_moment", "bad mode Green", 1)
+      if(size(self_before_mode_, 1) /= M_ .or. size(self_before_mode_, 2) /= M_) &
+        call errore("low_concentration_support_self_compressed_moment", "bad mode Sigma", 1)
+      if(any(dof_cart_ < 1) .or. any(dof_cart_ > S%nat3)) &
+        call errore("low_concentration_support_self_compressed_moment", &
+          "active cartesian index out of range", 1)
+      !
+      call check_allocation_fits("DCA compressed support-moment solver", &
+        complex_mem_bytes(3_int64 * int(M_, int64) * int(M_, int64)) + &
+        complex_mem_bytes(int(M_, int64)) + &
+        complex_mem_bytes(int(S%nat3, int64) * int(S%nat3, int64) * int(nR_large_, int64)))
+      allocate(G_bath_mode_(M_,M_), Kmode_(M_,M_), Taumode_(M_,M_), row_tau_(M_))
+      !
+      G_bath_mode_ = G_int_mode_
+      call invzmat(M_, G_bath_mode_)
+      G_bath_mode_ = G_bath_mode_ + self_before_mode_
+      call invzmat(M_, G_bath_mode_)
+      !
+      Kmode_ = id_mat(M_)
+      do j_ = 1, M_
+        Kmode_(:,j_) = Kmode_(:,j_) - (1._dp - defect_conc) * G_bath_mode_(:,j_) * V_lambda_(j_)
+      enddo
+      call invzmat(M_, Kmode_)
+      Taumode_ = Kmode_
+      do i_ = 1, M_
+        Taumode_(i_,:) = defect_conc * V_lambda_(i_) * Taumode_(i_,:)
+      enddo
+      !
+      allocate(self_R_(S%nat3,S%nat3,nR_large_))
+      self_R_ = 0._dp
+      do i_ = 1, N_
+        row_tau_ = 0._dp
+        do im_ = 1, M_
+          row_tau_(:) = row_tau_(:) + V_modes_(i_,im_) * Taumode_(im_,:)
+        enddo
+        do j_ = 1, N_
+          sigma_ij_ = sum(row_tau_(:) * conjg(V_modes_(j_,:)))
+          self_R_(dof_cart_(i_),dof_cart_(j_),iR_large_(dof_R_(i_),dof_R_(j_))) = &
+            self_R_(dof_cart_(i_),dof_cart_(j_),iR_large_(dof_R_(i_),dof_R_(j_))) + &
+            sigma_ij_
+        enddo
+      enddo
+      !
+      deallocate(G_bath_mode_, Kmode_, Taumode_, row_tau_)
+    end subroutine
+    !
+    subroutine low_concentration_support_self_dense(G_bath_, V_support_, iR_large_, &
+      dof_R_, dof_cart_, self_R_, self_support_)
+      ! Support-space low-concentration solver:
+      !   Sigma = c V [1 - (1-c) G_bath V]^{-1}
+      ! where G_bath contains the DCA moment-preserving Weiss bath.
+      complex(dp), intent(in) :: G_bath_(:,:), V_support_(:,:)
+      integer, intent(in) :: iR_large_(:,:)
+      integer, intent(in) :: dof_R_(:), dof_cart_(:)
+      complex(dp), allocatable, intent(out) :: self_R_(:,:,:)
+      complex(dp), intent(out) :: self_support_(:,:)
+      !
+      complex(dp), allocatable :: work_(:,:)
+      integer :: i_, j_, N_, nR_large_
+      !
+      N_ = size(dof_R_)
+      nR_large_ = maxval(iR_large_)
+      if(size(dof_cart_) /= N_) call errore("low_concentration_support_self_dense", "bad active map", 1)
+      if(size(G_bath_, 1) /= N_ .or. size(G_bath_, 2) /= N_) &
+        call errore("low_concentration_support_self_dense", "bad support G", 1)
+      if(size(V_support_, 1) /= N_ .or. size(V_support_, 2) /= N_) &
+        call errore("low_concentration_support_self_dense", "bad support V", 1)
+	      if(size(self_support_, 1) /= N_ .or. size(self_support_, 2) /= N_) &
+	        call errore("low_concentration_support_self_dense", "bad support Sigma", 1)
+	      !
+	      call check_allocation_fits("DCA dense low-concentration solver work", &
+	        complex_mem_bytes(int(N_, int64) * int(N_, int64)) + &
+	        complex_mem_bytes(int(S%nat3, int64) * int(S%nat3, int64) * int(nR_large_, int64)))
+	      allocate(work_(N_,N_))
+      work_ = id_mat(N_) - (1._dp - defect_conc) * matmul(G_bath_, V_support_)
+      call invzmat(N_, work_)
+      self_support_ = matmul(defect_conc * V_support_, work_)
+      !
+	      allocate(self_R_(S%nat3,S%nat3,nR_large_))
+      self_R_ = 0._dp
+      do j_ = 1, N_
+        do i_ = 1, N_
+          self_R_(dof_cart_(i_),dof_cart_(j_),iR_large_(dof_R_(i_),dof_R_(j_))) = &
+            self_R_(dof_cart_(i_),dof_cart_(j_),iR_large_(dof_R_(i_),dof_R_(j_))) + &
+            self_support_(i_,j_)
+        enddo
+      enddo
+      !
+      deallocate(work_)
+    end subroutine
+    !
+    subroutine low_concentration_support_self_R(G0i_cluster_, V_support_, iR_large_, diff_cart_, R_cart_, &
+      dof_R_, dof_cart_, self_R_)
+      ! Stable full-support form of the low-concentration average.  It is
+      ! algebraically equivalent to Sigma = g^-1 - [(1-c)g+cG1]^-1, but avoids
+      ! inverting the nearly singular support-space <G> directly.  The clean
+      ! support Green function has rank <= Nc*nat3, so use Woodbury instead of
+      ! an Nsupport x Nsupport inverse.
+      complex(dp), intent(in) :: G0i_cluster_(:,:,:)
+      complex(dp), intent(in) :: V_support_(:,:)
+      integer, intent(in) :: iR_large_(:,:)
+      real(dp), intent(in) :: diff_cart_(:,:), R_cart_(:,:)
+      integer, intent(in) :: dof_R_(:), dof_cart_(:)
+      complex(dp), allocatable, intent(out) :: self_R_(:,:,:)
+      !
+      complex(dp), allocatable :: A_low_(:,:), FV_(:,:), GV_(:,:), BA_(:,:), &
+        K_(:,:), VA_(:,:), Sigma_(:,:)
+      complex(dp) :: gQ_(S%nat3,S%nat3,Nc), block_(S%nat3,S%nat3)
+      integer :: iR_, nR_, nR_large_, i_, j_, iq_, N_, nflat_, idx_, row0_
+      real(dp), parameter :: support_tol_ = 1e-14_dp
+      !
+      do iq_ = 1, Nc
+        block_ = G0i_cluster_(:,:,iq_)
+        call invzmat(S%nat3, block_)
+        gQ_(:,:,iq_) = block_
+      enddo
+      !
+      nR_ = size(iR_large_, 1)
+      nR_large_ = size(diff_cart_, 2)
+      N_ = size(dof_R_)
+      nflat_ = S%nat3 * Nc
+      if(size(iR_large_, 2) /= nR_) call errore("low_concentration_support_self_R", "bad support map", 1)
+      if(size(R_cart_, 2) /= nR_) call errore("low_concentration_support_self_R", "bad R list", 1)
+      if(size(dof_cart_) /= N_) call errore("low_concentration_support_self_R", "bad active support map", 1)
+      if(any(dof_R_ < 1) .or. any(dof_R_ > nR_)) &
+        call errore("low_concentration_support_self_R", "active R out of range", 1)
+      if(any(dof_cart_ < 1) .or. any(dof_cart_ > S%nat3)) &
+        call errore("low_concentration_support_self_R", "active cartesian index out of range", 1)
+	      if(size(V_support_, 1) /= N_ .or. size(V_support_, 2) /= N_) &
+	        call errore("low_concentration_support_self_R", "bad support V", 1)
+	      !
+	      call check_allocation_fits("DCA full-support low-concentration solver", &
+	        complex_mem_bytes(3_int64 * int(N_, int64) * int(nflat_, int64)) + &
+	        complex_mem_bytes(2_int64 * int(nflat_, int64) * int(nflat_, int64)) + &
+	        complex_mem_bytes(int(N_, int64) * int(N_, int64)) + &
+	        complex_mem_bytes(int(S%nat3, int64) * int(S%nat3, int64) * int(nR_large_, int64)))
+	      allocate(A_low_(N_,nflat_), FV_(nflat_,N_), GV_(nflat_,N_), &
+        BA_(nflat_,nflat_), K_(nflat_,nflat_), VA_(N_,nflat_), Sigma_(N_,N_))
+      A_low_ = 0._dp
+      FV_ = 0._dp
+      VA_ = 0._dp
+      !
+      ! g0_support = A_low * G(Q) * A_low^dagger, using the same
+      ! unnormalised Fourier convention as full_born_center.
+      do i_ = 1, N_
+        do iq_ = 1, Nc
+          idx_ = dof_cart_(i_) + (iq_ - 1) * S%nat3
+          A_low_(i_,idx_) = e_iqr(xq(:,iq_), R_cart_(:,dof_R_(i_)))
+        enddo
+      enddo
+      !
+      ! Sparse products with V_support: FV = A_low^dagger V and VA = V A_low.
+      do j_ = 1, N_
+        do i_ = 1, N_
+          if(abs(V_support_(i_,j_)) <= support_tol_) cycle
+          do iq_ = 1, Nc
+            FV_(dof_cart_(i_) + (iq_ - 1) * S%nat3,j_) = &
+              FV_(dof_cart_(i_) + (iq_ - 1) * S%nat3,j_) + &
+              e_iqr(xq(:,iq_), -R_cart_(:,dof_R_(i_))) * V_support_(i_,j_)
+            VA_(i_,dof_cart_(j_) + (iq_ - 1) * S%nat3) = &
+              VA_(i_,dof_cart_(j_) + (iq_ - 1) * S%nat3) + &
+              V_support_(i_,j_) * e_iqr(xq(:,iq_), R_cart_(:,dof_R_(j_)))
+          enddo
+        enddo
+      enddo
+      !
+      GV_ = 0._dp
+      do iq_ = 1, Nc
+        row0_ = (iq_ - 1) * S%nat3
+        GV_(row0_+1:row0_+S%nat3,:) = &
+          matmul(gQ_(:,:,iq_), FV_(row0_+1:row0_+S%nat3,:))
+      enddo
+      !
+      BA_ = matmul(GV_, A_low_)
+      K_ = id_mat(nflat_) - (1._dp - defect_conc) * BA_
+      call invzmat(nflat_, K_)
+      Sigma_ = defect_conc * (V_support_ + &
+        (1._dp - defect_conc) * matmul(VA_, matmul(K_, GV_)))
+      !
+      allocate(self_R_(S%nat3,S%nat3,nR_large_))
+      self_R_ = 0._dp
+      do j_ = 1, N_
+        do i_ = 1, N_
+          self_R_(dof_cart_(i_),dof_cart_(j_),iR_large_(dof_R_(i_),dof_R_(j_))) = &
+            self_R_(dof_cart_(i_),dof_cart_(j_),iR_large_(dof_R_(i_),dof_R_(j_))) + &
+            Sigma_(i_,j_)
+        enddo
+      enddo
+      !
+      deallocate(A_low_, FV_, GV_, BA_, K_, VA_, Sigma_)
+    end subroutine
+    !
+    subroutine project_support_self(self_R_, diff_cart_, xq_target_, self_cart_)
+      complex(dp), intent(in) :: self_R_(:,:,:)
+      real(dp), intent(in) :: diff_cart_(:,:)
+      real(dp), intent(in) :: xq_target_(:,:)
+      complex(dp), intent(out) :: self_cart_(:,:,:)
+      !
+      integer :: iq_, iR_, ntarget_, nR_
+      !
+      ntarget_ = size(xq_target_, 2)
+      nR_ = size(diff_cart_, 2)
+      if(size(self_R_, 3) /= nR_) &
+        call errore("project_support_self", "inconsistent support sizes", 1)
+      if(size(self_cart_, 1) /= S%nat3 .or. size(self_cart_, 2) /= S%nat3 .or. &
+        size(self_cart_, 3) /= ntarget_) &
+        call errore("project_support_self", "wrong output size", 1)
+      !
+      self_cart_ = 0._dp
+      do iq_ = 1, ntarget_
+        do iR_ = 1, nR_
+          self_cart_(:,:,iq_) = self_cart_(:,:,iq_) + &
+            self_R_(:,:,iR_) * e_iqr(xq_target_(:,iq_), -diff_cart_(:,iR_))
+        enddo
+      enddo
+    end subroutine
+    !
+    subroutine pair_diff_projector(c_pair, fc2sc, xq_cluster, grid)
+      ! Build the diagonal-Q interpolation on the same finite support used by
+      ! full_born_center, but separately for each cartesian matrix element.
+      complex(dp), allocatable, intent(out) :: c_pair(:,:,:,:)
+      type(forceconst2_sc), intent(in) :: fc2sc
+      real(dp), intent(in) :: xq_cluster(:,:)
+      type(q_grid), intent(in) :: grid
+      !
+      integer, allocatable :: R_list(:,:), diff_pair(:,:,:,:), n_diff(:,:)
+      integer, allocatable :: res_count(:)
+      logical, allocatable :: row_has(:,:), col_has(:,:)
+      complex(dp), allocatable :: gram(:,:), inv_gram(:,:), h(:), res_phase(:,:)
+      real(dp), allocatable :: res_cart(:,:)
+      integer :: max_R, max_diff_pair, nR, iR1_, iR2_, iR_, jR_, idx_
+      integer :: i_, j_, kQ_, lQ_, iq_out_, iD_, max_n_diff
+      integer :: ires_, Rmod_(3), max_n_res, max_alias
+      integer :: Rdiff_(3)
+      real(dp) :: Rdiff_cart_(3), support_tol_, diag_max_, reg_
+      !
+      support_tol_ = 1e-14_dp
+      max_R = fc2sc%n_R2 + sum(fc2sc%n_R1)
+      allocate(R_list(3,max_R))
+      nR = 0
+      do iR2_ = 1, fc2sc%n_R2
+        call add_unique_R_int(R_list, nR, fc2sc%yR2(:,iR2_), idx_)
+        do iR1_ = 1, fc2sc%n_R1(iR2_)
+          call add_unique_R_int(R_list, nR, fc2sc%yR1(:,iR1_,iR2_), idx_)
+        enddo
+      enddo
+      !
+      allocate(row_has(S%nat3,nR), col_has(S%nat3,nR))
+      row_has = .false.
+      col_has = .false.
+      do iR2_ = 1, fc2sc%n_R2
+        call find_where(fc2sc%yR2(:,iR2_), R_list(:,:nR), jR_)
+        do iR1_ = 1, fc2sc%n_R1(iR2_)
+          call find_where(fc2sc%yR1(:,iR1_,iR2_), R_list(:,:nR), iR_)
+          do i_ = 1, S%nat3
+            if(any(abs(fc2sc%FC(i_,:,iR1_,iR2_)) > support_tol_)) row_has(i_,iR_) = .true.
+          enddo
+          do j_ = 1, S%nat3
+            if(any(abs(fc2sc%FC(:,j_,iR1_,iR2_)) > support_tol_)) col_has(j_,jR_) = .true.
+          enddo
+        enddo
+      enddo
+      !
+      max_diff_pair = nR * nR
+      allocate(diff_pair(3,max_diff_pair,S%nat3,S%nat3))
+      allocate(n_diff(S%nat3,S%nat3))
+      n_diff = 0
+      do j_ = 1, S%nat3
+        do i_ = 1, S%nat3
+          do jR_ = 1, nR
+            if(.not. col_has(j_,jR_)) cycle
+            do iR_ = 1, nR
+              if(.not. row_has(i_,iR_)) cycle
+              Rdiff_ = R_list(:,iR_) - R_list(:,jR_)
+              call add_unique_R_int(diff_pair(:,:,i_,j_), n_diff(i_,j_), Rdiff_, idx_)
+            enddo
+          enddo
+        enddo
+      enddo
+      max_n_diff = maxval(n_diff)
+      if(ionode) print*, "Max pair-specific R differences:", max_n_diff
+      !
+      allocate(c_pair(S%nat3,S%nat3,Nc,grid%nqtot))
+      c_pair = 0._dp
+      allocate(gram(Nc,Nc), inv_gram(Nc,Nc), h(Nc))
+      allocate(res_count(Nc), res_phase(Nc,grid%nqtot), res_cart(3,Nc))
+      do ires_ = 1, Nc
+        res_cart(:,ires_) = cryst2cart(real(index2v(ires_, cluster_mesh), dp), S%at, 1)
+      enddo
+      max_n_res = 0
+      max_alias = 0
+      do j_ = 1, S%nat3
+        do i_ = 1, S%nat3
+          if(n_diff(i_,j_) == 0) cycle
+          res_count = 0
+          res_phase = 0._dp
+          do iD_ = 1, n_diff(i_,j_)
+            Rmod_ = bz2simple(diff_pair(:,iD_,i_,j_), cluster_mesh)
+            ires_ = v2index(Rmod_, cluster_mesh)
+            res_count(ires_) = res_count(ires_) + 1
+            Rdiff_cart_ = cryst2cart(real(diff_pair(:,iD_,i_,j_),dp), S%at, 1)
+            do iq_out_ = 1, grid%nqtot
+              res_phase(ires_,iq_out_) = res_phase(ires_,iq_out_) + &
+                e_iqr(-grid%xq(:,iq_out_), Rdiff_cart_)
+            enddo
+          enddo
+          max_n_res = max(max_n_res, count(res_count > 0))
+          max_alias = max(max_alias, maxval(res_count))
+          !
+          gram = 0._dp
+          do lQ_ = 1, Nc
+            do kQ_ = 1, Nc
+              do ires_ = 1, Nc
+                if(res_count(ires_) == 0) cycle
+                gram(kQ_,lQ_) = gram(kQ_,lQ_) + &
+                  res_count(ires_) * e_iqr(xq_cluster(:,lQ_) - xq_cluster(:,kQ_), res_cart(:,ires_))
+              enddo
+            enddo
+          enddo
+          diag_max_ = 0._dp
+          do kQ_ = 1, Nc
+            diag_max_ = max(diag_max_, abs(gram(kQ_,kQ_)))
+          enddo
+          reg_ = max(1e-18_dp, 1e-12_dp * diag_max_)
+          inv_gram = gram
+          do kQ_ = 1, Nc
+            inv_gram(kQ_,kQ_) = inv_gram(kQ_,kQ_) + cmplx(reg_, 0._dp, dp)
+          enddo
+          call invzmat(Nc, inv_gram)
+          do iq_out_ = 1, grid%nqtot
+            h = 0._dp
+            do lQ_ = 1, Nc
+              do ires_ = 1, Nc
+                if(res_count(ires_) == 0) cycle
+                h(lQ_) = h(lQ_) + res_phase(ires_,iq_out_) * &
+                  e_iqr(xq_cluster(:,lQ_), res_cart(:,ires_))
+              enddo
+            enddo
+            c_pair(i_,j_,:,iq_out_) = matmul(h, inv_gram)
+          enddo
+        enddo
+      enddo
+      if(ionode) print*, "Max pair-specific cluster residues:", max_n_res
+      if(ionode) print*, "Max alias count per residue:", max_alias
+      deallocate(R_list, row_has, col_has, diff_pair, n_diff, gram, inv_gram, h, &
+        res_count, res_phase, res_cart)
+    end subroutine
+    !
+    subroutine add_unique_R_int(R_list, nR, R_in, idx_out)
+      integer, intent(inout) :: R_list(:,:)
+      integer, intent(inout) :: nR
+      integer, intent(in) :: R_in(3)
+      integer, intent(out) :: idx_out
+      !
+      integer :: i_
+      !
+      do i_ = 1, nR
+        if(all(R_list(:,i_) == R_in)) then
+          idx_out = i_
+          return
+        endif
+      enddo
+      nR = nR + 1
+      if(nR > size(R_list,2)) call errore("add_unique_R_int", "R list is too short", 1)
+      R_list(:,nR) = R_in
+      idx_out = nR
+    end subroutine
+    !
+    subroutine diff_list(fc2sc, at, diff_cart)
+      type(forceconst2_sc), intent(in) :: fc2sc
+      real(dp), intent(in) :: at(3, 3)
+      integer, pointer :: R_list(:,:)
+      integer, pointer :: diff_cryst(:,:)!, ir_large(:,:)
+      integer :: nR, iR1, iR2, RR(3), nr_large
+      real(dp), allocatable :: diff_cart(:,:)
+      !
+      allocate(R_list(3,1))
+      R_list(:,1) = fc2sc%yR2(:,1)
+      nR = 1
+      !
+      do iR2 = 1, fc2sc%n_R2
+        call find_where(fc2sc%yR2(:,iR2), R_list, iR)
+        if(iR == -1) call enlarge_R(fc2sc%yR2(:,iR2), R_list, nR)
+        do iR1 = 1, fc2sc%n_R1(iR2)
+          call find_where(fc2sc%yR1(:,iR1,iR2), R_list, iR)
+          if(iR == -1) call enlarge_R(fc2sc%yR1(:,iR1,iR2), R_list, nR)
+        enddo
+      enddo
+      if(ionode) print*, "Number of unique R vectors: ", nR
+      !
+      nR_large = 1
+      allocate(diff_cryst(3,1))
+      diff_cryst(:,1) = [0,0,0]
+      do i = 1, nR
+        do j = 1, nR
+          RR = R_list(:,i) - R_list(:,j)
+          call find_where(RR, diff_cryst, iR)
+          ! iR_large(i,j) = iR
+          if (iR == -1) then
+            call enlarge_R(RR, diff_cryst, nR_large)
+            ! ir_large(i,j) = nR_large
+          endif
+        enddo
+      enddo
+      print*, "Number of unique R differences: ", nR_large
+      !
+      allocate(diff_cart(3,nR_large))
+      diff_cart = cryst2cart(real(diff_cryst,dp), at, 1)
+    end subroutine
+    !
+    subroutine center_V_mixed(xq_left, xq_right, Vmix)
+      ! Build V(q_left, q_right) after applying the same centering used for
+      ! the cluster V(Q,Q') entering Gi_avg.
+      use symm_base, only : irt, nsym, ft, symm_mat => s, invs
+      !
+      real(dp), intent(in) :: xq_left(:,:), xq_right(:,:)
+      complex(dp), allocatable, intent(out) :: Vmix(:,:,:,:)
+      !
+      type(forceconst2_sc) :: fc_temp
+      real(dp), allocatable :: tens4(:,:,:,:,:,:), work(:,:,:,:,:,:)
+      real(dp) :: trans(3), tau_crys(3), tau_rot_crys(3), G_crys(3)
+      integer, allocatable :: G_atom(:,:)
+      integer, dimension(3,3) :: SM, SMT, SM1, SMT1
+      integer :: N_, nql_, nqr_, site_, count_
+      integer :: isym_map_, isym_, inv_map_
+      integer :: nai_, naj_, naii_, najj_, iR_, jR_, iiR_, jjR_, iq_, jq_
+      integer :: Ri_(3), Rj_(3)
+      !
+	      nql_ = size(xq_left, 2)
+	      nqr_ = size(xq_right, 2)
+	      N_ = product(fc2_sc%nq)
+	      call check_allocation_fits("DCA mixed centered V interpolation", &
+	        complex_mem_bytes(int(S%nat3, int64) * int(S%nat3, int64) * int(nql_, int64) * int(nqr_, int64)) + &
+	        real_mem_bytes(2_int64 * 9_int64 * int(S%nat, int64) * int(S%nat, int64) * &
+	          int(N_, int64) * int(N_, int64)))
+	      allocate(Vmix(S%nat3, S%nat3, nql_, nqr_))
+      allocate(tens4(3, S%nat, 3, S%nat, N_, N_))
+      allocate(work(3, S%nat, 3, S%nat, N_, N_))
+      allocate(G_atom(3, S%nat))
+      !
+      tens4 = reshape(fc2_sc%fc, [3, S%nat, 3, S%nat, N_, N_])
+      call transform_tns4_cart(tens4, -1)
+      !
+      site_ = 1
+      call fc_temp%allocate(S, S_sc, fc2_sc%nq)
+      count_ = 0
+      do isym_ = 1, nsym
+        if (irt(isym_, fc2_sc%defects(1,1)) == fc2_sc%defects(1,site_)) then
+          isym_map_ = isym_
+          inv_map_ = invs(isym_map_)
+          SM1 = symm_mat(:,:,inv_map_)
+          SMT1 = transpose(SM1)
+          SM = symm_mat(:,:,isym_map_)
+          SMT = transpose(SM)
+          trans = cryst2cart(ft(:,isym_map_), S%at, 1)
+          count_ = count_ + 1
+        endif
+      enddo
+      if (count_ == 0) call errore("center_V_mixed", "could not map defect site", 1)
+      !
+      do nai_ = 1, S%nat
+        naii_ = irt(isym_map_, nai_)
+        tau_crys = cryst2cart(S%tau(:,nai_), S%bg, -1)
+        tau_rot_crys = cryst2cart(S%tau(:,naii_), S%bg, -1)
+        G_crys = matmul(SMT, tau_crys) - ft(:,isym_map_) - tau_rot_crys
+        G_atom(:,nai_) = nint(G_crys)
+        if(any(abs(G_crys - real(G_atom(:,nai_), dp)) > 1e-6_dp)) then
+          print*, "G_crys:", G_crys, " rounded:", G_atom(:,nai_)
+          call errore("center_V_mixed", "non-integer atom-dependent symmetry shift", 1)
+        endif
+      enddo
+      !
+      work = 0.0_dp
+      do nai_ = 1, S%nat
+        naii_ = irt(isym_map_, nai_)
+        do naj_ = 1, S%nat
+          najj_ = irt(isym_map_, naj_)
+          do iR_ = 1, N_
+            do jR_ = 1, N_
+              Ri_ = matmul(SMT, index2v(iR_, fc2_sc%nq)) + G_atom(:,nai_)
+              Rj_ = matmul(SMT, index2v(jR_, fc2_sc%nq)) + G_atom(:,naj_)
+              iiR_ = v2index(bz2simple(Ri_, fc2_sc%nq), fc2_sc%nq)
+              jjR_ = v2index(bz2simple(Rj_, fc2_sc%nq), fc2_sc%nq)
+              work(:,naii_,:,najj_,iiR_,jjR_) = work(:,naii_,:,najj_,iiR_,jjR_) + matmul( &
+                matmul(SM1, tens4(:,nai_,:,naj_,iR_,jR_)), SMT1)
+            enddo
+          enddo
+        enddo
+      enddo
+      !
+      call transform_tns4_cart(work, 1)
+      fc_temp%fc = reshape(work, [3*S%nat, 3*S%nat, N_, N_])
+      fc_temp%taudef = fc2_sc%taudef + S%tau(:,fc2_sc%defects(1,site_)) - &
+        S%tau(:, fc2_sc%defects(1,1))
+      call fc_temp%center(fc2_sc%nq, S)
+      !
+      do iq_ = 1, nql_
+        call fc_temp%r2q(xq_left(:,iq_))
+        do jq_ = 1, nqr_
+          call fc_temp%r2q(xq_right(:,jq_), Vmix(:,:,iq_,jq_))
+        enddo
+      enddo
+      !
+      call fc_temp%deallocate()
+      deallocate(tens4, work, G_atom)
+    end subroutine
+    !
+    subroutine fit_potential_cout_full(c_out_, V_cluster_flat, V_target)
+      ! Full row-space interpolation for the centered potential:
+      ! V_target(q,P) ~= C(q) V_cluster(Q,P), with C acting on
+      ! the combined cartesian/cluster row index.
+      complex(dp), allocatable, intent(out) :: c_out_(:,:,:)
+      complex(dp), intent(in) :: V_cluster_flat(:,:)
+      complex(dp), intent(in) :: V_target(:,:,:,:)
+      !
+      complex(dp), allocatable :: metric(:,:), inv_metric(:,:), target_flat(:,:), approx(:,:)
+      integer :: nrow_, n_target_, itarget_, iP_, j_
+      real(dp) :: diag_max_, reg_, res_norm_, target_norm_, rel_, max_rel_
+      !
+      nrow_ = size(V_cluster_flat, 1)
+      n_target_ = size(V_target, 3)
+      if(size(V_cluster_flat, 2) /= nrow_) &
+        call errore("fit_potential_cout_full", "cluster V is not square", 1)
+      if(nrow_ /= S%nat3 * Nc) &
+        call errore("fit_potential_cout_full", "cluster V has wrong size", 1)
+	      if(size(V_target, 4) /= Nc) &
+	        call errore("fit_potential_cout_full", "V_target right leg is not on the cluster", 1)
+	      !
+	      call check_allocation_fits("DCA full left interpolation fit", &
+	        complex_mem_bytes(int(S%nat3, int64) * int(nrow_, int64) * int(n_target_, int64)) + &
+	        complex_mem_bytes(2_int64 * int(nrow_, int64) * int(nrow_, int64)) + &
+	        complex_mem_bytes(2_int64 * int(S%nat3, int64) * int(nrow_, int64)))
+	      allocate(c_out_(S%nat3, nrow_, n_target_))
+      allocate(metric(nrow_, nrow_), inv_metric(nrow_, nrow_))
+      allocate(target_flat(S%nat3, nrow_), approx(S%nat3, nrow_))
+      !
+      metric = matmul(V_cluster_flat, conjg(transpose(V_cluster_flat)))
+      diag_max_ = 0._dp
+      do iP_ = 1, nrow_
+        diag_max_ = max(diag_max_, abs(metric(iP_,iP_)))
+      enddo
+      reg_ = max(1e-18_dp, 1e-12_dp * diag_max_)
+      inv_metric = metric
+      do iP_ = 1, nrow_
+        inv_metric(iP_,iP_) = inv_metric(iP_,iP_) + cmplx(reg_, 0._dp, dp)
+      enddo
+      call invzmat(nrow_, inv_metric)
+      !
+      max_rel_ = 0._dp
+      do itarget_ = 1, n_target_
+        do iP_ = 1, Nc
+          do j_ = 1, S%nat3
+            target_flat(:, j_ + (iP_-1)*S%nat3) = V_target(:,j_,itarget_,iP_)
+          enddo
+        enddo
+        c_out_(:,:,itarget_) = matmul( &
+          matmul(target_flat, conjg(transpose(V_cluster_flat))), inv_metric)
+        approx = matmul(c_out_(:,:,itarget_), V_cluster_flat)
+        !
+        res_norm_ = sum(abs(approx - target_flat)**2)
+        target_norm_ = sum(abs(target_flat)**2)
+        rel_ = sqrt(res_norm_ / max(target_norm_, 1e-300_dp))
+        max_rel_ = max(max_rel_, rel_)
+      enddo
+      if(ionode) print"(A,E12.4,A,E12.4)", &
+        "full c_out fit max relative residual: ", max_rel_, " regularization: ", reg_
+      !
+      deallocate(metric, inv_metric, target_flat, approx)
+    end subroutine
+    !
+    subroutine fit_potential_cout_right(c_right_, V_cluster_flat, V_target)
+      ! Full column-space interpolation for the centered potential:
+      ! V_target(P,q) ~= V_cluster(P,Q) C_right(q).
+      complex(dp), allocatable, intent(out) :: c_right_(:,:,:)
+      complex(dp), intent(in) :: V_cluster_flat(:,:)
+      complex(dp), intent(in) :: V_target(:,:,:,:)
+      !
+      complex(dp), allocatable :: metric(:,:), inv_metric(:,:), target_flat(:,:), approx(:,:)
+      integer :: nrow_, n_target_, itarget_, iP_, j_
+      real(dp) :: diag_max_, reg_, res_norm_, target_norm_, rel_, max_rel_
+      !
+      nrow_ = size(V_cluster_flat, 1)
+      n_target_ = size(V_target, 4)
+      if(size(V_cluster_flat, 2) /= nrow_) &
+        call errore("fit_potential_cout_right", "cluster V is not square", 1)
+      if(nrow_ /= S%nat3 * Nc) &
+        call errore("fit_potential_cout_right", "cluster V has wrong size", 1)
+	      if(size(V_target, 3) /= Nc) &
+	        call errore("fit_potential_cout_right", "V_target left leg is not on the cluster", 1)
+	      !
+	      call check_allocation_fits("DCA full right interpolation fit", &
+	        complex_mem_bytes(int(nrow_, int64) * int(S%nat3, int64) * int(n_target_, int64)) + &
+	        complex_mem_bytes(2_int64 * int(nrow_, int64) * int(nrow_, int64)) + &
+	        complex_mem_bytes(2_int64 * int(nrow_, int64) * int(S%nat3, int64)))
+	      allocate(c_right_(nrow_, S%nat3, n_target_))
+      allocate(metric(nrow_, nrow_), inv_metric(nrow_, nrow_))
+      allocate(target_flat(nrow_, S%nat3), approx(nrow_, S%nat3))
+      !
+      metric = matmul(conjg(transpose(V_cluster_flat)), V_cluster_flat)
+      diag_max_ = 0._dp
+      do iP_ = 1, nrow_
+        diag_max_ = max(diag_max_, abs(metric(iP_,iP_)))
+      enddo
+      reg_ = max(1e-18_dp, 1e-12_dp * diag_max_)
+      inv_metric = metric
+      do iP_ = 1, nrow_
+        inv_metric(iP_,iP_) = inv_metric(iP_,iP_) + cmplx(reg_, 0._dp, dp)
+      enddo
+      call invzmat(nrow_, inv_metric)
+      !
+      max_rel_ = 0._dp
+      do itarget_ = 1, n_target_
+        do iP_ = 1, Nc
+          do j_ = 1, S%nat3
+            target_flat(j_ + (iP_-1)*S%nat3, :) = V_target(j_, :, iP_, itarget_)
+          enddo
+        enddo
+        c_right_(:,:,itarget_) = matmul(inv_metric, &
+          matmul(conjg(transpose(V_cluster_flat)), target_flat))
+        approx = matmul(V_cluster_flat, c_right_(:,:,itarget_))
+        !
+        res_norm_ = sum(abs(approx - target_flat)**2)
+        target_norm_ = sum(abs(target_flat)**2)
+        rel_ = sqrt(res_norm_ / max(target_norm_, 1e-300_dp))
+        max_rel_ = max(max_rel_, rel_)
+      enddo
+      if(ionode) print"(A,E12.4,A,E12.4)", &
+        "right c_out fit max relative residual: ", max_rel_, " regularization: ", reg_
+      !
+      deallocate(metric, inv_metric, target_flat, approx)
+    end subroutine
+    !
+    subroutine transform_tns4_cart(tns4, flag)
+      real(dp), intent(inout) :: tns4(:,:,:,:,:,:)
+      integer, intent(in) :: flag
+      !
+      integer :: nai_, naj_, iR_, jR_
+      !
+      do nai_ = 1, S%nat
+        do naj_ = 1, S%nat
+          do iR_ = 1, size(tns4, 5)
+            do jR_ = 1, size(tns4, 6)
+              call transform_mat_cart(tns4(:,nai_,:,naj_,iR_,jR_), flag)
+            enddo
+          enddo
+        enddo
+      enddo
+    end subroutine
+    !
+    subroutine transform_mat_cart(mat, flag)
+      real(dp), intent(inout) :: mat(:,:)
+      integer, intent(in) :: flag
+      real(dp) :: U_(3,3)
+      !
+      if (flag == 1) then
+        U_ = S%bg
+      else
+        U_ = transpose(S%at)
+      endif
+      mat = matmul(U_, matmul(mat, transpose(U_)))
+    end subroutine
+    !
+    subroutine scalar_fourier_basis(c_Qq, grid)
+      complex(dp), allocatable, intent(out) :: c_Qq(:,:)
+      type(q_grid), intent(in) :: grid
+      !
+      integer :: iq_, jq_, iR_, n_target
+      !
+      n_target = size(grid%xq, 2)
+      allocate(c_Qq(Nc, n_target))
+      c_Qq = 0._dp
+      do jq_ = 1, n_target
+        do iq_ = 1, Nc
+          do iR_ = 1, Nc
+            c_Qq(iq_,jq_) = c_Qq(iq_,jq_) + &
+              e_iqr(xq(:,iq_) - grid%xq(:,jq_), R(:,iR_)) / Nc
+          enddo
+        enddo
+      enddo
+    end subroutine
+    !
+    subroutine atom_fourier_basis(c_Qq, grid)
+      complex(dp), allocatable, intent(out) :: c_Qq(:,:,:)
+      type(q_grid), intent(in) :: grid
+      !
+      integer :: iq_, jq_, na_, iR_, n_target
+      integer :: l1_, l2_, l3_, nRbig_, nRout_, far_
+      real(dp) :: atws_(3,3), dist_(3), wg_, totalweight_
+      real(dp), allocatable :: Rbig_(:,:)
+      integer, parameter :: nrwsx_ = 5000
+      integer :: nrws_
+      real(dp) :: rws_(0:3,nrwsx_)
+      real(dp), external :: wsweight
+      !
+      far_ = 2
+      n_target = size(grid%xq, 2)
+      allocate(c_Qq(S%nat, Nc, n_target))
+      c_Qq = 0._dp
+      !
+      atws_(:,1) = cluster_mesh(1) * S%at(:,1)
+      atws_(:,2) = cluster_mesh(2) * S%at(:,2)
+      atws_(:,3) = cluster_mesh(3) * S%at(:,3)
+      call wsinit(rws_, nrwsx_, nrws_, atws_)
+      !
+      nRbig_ = (2*far_*cluster_mesh(1)+1) * &
+        (2*far_*cluster_mesh(2)+1) * (2*far_*cluster_mesh(3)+1)
+      allocate(Rbig_(3,nRbig_))
+      nRbig_ = 0
+      do l1_ = -far_*cluster_mesh(1), far_*cluster_mesh(1)
+        do l2_ = -far_*cluster_mesh(2), far_*cluster_mesh(2)
+          do l3_ = -far_*cluster_mesh(3), far_*cluster_mesh(3)
+            nRbig_ = nRbig_ + 1
+            Rbig_(:,nRbig_) = S%at(:,1)*l1_ + S%at(:,2)*l2_ + S%at(:,3)*l3_
+          enddo
+        enddo
+      enddo
+      !
+      do na_ = 1, S%nat
+        totalweight_ = 0._dp
+        nRout_ = 0
+        do iR_ = 1, nRbig_
+          dist_ = Rbig_(:,iR_) + S%tau(:,na_) - fc2_sc%taudef
+          wg_ = wsweight(dist_, rws_, nrws_)
+          if(wg_ > 0._dp) then
+            nRout_ = nRout_ + 1
+            totalweight_ = totalweight_ + wg_ / real(Nc, dp)
+            do jq_ = 1, n_target
+              do iq_ = 1, Nc
+                c_Qq(na_,iq_,jq_) = c_Qq(na_,iq_,jq_) + &
+                  e_iqr(xq(:,iq_) - grid%xq(:,jq_), Rbig_(:,iR_)) * wg_ / Nc
+              enddo
+            enddo
+          endif
+        enddo
+        if(abs(totalweight_ - 1._dp) > 1e-8_dp) then
+          print*, totalweight_, na_, nRout_
+          call errore("atom_fourier_basis", "wrong totalweight", 1)
+        endif
+      enddo
+      !
+      deallocate(Rbig_)
+    end subroutine
+    !
     subroutine fourier_basis(c_Qq, grid)
       complex(dp), allocatable, intent(out) :: c_Qq(:,:,:,:)
       type(q_grid), intent(in) :: grid
       !
-      allocate(c_Qq(S%nat3, S%nat3, Nc, grid%nqtot))
+      integer :: iq_, jq_, na1_, na2_, iR_, n_target
+      !
+      n_target = size(grid%xq, 2)
+      allocate(c_Qq(S%nat3, S%nat3, Nc, n_target))
       c_Qq = 0._dp
-      do jq = 1, grid%nqtot
-        do iq = 1, Nc
-          do na2 = 1, S%nat
-            do na1 = 1, S%nat
-              do iR = 1, img_nR(na1,na2)
-                c_Qq(3*(na1-1)+1:3*na1,3*(na2-1)+1:3*na2, iq, jq) = &
-                  c_Qq(3*(na1-1)+1:3*na1,3*(na2-1)+1:3*na2, iq, jq) + &
-                  e_iqr(xq(:,iq)- grid%xq(:,jq), img_xR(:,iR,na1,na2)) * img_weight(iR,na1,na2) / Nc
+      do jq_ = 1, n_target
+        do iq_ = 1, Nc
+          do na2_ = 1, S%nat
+            do na1_ = 1, S%nat
+              do iR_ = 1, img_nR(na1_,na2_)
+                c_Qq(3*(na1_-1)+1:3*na1_,3*(na2_-1)+1:3*na2_, iq_, jq_) = &
+                  c_Qq(3*(na1_-1)+1:3*na1_,3*(na2_-1)+1:3*na2_, iq_, jq_) + &
+                  e_iqr(xq(:,iq_) - grid%xq(:,jq_), img_xR(:,iR_,na1_,na2_)) * &
+                  img_weight(iR_,na1_,na2_) / Nc
               enddo
             enddo
           enddo
@@ -719,17 +1998,26 @@ contains
     !
     real(dp):: trans(3)
     integer, dimension(3,3) :: SM, SMT, SM1, SMT1
+    integer, allocatable :: G_atom(:,:)
     type(forceconst2_sc) :: fc_temp
     INTEGER :: isym_map, isym, nai, naj, naii, najj, iR1, iR2
-    integer :: site, N, iR, jR, iiR, jjR, iq, jq, inv_map, Nq
+    integer :: site, N, iR, jR, iiR, jjR, iq, jq, inv_map, Nq, count
+    integer :: Ri(3), Rj(3)
+    real(dp) :: tau_crys(3), tau_rot_crys(3), G_crys(3)
     real(dp), allocatable :: tens4(:,:,:,:,:,:)
     REAL(DP), ALLOCATABLE :: work(:,:,:,:,:,:)
     !
-    !
-    Nq = size(xq,2)
-    N = product(fc2_sc%nq)
-    allocate(Vqqs(S%nat3,S%nat3,Nq,Nq,size(fc2_sc%defects,2)))
+	    !
+	    Nq = size(xq,2)
+	    N = product(fc2_sc%nq)
+	    call check_allocation_fits("DCA centered cluster V(Q,Q')", &
+	      complex_mem_bytes(int(S%nat3, int64) * int(S%nat3, int64) * int(Nq, int64) * &
+	        int(Nq, int64) * int(size(fc2_sc%defects,2), int64)) + &
+	      real_mem_bytes(2_int64 * 9_int64 * int(S%nat, int64) * int(S%nat, int64) * &
+	        int(N, int64) * int(N, int64)))
+	    allocate(Vqqs(S%nat3,S%nat3,Nq,Nq,size(fc2_sc%defects,2)))
     allocate(tens4(3,S%nat,3,S%nat, N, N))
+    allocate(G_atom(3,S%nat))
     ALLOCATE( work, source=tens4 )
     !
     tens4 = reshape(fc2_sc%fc, [3,S%nat,3,S%nat,N,N])
@@ -738,6 +2026,8 @@ contains
     !
     do site = 1, size(fc2_sc%defects,2)
       call fc_temp%allocate(S, S_sc, fc2_sc%nq)
+      count = 0
+
       DO isym = 1, nsym
         IF ( irt(isym, fc2_sc%defects(1,1)) == fc2_sc%defects(1,site) ) THEN
           isym_map = isym
@@ -747,9 +2037,28 @@ contains
           SM = symm_mat(:,:,isym_map)
           SMT = transpose(SM)
           trans = cryst2cart(ft(:,isym_map), S%at, 1)
-          EXIT
+          count = count + 1
         END IF
       END DO
+      !
+      ! In crystal coordinates, QE's direct-space operation is
+      !   tau' = transpose(SM) tau - ft.
+      ! When atom nai is mapped to naii, the basis may also cross a cell
+      ! boundary:
+      !   transpose(SM) tau_nai - ft = tau_naii + G_atom(:,nai).
+      ! That integer vector must be included when rotating the two lattice
+      ! vector indices of V.
+      do nai = 1, S%nat
+        naii = irt(isym_map, nai)
+        tau_crys = cryst2cart(S%tau(:,nai), S%bg, -1)
+        tau_rot_crys = cryst2cart(S%tau(:,naii), S%bg, -1)
+        G_crys = matmul(SMT, tau_crys) - ft(:,isym_map) - tau_rot_crys
+        G_atom(:,nai) = NINT(G_crys)
+        if(any(abs(G_crys - real(G_atom(:,nai), dp)) > 1e-6_dp)) then
+          print*, "G_crys:", G_crys, " rounded:", G_atom(:,nai)
+          call errore("center_V", "non-integer atom-dependent symmetry shift", 1)
+        endif
+      enddo
       !
       work = 0.0_DP
       DO nai = 1, S%nat
@@ -758,8 +2067,10 @@ contains
           najj = irt(isym_map, naj)
           do iR = 1, N
             do jR = 1, N
-              iiR = v2index(bz2simple(matmul(SM, index2v(iR, fc2_sc%nq)), fc2_sc%nq), fc2_sc%nq)
-              jjR = v2index(bz2simple(matmul(SM, index2v(jR, fc2_sc%nq)), fc2_sc%nq), fc2_sc%nq)
+              Ri = matmul(SMT, index2v(iR, fc2_sc%nq)) + G_atom(:,nai)
+              Rj = matmul(SMT, index2v(jR, fc2_sc%nq)) + G_atom(:,naj)
+              iiR = v2index(bz2simple(Ri, fc2_sc%nq), fc2_sc%nq)
+              jjR = v2index(bz2simple(Rj, fc2_sc%nq), fc2_sc%nq)
               work(:,naii,:,najj,iiR,jjR) = work(:,naii,:,najj,iiR,jjR) + matmul( &
                 matmul( SM1, tens4(:,nai,:,naj,iR,jR) ), SMT1 )
             END DO
@@ -770,7 +2081,7 @@ contains
       call transform_tns4(work, 1)
       !
       fc_temp%fc = reshape( work, [3*S%nat, 3*S%nat, N, N] )
-      fc_temp%taudef = S%tau(:,fc2_sc%defects(1,site)) - S%tau(:, fc2_sc%defects(1,1))
+      fc_temp%taudef = fc2_sc%taudef + S%tau(:,fc2_sc%defects(1,site)) - S%tau(:, fc2_sc%defects(1,1))
       call fc_temp%center(fc2_sc%nq, S)
       !
       ! call translate_xR(fc_temp, trans)
@@ -786,6 +2097,7 @@ contains
     enddo
     !
     DEALLOCATE( work )
+    DEALLOCATE( G_atom )
     !
   contains
     subroutine translate_xR(fc, t)

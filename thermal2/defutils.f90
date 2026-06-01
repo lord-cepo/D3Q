@@ -497,5 +497,15 @@ contains
     !
   END SUBROUTINE
   !
-
+  function trace(A) result(tr)
+    complex(dp), intent(in) :: A(:,:)
+    complex(dp) :: tr
+    integer :: i, n
+    n = size(A,1)
+    tr = (0._dp, 0._dp)
+    do i = 1, n
+      tr = tr + A(i,i)
+    enddo
+  end function
+  !
 end module

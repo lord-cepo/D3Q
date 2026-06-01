@@ -115,10 +115,11 @@ program defectp
     input%nk_in(2), input%nk_in(3),&
     in_grid, scatter=.false., xq0=input%xk0_in)
   !
+  ! call revert_grid(in_grid)
   call q_grid_copy(in_grid, sym_grid)
   call sym_grid%symmetrize(S)
-  call q_grid_copy(sym_grid, in_grid_sym_scat)
-  if(num_procs > 1) call in_grid_sym_scat%scatter()
+  ! call q_grid_copy(sym_grid, in_grid_sym_scat)
+  ! if(num_procs > 1) call in_grid_sym_scat%scatter()
   ! call q_grid_copy(out_grid, out_grid_sym_scat)
   ! if(.not. out_grid_sym_scat%symmetrized .and. &
   ! (out_grid_sym_scat%type == 'simple' .and. out_grid_sym_scat%type == 'grid')) &
@@ -127,7 +128,6 @@ program defectp
   ! call q_grid_copy(sym_grid, out_grid)
   CALL fc2_sc%allocate(S, Sd, sc_grid)
   !
-  call revert_grid(in_grid)
 
   ! call project(S, Sd, fc2_centered, fc2d_centered)
   ! call dca_selfnrg(S, input, fc2_treated, fc2_sc, in_grid, out_grid)
