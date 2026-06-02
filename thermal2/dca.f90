@@ -285,7 +285,6 @@ contains
     self_outp_diag = 0.0_dp
     !
     allocate(Gf0i(S%nat3*Nc, S%nat3*Nc))
-    allocate(V_conf(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
     allocate(Gi_conf(S%nat3, S%nat3, Nc, Nc))
     allocate(Gf_conf(S%nat3*Nc, S%nat3*Nc))
     allocate(Gf_avg(S%nat3*Nc, S%nat3*Nc))
@@ -298,7 +297,7 @@ contains
     allocate(self_next(S%nat3, S%nat3, Nc))
     allocate(self_prime(S%nat3, S%nat3, Nc))
     allocate(V(S%nat3, S%nat3, Nc, Nc))
-    allocate(phase_mat(Nc, Nc, n_eq_sites, NSAMPLES))
+
     allocate(kq(NQ, Nc))!, big_iq(grid_scat%nqtot))
     allocate(out_den_weights(S%nat3, out_grid%nqtot))
     allocate(pos(Nc))
@@ -317,58 +316,67 @@ contains
     ! !> construction of of the phase, used to translate the potential to
     ! !> random configurations inside the cluster
     ntot = 0
-    phase_mat = 0.0_dp
     !
-    allocate(N_sites(n_eq_sites, NSAMPLES))
-    do idef = 1, n_eq_sites
-      call assign_defect_counts(NSAMPLES, Nc, conc, N_sites(idef,:))
-    enddo
-    call mpi_broadcast(n_eq_sites, NSAMPLES, N_sites)
-    !
-    do it = 1+my_id, NSAMPLES, num_procs
+    low_concentration = Nc * n_eq_sites * conc < 1._dp
+
+    if(.not. low_concentration) then
+      allocate(V_conf(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
+      allocate(phase_mat(Nc, Nc, n_eq_sites, NSAMPLES))
+      phase_mat = 0.0_dp
+      allocate(N_sites(n_eq_sites, NSAMPLES))
       do idef = 1, n_eq_sites
-        ! call sample_binomial(Nc, conc, pos, Npos)
-        Npos = N_sites(idef, it)
-        call sample_canonical(Nc, Npos, pos)
-        ntot = ntot + Npos
-        do ipos = 1, Npos
-          do k = 1, Nc
-            do j = 1, Nc
-              phase_mat(j,k,idef,it) = phase_mat(j,k,idef,it) + &
-                e_iqr(xq(:,k)-xq(:,j), R(:,pos(ipos)))
-              !       V(:,:,k,j,it) = V(:,:,k,j,it) + Vqqs(:,:,k,j,idef) * &
-              !         phase_mat(k,j,pos(ipos)) / Nc
-              !       ! e_iqr(xq(:,j)-xq(:,k), R(:,pos(ipos))) / Nc
+        call assign_defect_counts(NSAMPLES, Nc, conc, N_sites(idef,:))
+      enddo
+      call mpi_broadcast(n_eq_sites, NSAMPLES, N_sites)
+      !
+      do it = 1+my_id, NSAMPLES, num_procs
+        do idef = 1, n_eq_sites
+          ! call sample_binomial(Nc, conc, pos, Npos)
+          Npos = N_sites(idef, it)
+          call sample_canonical(Nc, Npos, pos)
+          ntot = ntot + Npos
+          do ipos = 1, Npos
+            do k = 1, Nc
+              do j = 1, Nc
+                phase_mat(j,k,idef,it) = phase_mat(j,k,idef,it) + &
+                  e_iqr(xq(:,k)-xq(:,j), R(:,pos(ipos)))
+                !       V(:,:,k,j,it) = V(:,:,k,j,it) + Vqqs(:,:,k,j,idef) * &
+                !         phase_mat(k,j,pos(ipos)) / Nc
+                !       ! e_iqr(xq(:,j)-xq(:,k), R(:,pos(ipos))) / Nc
+              enddo
             enddo
           enddo
         enddo
       enddo
-    enddo
-    call mpi_bsum(Nc, Nc, n_eq_sites, NSAMPLES, phase_mat)
-    call mpi_bsum(ntot)
-    !
-    V_conf = 0.0_dp
-    do it = 1, NSAMPLES
-      do jq = 1, Nc
-        do iq = 1, Nc
-          do idef = 1, n_eq_sites
-            V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) = &
-              V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) + &
-              Vqqs(:,:,iq,jq,idef) * phase_mat(iq,jq,idef,it) / Nc
+      call mpi_bsum(Nc, Nc, n_eq_sites, NSAMPLES, phase_mat)
+      call mpi_bsum(ntot)
+      !
+      V_conf = 0.0_dp
+      do it = 1, NSAMPLES
+        do jq = 1, Nc
+          do iq = 1, Nc
+            do idef = 1, n_eq_sites
+              V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) = &
+                V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) + &
+                Vqqs(:,:,iq,jq,idef) * phase_mat(iq,jq,idef,it) / Nc
+            enddo
           enddo
         enddo
+        V_conf(:,:,it) = (V_conf(:,:,it)+conjg(transpose(V_conf(:,:,it)))) / 2.0_dp
       enddo
-      V_conf(:,:,it) = (V_conf(:,:,it)+conjg(transpose(V_conf(:,:,it)))) / 2.0_dp
-    enddo
-    !
-    simulated_conc = real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
-    if(ionode) print"(A,E15.4)", "simulated concentration:", simulated_conc
-    low_concentration = .false.
-    if(all(N_sites < 2)) then
-      low_concentration = .true.
-      if(ionode) print*, "Using low concentration approximation (at most 1 defect per configuration)"
+    else
       simulated_conc = conc
+      print*, "Using low concentration approximation (at most 1 defect per configuration)"
     endif
+    !
+    ! simulated_conc = real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
+    ! if(ionode) print"(A,E15.4)", "simulated concentration:", simulated_conc
+    ! low_concentration = .false.
+    ! if(all(N_sites < 2)) then
+    !   low_concentration = .true.
+    !   if(ionode) print*, "Using low concentration approximation (at most 1 defect per configuration)"
+    !   simulated_conc = conc
+    ! endif
     !
     !
     !> construction of G0_coarse and G0i_coarse, which are averaged over the small
@@ -417,7 +425,7 @@ contains
     enddo
     !
     !>
-    self_next = 1._dp
+    self_next = 0._dp
     self_before = 0._dp
     !
     dos = 0._dp
@@ -461,7 +469,7 @@ contains
           enddo
           Gf_conf = flatten_RR_cmplx(Gi_conf)
           Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
-          do idef = 1, n_eq_sites
+          do idef = 1, 1
             Gi_conf = 0.0_dp
             do iq = 1, Nc
               Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
@@ -471,7 +479,7 @@ contains
             enddo
             Gf_conf = flatten_RR_cmplx(Gi_conf)
             call invzmat(S%nat3*Nc, Gf_conf)
-            Gf_avg = Gf_avg + Gf_conf * (conc * Nc)
+            Gf_avg = Gf_avg + Gf_conf * (conc * Nc * n_eq_sites)
           enddo
         else
           Gf_avg = 0.0_dp
@@ -495,6 +503,7 @@ contains
           call invzmat(S%nat3, Gi_avg(:,:,iq,iq))
           self_next(:,:,iq) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
         enddo
+        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_next, c_equiv, xq, .true.)
         !
         delta_out = reshape(self_next, [S%nat3**2*Nc])
         call mix_broyden_full(S%nat3**2*Nc, delta_out, delta_in, &
@@ -505,7 +514,6 @@ contains
         if(all(abs(real(self_before - self_next, dp)) < ABS_TOLERANCE + abs(real(self_next, dp)) * REL_TOLERANCE) .and. &
           all(abs(aimag(self_before - self_next)) < ABS_TOLERANCE + abs(aimag(self_next)) * REL_TOLERANCE)) exit
         !
-        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_before, c_equiv, xq, .true.)
         self_prime = 0.0_dp
         do iq = 1, Nc
           do jq = 1, Nc

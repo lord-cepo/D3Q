@@ -20,6 +20,7 @@ module defect
   use ph_velocity, only : velocity
   use constants, only : RY_TO_CMM1
   use mpi_thermal, only : my_id, num_procs, mpi_bsum, ionode
+  use symm_q_mat, only : apply_sym_q
   !
   implicit none
   !
@@ -411,7 +412,7 @@ contains
     enddo
     !
 
-    do iw = 1+my_id, input%n_omega, num_procs
+    do iw = 3+my_id, input%n_omega, num_procs
       print*, "Frequency index: ", iw
       g0 = green_0_c(iw, wg, S, grid, Us, diff_large, g0_iR)
       g0__ = 0._dp
@@ -443,6 +444,7 @@ contains
             TRR__(:,:,iR) * &
             phases_out(iR,iq)
         enddo
+        call apply_sym_q(S, out_grid%xq(:,iq), Tq(:,:,iq,iw))
         Tq(:,:,iq,iw) = matmul(out_Us_c(:,:,iq), matmul(Tq(:,:,iq,iw), out_Us(:,:,iq)))
         do ibnd = 1, S%nat3
           self_energy(ibnd,iq,iw) = Tq(ibnd,ibnd,iq,iw)
@@ -517,13 +519,16 @@ contains
       complex(dp) :: g0_(S%nat3,S%nat3,size(diffs,2))
       complex(dp) :: g0_R(S%nat3, S%nat3, grid%nqtot)
       complex(dp) :: g0_q(S%nat3, S%nat3, grid%nqtot)
-      integer :: iR, iq, ibnd
+      integer :: iR, iq, iq_tetra, ibnd
       !
       allocate(g0(S%nat3, S%nat3, size(diffs,2)))
       g0_q = 0._dp
       do iq = 1, grid%nqtot
+        ! FFT buffers follow natural Fortran order; tetrahedron weights use
+        ! the grid order expected by the tetrahedron machinery.
+        iq_tetra = v2index_n(index2v(iq, grid%n), grid%n)
         do ibnd = 1, S%nat3
-          g0_q(:,:,iq) = g0_q(:,:,iq) + &
+          g0_q(:,:,iq_tetra) = g0_q(:,:,iq_tetra) + &
             wg%w(ibnd, wg%e(iq), iw) * outer_product(U(:,ibnd,iq))
         enddo
       enddo

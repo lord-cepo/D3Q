@@ -827,7 +827,7 @@ contains
             if(any(abs(NINT(R2) - R2) > 1e-10_dp)) cycle
             iR1 = iR_of(NINT(R1), grid)
             iR2 = iR_of(NINT(R2), grid)
-            ! if (any(abs(nint(R1)) >= grid-1) .or. any(abs(nint(R2)) >= grid-1)) cycle
+            ! if (any(abs(nint(R1)) >= 2) .or. any(abs(nint(R2)) >= 2)) cycle
             call add_ind(R2_list, iR_of(NINT(R2), grid*far_mesh), nxR2, ixR2)
             yR2_list(:,ixR2) = NINT(R2)
             call add_ind(R1_list(:,ixR2), iR_of(NINT(R1), grid*far_mesh), nxR1(ixR2), ixR1)

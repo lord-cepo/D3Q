@@ -5,6 +5,7 @@ module symm_q_mat
   USE ions_base,          ONLY : ityp, ntyp => nsp, atm, tau, amass
   use thutils,            only : cryst2cart
   USE lr_symm_base,       ONLY : rtau, nsymq, minus_q, irotmq, gi, gimq
+  use input_fc,           only : ph_system_info
 
   ! ====================================================================
   ! START OF STAR AVERAGING BLOCK
@@ -20,8 +21,66 @@ module symm_q_mat
   !
   ! We want to compute: phi (the perfectly averaged matrix at xq)
   ! ====================================================================
-  public :: apply_sym
+  public :: apply_sym, apply_sym_q
 contains
+subroutine apply_sym_q(Sph, xq_, dyn)
+    type(ph_system_info), intent(in) :: Sph
+    real(dp), intent(in) :: xq_(3)
+    complex(dp), intent(inout) :: dyn(:,:)
+    !
+    integer :: nat
+    logical :: sym(48)
+    real(dp) :: xq(3)
+    real(dp), allocatable :: m_loc(:,:)
+    complex(dp) :: phi(3,3,Sph%nat,Sph%nat), d2(3*Sph%nat, 3*Sph%nat)
+    !
+    if(size(dyn, 1) /= 3*Sph%nat .or. size(dyn, 2) /= 3*Sph%nat) &
+      call errore("apply_sym_q", "wrong matrix size", 1)
+    !
+    at = Sph%at
+    bg = Sph%bg
+    ityp = Sph%ityp
+    tau = Sph%tau
+    xq = xq_
+    nat = Sph%nat
+    !
+    if(allocated(rtau)) then
+      if(size(rtau, 3) /= nat) then
+        deallocate(rtau)
+        allocate(rtau(3, 48, nat))
+      endif
+    else
+      allocate(rtau(3, 48, nat))
+    endif
+    allocate(m_loc(3,nat))
+    m_loc = 0._dp
+    !
+    d2 = dyn
+    call scompact_dyn(nat, d2, phi)
+    call trntnsc_ats(phi, at, bg, -1)
+    !
+    CALL set_sym_bl ( )
+    CALL find_sym ( nat, tau, ityp, .false., m_loc )
+    !
+    sym = .false.
+    sym(1:nsym) = .true.
+    minus_q = .true.
+    CALL smallg_q(xq, 0, at, bg, nsym, s, sym, minus_q)
+    nsymq = copy_sym(nsym, sym)
+    CALL inverse_s ( )
+    call set_giq (xq, s, nsymq, nsym, irotmq, minus_q, gi, gimq)
+    CALL sgam_lr(at, bg, nsym, s, irt, tau, rtau, nat)
+    !
+    CALL symdynph_gq_no_herm(xq, phi, s, invs, rtau, irt, nsymq, nat, &
+      irotmq, minus_q)
+    !
+    call trntnsc_ats(phi, at, bg, +1)
+    call compact_dyn(nat, d2, phi)
+    dyn = d2
+    !
+    deallocate(m_loc)
+  end subroutine
+  !
   subroutine apply_sym(at_, bg_, nat, ityp_, tau_, dyn_in, equiv, grid, average)
     real(dp), intent(in) :: at_(3,3), bg_(3,3)
     integer, intent(in) :: nat

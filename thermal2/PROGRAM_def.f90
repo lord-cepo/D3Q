@@ -127,7 +127,9 @@ program defectp
   ! call q_grid_copy(sym_grid, out_grid)
   CALL fc2_sc%allocate(S, Sd, sc_grid)
   !
-  call revert_grid(in_grid)
+  ! Keep the grid in natural Fortran order.  The full-Born Green function
+  ! remaps tetrahedron weights explicitly when filling the FFT buffer.
+  ! call revert_grid(in_grid)
 
   ! call project(S, Sd, fc2_centered, fc2d_centered)
   ! call dca_selfnrg(S, input, fc2_treated, fc2_sc, in_grid, out_grid)
