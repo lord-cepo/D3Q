@@ -1,13 +1,13 @@
 module dca
   use kinds, only: dp
-  use symm_q_mat, only : apply_sym
+  use symm_q_mat, only : apply_sym_q, apply_sym
   use thtetra, only: tetra_init_sym, tetra_init, tetra_weights_green, &
     deallocate_tetra, tetra_output, set_wg, equiv_grid
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
     fc2_recenter, fftinterp_mat2, mat2_diag
   use thutils, only: bz2simple, grid_vec_cart, &
     e_iqr, index2v, cryst2cart, v2index, freq_in_grid, diag_cmplx, diag, &
-    id_mat
+    id_mat, zgemm_N
   use defutils, only : flatten_RR_cmplx, unflatten_RR_cmplx, &
     quter_cmplx, fftinterp_mat2_cmplx, quter_R
   use defect, only : tetra_from_self_cart, write_spf_ndiag, write_spf, &
@@ -18,7 +18,7 @@ module dca
   use code_input, only: code_input_type
   use functions, only: invzmat
   use constants, only: tpi, pi
-  use quter_defect, only : forceconst2_sc, inside_ws
+  use quter_defect, only : forceconst2_sc, inside_ws, qq_diag_interp_coeff
   use functions, only: f_gauss
   use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
   use merge_degenerate, only: merge_degen
@@ -172,10 +172,11 @@ contains
     !
     complex(dp), allocatable, dimension(:) :: delta_in, delta_out, self_diff
     complex(dp), allocatable, dimension(:,:) :: &
-      Gf_conf, Gf_avg, out_den_weights, Gf0i, dv, df
+      Gf_conf, Gf_avg, out_den_weights, Gf0i, dv, df, V__, Gf0, c_out_scl
     complex(dp), allocatable, dimension(:,:,:) :: &
-      self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, self_prime, D, weights, &
-      self_out_diag, V_conf, self_before, self_next, G0i_cluster, Gi_coarse, self_outp_diag
+      self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, self_prime, weights, &
+      self_out_diag, V_conf, self_before, self_next, G0i_cluster, Gi_coarse, self_outp_diag, &
+      Gi
     complex(dp), allocatable, dimension(:,:,:,:) :: &
       Gi_conf, Gi_avg, phase_mat, V, self_out_grid, c_in, c_out, &
       self_outp_grid
@@ -184,11 +185,12 @@ contains
     integer, allocatable :: pos(:), kq(:,:)
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, na1, na2, j1, j2, &
-      cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT, iR, jR, RL_iter, Q_mesh(3), idx(S%nat3), locations(3)
-    real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff, max_diff_coarse
+      cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT, iR, jR, RL_iter, Q_mesh(3), idx(S%nat3), locations(3), &
+      jq_match
+    real(dp) :: conc, defect_conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff, max_diff_coarse
     real(dp) :: dos(input%n_omega), shift(3), simulated_conc, xqq(3)
     logical :: conv, low_concentration
-    complex(dp) :: A(S%nat3,S%nat3), B(S%nat3,S%nat3), eta, ialpha(S%nat3,S%nat3), eigc(S%nat3)
+    complex(dp) :: A(S%nat3,S%nat3), eta, ialpha(S%nat3,S%nat3), eigc(S%nat3)
     integer, allocatable :: N_sites(:,:), c_equiv(:), iq_of(:), window_ind(:,:), &
       ind(:), equiv_full(:), window_count(:), equiv(:)
     character(len=100) :: filename
@@ -210,9 +212,10 @@ contains
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
-    cluster_mesh = input%sc_grid
+    cluster_mesh = [6,6,6] !input%sc_grid
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
+    defect_conc = conc * n_eq_sites
     NSAMPLES = 100
     NQ = product(input%nk_in) / Nc
     Q_mesh = input%nk_in / cluster_mesh
@@ -249,16 +252,14 @@ contains
       call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
     call set_wg(S, fc2, in_grid, input%n_omega, wg)
     !
-    allocate(UT_fine(S%nat3,S%nat3,in_grid%nqtot), U_fine(S%nat3,S%nat3,in_grid%nqtot))
-    allocate(f(S%nat3,in_grid%nqtot), U(S%nat3,S%nat3,Nc), UT(S%nat3,S%nat3,Nc))
-    allocate(D(S%nat3,S%nat3,in_grid%nqtot))
-    call freq_in_grid(S, fc2, in_grid, f, U_fine)
-    do iq = 1, in_grid%nq
-      iqp = iq + in_grid%iq0
-      call fftinterp_mat2(in_grid%xq(:,iq), S, fc2, D(:,:,iqp))
-    enddo
-    call mpi_bsum(S%nat3, S%nat3, in_grid%nqtot, D)
-    do iq = 1, in_grid%nqtot
+    allocate(UT_fine(S%nat3,S%nat3,in_grid_full%nqtot), U_fine(S%nat3,S%nat3,in_grid_full%nqtot))
+    allocate(f(S%nat3,in_grid_full%nqtot), U(S%nat3,S%nat3,Nc), UT(S%nat3,S%nat3,Nc))
+    call freq_in_grid(S, fc2, in_grid_full, f, U_fine)
+    do iq = 1, in_grid_full%nqtot
+      if(norm2(in_grid_full%xq(:,iq)) < 1e-10_dp) then
+        call fftinterp_mat2(in_grid_full%xq(:,iq), S, fc2, U_fine(:,:,iq))
+        call mat2_diag(S%nat3, U_fine(:,:,iq), f(:,iq))
+      endif
       UT_fine(:,:,iq) = conjg(transpose(U_fine(:,:,iq)))
     enddo
     deallocate(f)
@@ -285,6 +286,8 @@ contains
     self_outp_diag = 0.0_dp
     !
     allocate(Gf0i(S%nat3*Nc, S%nat3*Nc))
+    allocate(Gf0(S%nat3*Nc, S%nat3*Nc))
+    allocate(V__(S%nat3*Nc, S%nat3*Nc))
     allocate(Gi_conf(S%nat3, S%nat3, Nc, Nc))
     allocate(Gf_conf(S%nat3*Nc, S%nat3*Nc))
     allocate(Gf_avg(S%nat3*Nc, S%nat3*Nc))
@@ -297,6 +300,7 @@ contains
     allocate(self_next(S%nat3, S%nat3, Nc))
     allocate(self_prime(S%nat3, S%nat3, Nc))
     allocate(V(S%nat3, S%nat3, Nc, Nc))
+    allocate(Gi(S%nat3, S%nat3, in_grid_full%nqtot))
 
     allocate(kq(NQ, Nc))!, big_iq(grid_scat%nqtot))
     allocate(out_den_weights(S%nat3, out_grid%nqtot))
@@ -313,6 +317,10 @@ contains
     delta_out = 0._dp
     !
     call center_V(xq, S, S_sc, fc2_sc, Vqqs)
+    ! r2q returns the unnormalized double Fourier transform.  The real-space
+    ! full-Born route also uses an unnormalized FFT for G(R), so the matching
+    ! reciprocal VGV expression must use V(q,Q) without a 1/Nc factor.
+    V__ = flatten_RR_cmplx(Vqqs(:,:,:,:,1))
     ! !> construction of of the phase, used to translate the potential to
     ! !> random configurations inside the cluster
     ntot = 0
@@ -365,19 +373,9 @@ contains
         V_conf(:,:,it) = (V_conf(:,:,it)+conjg(transpose(V_conf(:,:,it)))) / 2.0_dp
       enddo
     else
-      simulated_conc = conc
       print*, "Using low concentration approximation (at most 1 defect per configuration)"
+      simulated_conc = conc
     endif
-    !
-    ! simulated_conc = real(ntot,dp) / (Nc * n_eq_sites * NSAMPLES)
-    ! if(ionode) print"(A,E15.4)", "simulated concentration:", simulated_conc
-    ! low_concentration = .false.
-    ! if(all(N_sites < 2)) then
-    !   low_concentration = .true.
-    !   if(ionode) print*, "Using low concentration approximation (at most 1 defect per configuration)"
-    !   simulated_conc = conc
-    ! endif
-    !
     !
     !> construction of G0_coarse and G0i_coarse, which are averaged over the small
     !> patch in which self-energy is assumed constant
@@ -408,6 +406,8 @@ contains
     !
     call fourier_basis(c_in, in_grid)
     call fourier_basis(c_out, out_grid)
+    ! call fourier_diff(c_out_scl, out_grid)
+    ! call qq_diag_interp_coeff(input%sc_grid, S, out_grid%xq, c_out_scl, xq)
     !
     do jq = 1, Nc
       do iq = 1, Nc
@@ -434,53 +434,36 @@ contains
     !
     if(ionode) print*, "Starting DCA self-energy calculation..."
     if(ionode) print*, ""
-    do iw = 1, input%n_omega
-      max_diff = huge(1.0_dp)
+    do iw = 3, input%n_omega
+      do iq = 1, in_grid_full%nqtot
+        Gi(:,:,iq) = matmul(U_fine(:,:,iq), &
+          matmul(diag_cmplx(1/(wg%w(:,wg%e(iq),iw)* Nc * NQ)), UT_fine(:,:,iq)))
+      enddo
       do sc_iter = 1, MAXITER
         !
-        if (.not. allocated(weights)) allocate(weights(S%nat3, S%nat3, in_grid%nqtot))
-        call tetra_from_self_cart(S, in_grid, D + self_fine, wg%en(iw)**2, weights, mpi=.true.)
-        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, weights, equiv, in_grid_full%xq, .false.)
-        !
-        Gi_coarse = 0.0_dp
+        Gf0 = 0._dp
+        Gf0i = 0._dp
+        Gi_coarse = 0._dp
         do iq = 1, Nc
           do jq = 1, NQ
             kkq = kq(jq,iq)
-            Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) + weights(:,:,kkq) * Nc
+            A = Gi(:,:,kkq) - self_before(:,:,iq)
+            call invzmat(S%nat3, A)
+            Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) + A / NQ
           enddo
-          !
           call invzmat(S%nat3, Gi_coarse(:,:,iq))
           G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_before(:,:,iq)
-        enddo
-        !
-        ! call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, G0i_cluster, c_equiv, xq, .true.)
-        deallocate(weights)
-        !
-        Gf0i = 0.0_dp
-        do iq = 1, Nc
           Gf0i((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = G0i_cluster(:,:,iq)
+          A = G0i_cluster(:,:,iq)
+          call invzmat(S%nat3, A)
+          Gf0((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = A
         enddo
+        !
         if(low_concentration) then
-          Gi_conf = 0.0_dp
-          do iq = 1, Nc
-            A = G0i_cluster(:,:,iq)
-            call invzmat(S%nat3, A)
-            Gi_conf(:,:,iq,iq) = A
-          enddo
-          Gf_conf = flatten_RR_cmplx(Gi_conf)
-          Gf_avg = Gf_conf * (1 - conc * n_eq_sites * Nc)
-          do idef = 1, 1
-            Gi_conf = 0.0_dp
-            do iq = 1, Nc
-              Gi_conf(:,:,iq,iq) = G0i_cluster(:,:,iq)
-              do jq = 1, Nc
-                Gi_conf(:,:,iq,jq) = Gi_conf(:,:,iq,jq) - Vqqs(:,:,iq,jq,idef) / Nc
-              enddo
-            enddo
-            Gf_conf = flatten_RR_cmplx(Gi_conf)
-            call invzmat(S%nat3*Nc, Gf_conf)
-            Gf_avg = Gf_avg + Gf_conf * (conc * Nc * n_eq_sites)
-          enddo
+          Gf_conf = Gf0i - V__ / Nc
+          call invzmat(S%nat3*Nc, Gf_conf)
+          Gf_avg = Gf0 * (1-Nc*conc*n_eq_sites) + Gf_conf * (Nc * conc * n_eq_sites)
+          !> self energy is G0_cluster^-1 - <G>^-1
         else
           Gf_avg = 0.0_dp
           do it = 1+my_id, NSAMPLES, num_procs
@@ -502,9 +485,12 @@ contains
         do iq = 1, Nc
           call invzmat(S%nat3, Gi_avg(:,:,iq,iq))
           self_next(:,:,iq) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
+          call apply_sym_q(S, xq(:,iq), self_next(:,:,iq))
         enddo
-        call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_next, c_equiv, xq, .true.)
         !
+        ! call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_next, c_equiv, xq, .true.)
+        ! self_before = self_next
+        ! exit
         delta_out = reshape(self_next, [S%nat3**2*Nc])
         call mix_broyden_full(S%nat3**2*Nc, delta_out, delta_in, &
           ALPHA_MIX, sc_iter, MEMORY, df, dv)
@@ -513,23 +499,6 @@ contains
         !
         if(all(abs(real(self_before - self_next, dp)) < ABS_TOLERANCE + abs(real(self_next, dp)) * REL_TOLERANCE) .and. &
           all(abs(aimag(self_before - self_next)) < ABS_TOLERANCE + abs(aimag(self_next)) * REL_TOLERANCE)) exit
-        !
-        self_prime = 0.0_dp
-        do iq = 1, Nc
-          do jq = 1, Nc
-            self_prime(:,:,iq) = self_prime(:,:,iq) + self_before(:,:,jq) * uncoarse(:,:,jq,iq)
-          enddo
-        enddo
-        !
-        !
-        self_fine = 0._dp
-        do jq = 1, in_grid%nq
-          iqp = jq + in_grid%iq0
-          do iq = 1, Nc
-            self_fine(:,:,iqp) = self_fine(:,:,iqp) + c_in(:,:,iq,iqp) * self_prime(:,:,iq)
-          enddo
-        enddo
-        call mpi_bsum(S%nat3, S%nat3, in_grid%nqtot, self_fine)
         !
       enddo ! self-energy SC cycle
       N_ITER_TOT = N_ITER_TOT + sc_iter - 1
@@ -542,20 +511,16 @@ contains
       !
       do iq = 1, out_grid%nqtot
         A = 0._dp
-        B = 0._dp
         do jq = 1, Nc
           A = A + self_before(:,:,jq) * c_out(:,:,jq,iq)
-          B = B + self_prime(:,:,jq) * c_out(:,:,jq,iq)
         enddo
+        call apply_sym_q(S, out_grid%xq(:,iq), A)
         ! call invzmat(S%nat3, A)
         ! A = A + ialpha
         self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(A, U_out(:,:,iq))) * &
           conc / simulated_conc
-        self_outp_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(B, U_out(:,:,iq))) * &
-          conc / simulated_conc
         do i = 1, S%nat3
           self_out_diag(i,iq,iw) = self_out_grid(i,i,iq,iw)
-          self_outp_diag(i,iq,iw) = self_outp_grid(i,i,iq,iw)
         enddo
       enddo
     enddo ! frequency loop
@@ -568,7 +533,6 @@ contains
       call write_self('self-dca.dat', wg%en, self_out_diag)
      case('self')
       call write_self('self-dca.dat', wg%en, self_out_diag)
-      call write_self('selfp-dca.dat', wg%en, self_outp_diag)
      case('dos')
       do iw = 1+my_id, input%n_omega, num_procs
         call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg_out%en(iw)**2, out_den_weights)
@@ -611,6 +575,22 @@ contains
         enddo
       enddo
     end subroutine
+    !
+    ! subroutine fourier_diff(c_Qq, grid)
+    !   complex(dp), allocatable, intent(out) :: c_Qq(:,:)
+    !   type(q_grid), intent(in) :: grid
+    !   !
+    !   allocate(c_Qq(Nc, grid%nqtot))
+    !   c_Qq = 0._dp
+    !   do jq = 1, grid%nqtot
+    !     do iq = 1, Nc
+    !       do iR = 1, size(diff_large,2)
+    !         c_Qq(iq, jq) = c_Qq(iq, jq) + &
+    !           e_iqr(xq(:,iq)- grid%xq(:,jq), diff_large(:,iR)) / Nc
+    !       enddo
+    !     enddo
+    !   enddo
+    ! end subroutine
     !
   end subroutine
   !
@@ -746,39 +726,44 @@ contains
     !
     do site = 1, size(fc2_sc%defects,2)
       call fc_temp%allocate(S, S_sc, fc2_sc%nq)
-      DO isym = 1, nsym
-        IF ( irt(isym, fc2_sc%defects(1,1)) == fc2_sc%defects(1,site) ) THEN
-          isym_map = isym
-          inv_map = invs(isym_map)
-          SM1 = symm_mat(:,:,inv_map)
-          SMT1 = transpose(SM1)
-          SM = symm_mat(:,:,isym_map)
-          SMT = transpose(SM)
-          trans = cryst2cart(ft(:,isym_map), S%at, 1)
-          EXIT
-        END IF
-      END DO
-      !
-      work = 0.0_DP
-      DO nai = 1, S%nat
-        naii = irt(isym_map, nai)
-        DO naj = 1, S%nat
-          najj = irt(isym_map, naj)
-          do iR = 1, N
-            do jR = 1, N
-              iiR = v2index(bz2simple(matmul(SM, index2v(iR, fc2_sc%nq)), fc2_sc%nq), fc2_sc%nq)
-              jjR = v2index(bz2simple(matmul(SM, index2v(jR, fc2_sc%nq)), fc2_sc%nq), fc2_sc%nq)
-              work(:,naii,:,najj,iiR,jjR) = work(:,naii,:,najj,iiR,jjR) + matmul( &
-                matmul( SM1, tens4(:,nai,:,naj,iR,jR) ), SMT1 )
+      if (site == 1) then
+        fc_temp%fc = fc2_sc%fc
+        fc_temp%taudef = fc2_sc%taudef
+      else
+        DO isym = 1, nsym
+          IF ( irt(isym, fc2_sc%defects(1,1)) == fc2_sc%defects(1,site) ) THEN
+            isym_map = isym
+            inv_map = invs(isym_map)
+            SM1 = symm_mat(:,:,inv_map)
+            SMT1 = transpose(SM1)
+            SM = symm_mat(:,:,isym_map)
+            SMT = transpose(SM)
+            trans = cryst2cart(ft(:,isym_map), S%at, 1)
+            EXIT
+          END IF
+        END DO
+        !
+        work = 0.0_DP
+        DO nai = 1, S%nat
+          naii = irt(isym_map, nai)
+          DO naj = 1, S%nat
+            najj = irt(isym_map, naj)
+            do iR = 1, N
+              do jR = 1, N
+                iiR = v2index(bz2simple(matmul(SM, index2v(iR, fc2_sc%nq)), fc2_sc%nq), fc2_sc%nq)
+                jjR = v2index(bz2simple(matmul(SM, index2v(jR, fc2_sc%nq)), fc2_sc%nq), fc2_sc%nq)
+                work(:,naii,:,najj,iiR,jjR) = work(:,naii,:,najj,iiR,jjR) + matmul( &
+                  matmul( SM1, tens4(:,nai,:,naj,iR,jR) ), SMT1 )
+              END DO
             END DO
           END DO
         END DO
-      END DO
-      !
-      call transform_tns4(work, 1)
-      !
-      fc_temp%fc = reshape( work, [3*S%nat, 3*S%nat, N, N] )
-      fc_temp%taudef = S%tau(:,fc2_sc%defects(1,site)) - S%tau(:, fc2_sc%defects(1,1))
+        !
+        call transform_tns4(work, 1)
+        !
+        fc_temp%fc = reshape( work, [3*S%nat, 3*S%nat, N, N] )
+        fc_temp%taudef = S%tau(:,fc2_sc%defects(1,site))
+      endif
       call fc_temp%center(fc2_sc%nq, S)
       !
       ! call translate_xR(fc_temp, trans)

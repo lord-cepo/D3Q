@@ -308,8 +308,6 @@ contains
     complex(dp), allocatable :: V__(:,:), gV__(:,:), g0__(:,:), T__(:,:), I_gV__(:,:)
     complex(dp), allocatable :: S__(:,:), S1__(:,:), Sg__(:,:), &
       I_Sg__(:,:), Gm__(:,:), GVS__(:,:), I_GVS__(:,:), G__(:,:)
-    integer :: i_list(maxval(fc2_sc%n_R1),fc2_sc%n_R2)
-    integer :: j_list(fc2_sc%n_R2)
     integer, allocatable :: g0_iR(:)
     real(dp), parameter :: alpha = 1.0_dp
     complex(dp) :: w_self(S%nat3, out_grid%nqtot)
@@ -402,10 +400,8 @@ contains
     !
     do iR2 = 1, fc2_sc%n_R2
       call find_where(fc2_sc%yR2(:,iR2), R_list, j)
-      j_list(iR2) = j
       do iR1 = 1, fc2_sc%n_R1(iR2)
         call find_where(fc2_sc%yR1(:,iR1,iR2), R_list, i)
-        i_list(iR1,iR2) = i
         V__( (i-1)*S%nat3+1:i*S%nat3, (j-1)*S%nat3+1:j*S%nat3 ) = &
           cmplx( fc2_sc%fc(:,:,iR1,iR2), 0._dp, dp )
       enddo

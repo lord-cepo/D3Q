@@ -21,7 +21,7 @@ program defectp
   !
   type(ph_system_info) :: S, Sd, S_, S_sc
   type(forceconst2_grid) :: fc2d, fc2d_centered, fc2_centered, fc2_periodic, fc2_treated, fc2_treated_centered
-  type(forceconst2_sc) :: fc2_sc
+  type(forceconst2_sc) :: fc2_sc, fc2_sc_centered
   type(q_grid) :: in_grid, out_grid, sym_grid, out_grid_sym_scat, in_grid_sym_scat
   type(code_input_type) :: input, input_
   class(forceconst3), pointer :: fc3, fc3_
@@ -38,6 +38,7 @@ program defectp
   real(dp), allocatable :: freqs_sc(:)
   real(dp) :: v(3)
   real(dp), allocatable :: interp_grid(:,:)
+  real(dp), allocatable :: diff_large(:,:)
   complex(dp), allocatable :: Ds(:,:,:), matq(:,:,:,:,:)
   character(len=100) :: filename
   real(dp) :: max_norm, max_freq
@@ -240,13 +241,16 @@ program defectp
   fc2_sc%fc = DRR - fc_uc2RR(fc2_treated)
   deallocate(DRR)
   !
+  call fc2_sc_centered%allocate(S, Sd, sc_grid)
+  fc2_sc_centered%fc = fc2_sc%fc
+  CALL fc2_sc_centered%center(sc_grid, S)
+  !
+  if(contain(input%mode, '1b')) &
+    call main_defect(S, fc2_centered, fc2_sc_centered, in_grid, sym_grid, out_grid, input)
+  if(contain(input%mode, 'fb')) &
+    call full_born_center(S, input, fc2_centered, fc2_sc_centered, in_grid, sym_grid, out_grid)
   if(contain(input%mode, 'dca')) &
     call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, out_grid)
-  CALL fc2_sc%center(sc_grid, S)
-  if(contain(input%mode, '1b')) &
-    call main_defect(S, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid, input)
-  if(contain(input%mode, 'fb')) &
-    call full_born_center(S, input, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid)
 
   CALL stop_mpi()
 contains
