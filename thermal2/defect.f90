@@ -539,6 +539,156 @@ contains
     !
   end subroutine
   !
+  subroutine full_born_periodic(S, input, fc2, fc2_sc, grid, sym_grid, out_grid)
+    use defutils, only : flatten_RR_cmplx, flatten_RR_real
+    type(ph_system_info), intent(in) :: S
+    type(code_input_type), intent(in) :: input
+    type(forceconst2_grid), intent(in) :: fc2
+    type(forceconst2_sc), intent(inout) :: fc2_sc
+    type(q_grid), intent(in) :: grid, sym_grid, out_grid
+    !
+    integer :: iR1, iR2, iR, nR, nR_large, jR
+    integer :: i, j, iq, ibnd, N
+    real(dp) :: c
+    integer :: R(3)
+    complex(dp), allocatable :: g0(:,:,:,:)
+    complex(dp), allocatable :: T(:,:,:)
+    complex(dp) :: Tq(S%nat3, S%nat3,out_grid%nqtot, input%n_omega)
+    complex(dp) :: self_energy(S%nat3, out_grid%nqtot, input%n_omega)
+    integer :: iw
+    type(tetra_output) :: wg, wg_out
+    complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
+    real(dp) :: freqs(S%nat3, grid%nqtot)
+    complex(dp) :: out_Us(S%nat3, S%nat3, out_grid%nqtot)
+    complex(dp) :: out_Us_c(S%nat3, S%nat3, out_grid%nqtot)
+    real(dp) :: out_freqs(S%nat3, out_grid%nqtot)
+    !
+    complex(dp), allocatable :: V__(:,:), gV__(:,:), g0__(:,:), T__(:,:), I_gV__(:,:)
+    complex(dp), allocatable :: S__(:,:), S1__(:,:), Sg__(:,:), &
+      I_Sg__(:,:), Gm__(:,:), GVS__(:,:), I_GVS__(:,:), G__(:,:)
+    complex(dp) :: w_self(S%nat3, out_grid%nqtot)
+    real(dp) :: dos(input%n_omega)
+    !
+    call set_wg(S, fc2, sym_grid, input%n_omega, wg)
+    if(input%calculation == 'dos' .or. input%calculation == 'test') &
+      call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
+    call freq_in_grid(S, fc2, grid, freqs, Us)
+    call freq_in_grid(S, fc2, out_grid, out_freqs, out_Us)
+
+    c = input%conc * size(fc2_sc%defects,2)
+    do iq = 1, out_grid%nqtot
+      out_Us_c(:,:,iq) = conjg(transpose(out_Us(:,:,iq)))
+    enddo
+
+    nR = product(fc2_sc%nq)
+
+    N = S%nat3 * nR
+    allocate(V__(N,N))
+    allocate(g0__(N,N))
+    allocate(Gm__, gV__, T__, I_gV__, S__, S1__, &
+      Sg__, I_Sg__, GVS__, I_GVS__, G__, source=g0__)
+    allocate(g0(S%nat3, S%nat3, nR, nR))
+    !
+    V__ = flatten_RR_real(fc2_sc%fc)
+    gV__ = 0._dp
+    T__ = 0._dp
+    Tq = 0._dp
+    dos = 0._dp
+    self_energy = 0._dp
+    !
+    do iw = 3+my_id, input%n_omega, num_procs
+      print*, "Periodic frequency index: ", iw
+      g0 = 0._dp
+      do jR = 1, nR
+        do iR = 1, nR
+          do iq = 1, grid%nqtot
+            do ibnd = 1, S%nat3
+              g0(:,:,iR,jR) = g0(:,:,iR,jR) + &
+                wg%w(ibnd, wg%e(iq), iw) * outer_product(Us(:,ibnd,iq)) * &
+                e_iqr(grid%xq(:,iq), fc2_sc%xR1(:,iR,jR) - fc2_sc%xR2(:,jR))
+            enddo
+          enddo
+        enddo
+      enddo
+      g0__ = flatten_RR_cmplx(g0)
+      !
+      call zgemm_N(N, g0__, V__, gV__)
+      !
+      I_gV__ = id_mat(N) - gV__ * (1-c)
+      call invzmat(N, I_gV__)
+      !
+      call zgemm_N(N, c*V__, I_gV__, T__)
+      !
+      do iq = 1, out_grid%nqtot
+        do jR = 1, nR
+          do iR = 1, nR
+            Tq(:,:,iq,iw) = Tq(:,:,iq,iw) + &
+              T__((iR-1)*S%nat3+1:iR*S%nat3, (jR-1)*S%nat3+1:jR*S%nat3) * &
+              e_iqr(out_grid%xq(:,iq), fc2_sc%xR2(:,jR) - fc2_sc%xR1(:,iR,jR))
+          enddo
+        enddo
+        call apply_sym_q(S, out_grid%xq(:,iq), Tq(:,:,iq,iw))
+        Tq(:,:,iq,iw) = matmul(out_Us_c(:,:,iq), matmul(Tq(:,:,iq,iw), out_Us(:,:,iq)))
+        do ibnd = 1, S%nat3
+          self_energy(ibnd,iq,iw) = Tq(ibnd,ibnd,iq,iw)
+        enddo
+      enddo
+      !
+      if(input%calculation == 'dos' .or. input%calculation == 'test') then
+        call tetra_from_self(S, out_grid, out_freqs, Tq(:,:,:,iw), wg_out%en(iw)**2, w_self)
+        dos(iw) = sum(matmul(AIMAG(w_self), wg_out%qw)) * product(out_grid%n)
+      endif
+    enddo !iw
+    call mpi_bsum(input%n_omega, dos)
+    call mpi_bsum( S%nat3, out_grid%nqtot, input%n_omega, self_energy)
+    call mpi_bsum( S%nat3, S%nat3, out_grid%nqtot, input%n_omega, Tq)
+
+    select case(input%calculation)
+     case('self')
+      call write_self("self-fbp.dat", wg%en, self_energy)
+     case('spf-def')
+      call write_spf_ndiag('spf-fbp-ndiag.dat', wg%en, Tq, out_freqs)
+      call write_spf('spf-fbp.dat', wg%en, self_energy, out_freqs)
+      call write_self("self-fbp.dat", wg%en, self_energy)
+     case('dos')
+      call write_dos("dos-fbp.dat", wg%en, dos)
+     case('test')
+      call write_spf_ndiag('spf-fbp-ndiag-test.dat', wg%en, Tq(:,:,:1,:), out_freqs(:,:1))
+      call write_spf('spf-fbp-test.dat', wg%en, self_energy(:,:1,:), out_freqs(:,:1))
+      call write_self("self-fbp-test.dat", wg%en, self_energy(:,:1,:))
+      call write_dos("dos-fbp-test.dat", wg%en, dos)
+     case default
+      if (ionode) print*, "Unknown calculation type for fbp: ", input%calculation
+    end select
+  contains
+    function green_0_sum_c(iw, wg, S, grid, U, diffs) result(g0)
+      integer, intent(in) :: iw
+      type(tetra_output), intent(in) :: wg
+      type(ph_system_info), intent(in) :: S
+      type(q_grid), intent(in) :: grid
+      complex(dp), intent(in) :: U(S%nat3,S%nat3,grid%nqtot)
+      real(dp), intent(in) :: diffs(:,:)
+      !
+      complex(dp), allocatable :: g0(:,:,:)
+      complex(dp) :: g0_q(S%nat3,S%nat3)
+      integer :: iR, iq, ibnd
+      !
+      allocate(g0(S%nat3, S%nat3, size(diffs,2)))
+      g0 = 0._dp
+      do iq = 1, grid%nqtot
+        g0_q = 0._dp
+        do ibnd = 1, S%nat3
+          g0_q = g0_q + &
+            wg%w(ibnd, wg%e(iq), iw) * outer_product(U(:,ibnd,iq))
+        enddo
+        do iR = 1, size(diffs,2)
+          g0(:,:,iR) = g0(:,:,iR) + g0_q * e_iqr(grid%xq(:,iq), diffs(:,iR))
+        enddo
+      enddo
+    end function
+    !
+  end subroutine
+  !
   subroutine find_where(R, list_of_R, idx) !res(idx)
     integer, intent(in) :: R(3)
     integer, intent(in) :: list_of_R(:,:)
@@ -758,6 +908,28 @@ contains
         write(10, "(E20.8,X,I3,100E20.8)") &
           en(iw)*RY_TO_CMM1, iq, self_energy(:,iq,iw) * RY_TO_CMM1**2
       enddo
+    enddo
+    close(10)
+  end subroutine
+  !
+  subroutine write_self_discrepancy(filename, en, self_energy, self_ref)
+    character(*), intent(in) :: filename
+    real(dp), intent(in) :: en(:)
+    complex(dp), intent(in) :: self_energy(:,:,:), self_ref(:,:,:)
+    !
+    integer :: iw
+    real(dp) :: diff_norm, ref_norm, max_abs, max_ref
+    !
+    if(.not. ionode) return
+    open(10, file=filename)
+    do iw = 1, size(self_energy,3)
+      max_abs = maxval(abs(self_energy(:,:,iw) - self_ref(:,:,iw)))
+      max_ref = maxval(abs(self_ref(:,:,iw)))
+      diff_norm = sqrt(sum(abs(self_energy(:,:,iw) - self_ref(:,:,iw))**2))
+      ref_norm = sqrt(sum(abs(self_ref(:,:,iw))**2))
+      write(10, "(5E20.8)") en(iw)*RY_TO_CMM1, &
+        max_abs * RY_TO_CMM1**2, max_abs / max(max_ref, tiny(1._dp)), &
+        diff_norm * RY_TO_CMM1**2, diff_norm / max(ref_norm, tiny(1._dp))
     enddo
     close(10)
   end subroutine

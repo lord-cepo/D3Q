@@ -16,6 +16,7 @@ program defectp
   USE parameters, ONLY : ntypx
   use defect_proj, only: project
   use dca, only : dca_selfnrg
+  use thtetra, only : tetra_output, deallocate_tetra_output
   ! use symm_base, only : nofrac
   IMPLICIT NONE
   !
@@ -47,9 +48,10 @@ program defectp
   integer :: iw, jR, jq, iR
   complex(dp) :: mat3(3,3), eig3(3)
   complex(dp), allocatable :: V_sc(:,:)
-  real(dp) :: tau(3)
-  real(dp), allocatable :: R(:,:), q(:,:)
+  real(dp) :: tau(3), taudef(3)
+  real(dp), allocatable :: R(:,:), q(:,:), dos(:)
   real(dp), allocatable :: D0(:,:)
+  type(tetra_output) :: wg
   ! integer :: wait_for_debugger
   ! integer, allocatable :: atoms(:,:)
   ! integer :: na1, na2, j1, j2, na1_sc, na2_sc, jn1, jn2, R1, R2, nR
@@ -59,9 +61,7 @@ program defectp
   CALL start_mpi()
   !
   CALL READ_INPUT("DEF", input, out_grid, S, fc2_periodic)
-  S%lrigid = .false.
   CALL fc2_recenter(S, fc2_periodic, fc2_centered, 2)
-  S%lrigid = .true.
   !
   !
   if(all(input%sc_grid == -1)) then
@@ -100,8 +100,22 @@ program defectp
   deallocate(DRR)
   call div_mass_fc2(Sd, fc2d)
   if(input%asr3 /= 'no') call print_message("ASR applied to fc2d")
-  ! call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
+  call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
   !
+  ! allocate(dos(input%n_omega))
+  ! call set_wg(Sd, fc2d_centered, out_grid, input%n_omega, wg)
+  ! do iw = 1, input%n_omega
+  !   dos(iw) = sum(matmul(aimag(wg%w(:,:,iw)), wg%qw))
+  ! enddo
+  ! call write_dos("SC-dos.dat", wg%en, dos)
+  ! call deallocate_tetra_output(wg)
+  ! call set_wg(S, fc2_centered, out_grid, input%n_omega, wg)
+  ! do iw = 1, input%n_omega
+  !   dos(iw) = sum(matmul(aimag(wg%w(:,:,iw)), wg%qw))
+  ! enddo
+  ! call write_dos("UC-dos.dat", wg%en, dos)
+  ! call deallocate_tetra_output(wg)
+  ! stop 1
   !--------------------------------------------------
   ! call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
   ! open(138, file="band.dat")
@@ -150,11 +164,17 @@ program defectp
       DRR(j1+3*(na1-1), j2+3*(na2-1), R1, R2) = fc2d%fc(j1 + 3*(map(na1,R1)-1), j2 + 3*(map(na2,R2)-1), 1)
     enddo
     !
+    taudef = 0._dp
     do concurrent(i=1:S%nat, iR=1:nR, map(i,iR)==-1)
-      new_tau(:,new_it) = (index2v_cart(iR, sc_grid, S%at) + S%tau(:,i)) / sc_grid
+      tau = index2v_cart(iR, sc_grid, S%at) + S%tau(:,i)
+      tau = cryst2cart(tau, S%bg, -1)
+      tau = tau / sc_grid
+      taudef = taudef + tau / n_add
+      new_tau(:,new_it) = cryst2cart(tau, S%at, 1)
       new_ityp(new_it) = S%ityp(i)
       new_it = new_it + 1
     enddo
+    fc2_sc%taudef = taudef
     call move_alloc(new_tau, Sd%tau)
     call move_alloc(new_ityp, Sd%ityp)
     ! call move_alloc(new_fc, fc2d%fc)
@@ -247,8 +267,10 @@ program defectp
   !
   if(contain(input%mode, '1b')) &
     call main_defect(S, fc2_centered, fc2_sc_centered, in_grid, sym_grid, out_grid, input)
-  if(contain(input%mode, 'fb')) &
+  if(contain(input%mode, 'fb')) then
     call full_born_center(S, input, fc2_centered, fc2_sc_centered, in_grid, sym_grid, out_grid)
+    ! call full_born_periodic(S, input, fc2_centered, fc2_sc, in_grid, sym_grid, out_grid)
+  endif
   if(contain(input%mode, 'dca')) &
     call dca_selfnrg(S, Sd, input, fc2_centered, fc2_sc, out_grid)
 

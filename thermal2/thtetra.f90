@@ -72,7 +72,7 @@ MODULE thtetra
   PUBLIC :: tetra_init, deallocate_tetra, tetra_weights_delta
   PUBLIC :: tetra_weights_delta_sym, rm_degen_vertices
   PUBLIC :: equiv_grid, ek_sort, nqtot, tetra_output
-  PUBLIC :: set_wg
+  PUBLIC :: set_wg, deallocate_tetra_output
 
   EXTERNAL :: errore, hpsort
 
@@ -97,6 +97,15 @@ MODULE thtetra
 
 CONTAINS
   !
+  subroutine deallocate_tetra_output(wg)
+    type(tetra_output), intent(inout) :: wg
+    if (allocated(wg%w)) deallocate(wg%w)
+    if (allocated(wg%e)) deallocate(wg%e)
+    if (allocated(wg%qw)) deallocate(wg%qw)
+    if (allocated(wg%f)) deallocate(wg%f)
+    if (allocated(wg%en)) deallocate(wg%en)
+  end subroutine
+!
   subroutine tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult)
     type(q_grid), intent(in) :: grid
     type(ph_system_info), intent(in) :: S

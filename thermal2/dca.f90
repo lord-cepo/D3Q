@@ -18,7 +18,7 @@ module dca
   use code_input, only: code_input_type
   use functions, only: invzmat
   use constants, only: tpi, pi
-  use quter_defect, only : forceconst2_sc, inside_ws, qq_diag_interp_coeff
+  use quter_defect, only : forceconst2_sc, inside_ws
   use functions, only: f_gauss
   use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
   use merge_degenerate, only: merge_degen
@@ -234,6 +234,7 @@ contains
     call in_grid%symmetrize(S)
     call equiv_grid(in_grid, S, equiv)
     if(num_procs > 1) call in_grid%scatter()
+    if(num_procs > 1) call in_grid_full%scatter()
     !if(num_procs > 1) call in_grid_full%scatter()
     ! call in_grid_full%symmetrize(S)
     ! call equiv_grid(in_grid_full, S, equiv_full)
@@ -255,12 +256,13 @@ contains
     allocate(UT_fine(S%nat3,S%nat3,in_grid_full%nqtot), U_fine(S%nat3,S%nat3,in_grid_full%nqtot))
     allocate(f(S%nat3,in_grid_full%nqtot), U(S%nat3,S%nat3,Nc), UT(S%nat3,S%nat3,Nc))
     call freq_in_grid(S, fc2, in_grid_full, f, U_fine)
-    do iq = 1, in_grid_full%nqtot
+    do iq = 1, in_grid_full%nq
+      iqp = iq + in_grid_full%iq0
       if(norm2(in_grid_full%xq(:,iq)) < 1e-10_dp) then
-        call fftinterp_mat2(in_grid_full%xq(:,iq), S, fc2, U_fine(:,:,iq))
-        call mat2_diag(S%nat3, U_fine(:,:,iq), f(:,iq))
+        call fftinterp_mat2(in_grid_full%xq(:,iq), S, fc2, U_fine(:,:,iqp))
+        call mat2_diag(S%nat3, U_fine(:,:,iqp), f(:,iqp))
       endif
-      UT_fine(:,:,iq) = conjg(transpose(U_fine(:,:,iq)))
+      UT_fine(:,:,iqp) = conjg(transpose(U_fine(:,:,iqp)))
     enddo
     deallocate(f)
     allocate(f(S%nat3, Nc))
@@ -387,42 +389,8 @@ contains
     enddo
     !
     call quter_R(cluster_mesh, S%nat, S%tau, S%at, S%bg, img_xR, img_nR, img_weight)
-    allocate(W(Nc, S%nat, S%nat))
-    allocate(uncoarse(S%nat3, S%nat3, Nc, Nc))
-    uncoarse = 0._dp
     !
-    W = 0._dp
-    do na2 = 1, S%nat
-      do na1 = 1, S%nat
-        do iR = 1, img_nR(na1,na2)
-          jR = v2index(bz2simple(NINT(cryst2cart(img_xR(:,iR,na1,na2), S%bg, -1)), cluster_mesh), cluster_mesh)
-          do jq = 1, NQ
-            W(jR,na1,na2) = W(jR,na1,na2) + &
-              e_iqr(-in_grid_full%xq(:,kq(jq,1)), img_xR(:,iR,na1,na2)) * img_weight(iR,na1,na2) / NQ
-          enddo
-        enddo
-      enddo
-    enddo
-    !
-    call fourier_basis(c_in, in_grid)
     call fourier_basis(c_out, out_grid)
-    ! call fourier_diff(c_out_scl, out_grid)
-    ! call qq_diag_interp_coeff(input%sc_grid, S, out_grid%xq, c_out_scl, xq)
-    !
-    do jq = 1, Nc
-      do iq = 1, Nc
-        do na2 = 1, S%nat
-          do na1 = 1, S%nat
-            do iR = 1, Nc
-              if(abs(W(iR,na1,na2)) < 1e-10_dp) print*, W(iR,na1,na2), "is very small, check q-grid and image construction"
-              uncoarse(3*(na1-1)+1:3*na1,3*(na2-1)+1:3*na2, iq, jq) = &
-                uncoarse(3*(na1-1)+1:3*na1,3*(na2-1)+1:3*na2, iq, jq) + &
-                e_iqr(-xq(:,jq) + xq(:,iq), xR(:,iR)) / Nc / W(iR,na1,na2)
-            enddo
-          enddo
-        enddo
-      enddo
-    enddo
     !
     !>
     self_next = 0._dp
@@ -435,16 +403,20 @@ contains
     if(ionode) print*, "Starting DCA self-energy calculation..."
     if(ionode) print*, ""
     do iw = 3, input%n_omega
-      do iq = 1, in_grid_full%nqtot
-        Gi(:,:,iq) = matmul(U_fine(:,:,iq), &
-          matmul(diag_cmplx(1/(wg%w(:,wg%e(iq),iw)* Nc * NQ)), UT_fine(:,:,iq)))
+      Gi = 0._dp
+      do iq = 1, in_grid_full%nq
+        iqp = iq + in_grid_full%iq0
+        Gi(:,:,iqp) = matmul(U_fine(:,:,iqp), &
+          matmul(diag_cmplx(1/(wg%w(:,wg%e(iqp),iw)* Nc * NQ)), UT_fine(:,:,iqp)))
       enddo
+      call mpi_bsum(S%nat3, S%nat3, in_grid_full%nqtot, Gi)
       do sc_iter = 1, MAXITER
         !
         Gf0 = 0._dp
         Gf0i = 0._dp
         Gi_coarse = 0._dp
-        do iq = 1, Nc
+        G0i_cluster = 0._dp
+        do iq = 1+my_id, Nc, num_procs
           do jq = 1, NQ
             kkq = kq(jq,iq)
             A = Gi(:,:,kkq) - self_before(:,:,iq)
@@ -454,10 +426,15 @@ contains
           call invzmat(S%nat3, Gi_coarse(:,:,iq))
           G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_before(:,:,iq)
           Gf0i((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = G0i_cluster(:,:,iq)
-          A = G0i_cluster(:,:,iq)
-          call invzmat(S%nat3, A)
-          Gf0((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = A
+          if(low_concentration) then
+            A = G0i_cluster(:,:,iq)
+            call invzmat(S%nat3, A)
+            Gf0((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = A
+          endif
         enddo
+        call mpi_bsum(S%nat3, S%nat3, Nc, G0i_cluster)
+        call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf0i)
+        if(low_concentration) call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf0)
         !
         if(low_concentration) then
           Gf_conf = Gf0i - V__ / Nc
@@ -511,9 +488,10 @@ contains
       !
       do iq = 1, out_grid%nqtot
         A = 0._dp
-        do jq = 1, Nc
+        do jq = 1+my_id, Nc, num_procs
           A = A + self_before(:,:,jq) * c_out(:,:,jq,iq)
         enddo
+        call mpi_bsum(S%nat3, S%nat3, A)
         call apply_sym_q(S, out_grid%xq(:,iq), A)
         ! call invzmat(S%nat3, A)
         ! A = A + ialpha
