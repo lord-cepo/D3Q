@@ -63,7 +63,6 @@ program defectp
   CALL READ_INPUT("DEF", input, out_grid, S, fc2_periodic)
   CALL fc2_recenter(S, fc2_periodic, fc2_centered, 2)
   !
-  !
   if(all(input%sc_grid == -1)) then
     sc_grid = fc2_periodic%nq
   else
@@ -126,6 +125,14 @@ program defectp
   ! enddo
   ! close(138)
   !
+  open(233, file="freq0.dat", status="replace")
+  allocate(p(S%nat3))
+  do iq = 1, out_grid%nqtot
+    call freq_phq(out_grid%xq(:,iq), S, fc2_centered, p)
+    write(233, "(1000E20.8)") p, 0._dp
+  enddo
+  close(233)
+  ! stop 1
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&
     in_grid, scatter=.false., xq0=input%xk0_in)

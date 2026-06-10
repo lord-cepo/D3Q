@@ -18,7 +18,7 @@ module dca
   use code_input, only: code_input_type
   use functions, only: invzmat
   use constants, only: tpi, pi
-  use quter_defect, only : forceconst2_sc, inside_ws
+  use quter_defect, only : forceconst2_sc, inside_ws, write_fc2_sc_RR
   use functions, only: f_gauss
   use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
   use merge_degenerate, only: merge_degen
@@ -212,7 +212,7 @@ contains
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
-    cluster_mesh = [6,6,6] !input%sc_grid
+    cluster_mesh = [6,6,1] !input%sc_grid
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
     defect_conc = conc * n_eq_sites
@@ -360,6 +360,7 @@ contains
       enddo
       call mpi_bsum(Nc, Nc, n_eq_sites, NSAMPLES, phase_mat)
       call mpi_bsum(ntot)
+      simulated_conc = real(ntot, dp) / real(NSAMPLES * Nc * n_eq_sites, dp)
       !
       V_conf = 0.0_dp
       do it = 1, NSAMPLES
@@ -683,13 +684,16 @@ contains
     type(forceconst2_sc), INTENT(IN) :: fc2_sc
     complex(dp), allocatable, intent(out) :: Vqqs(:,:,:,:,:)
     !
-    real(dp):: trans(3)
+    real(dp):: trans(3), shift_real(3)
     integer, dimension(3,3) :: SM, SMT, SM1, SMT1
+    integer, dimension(3,S%nat) :: atom_shift
     type(forceconst2_sc) :: fc_temp
     INTEGER :: isym_map, isym, nai, naj, naii, najj, iR1, iR2
     integer :: site, N, iR, jR, iiR, jjR, iq, jq, inv_map, Nq
     real(dp), allocatable :: tens4(:,:,:,:,:,:)
+    real(dp) :: tau_cryst(3,S%nat)
     REAL(DP), ALLOCATABLE :: work(:,:,:,:,:,:)
+    character(100) :: filename
     !
     !
     Nq = size(xq,2)
@@ -701,6 +705,9 @@ contains
     tens4 = reshape(fc2_sc%fc, [3,S%nat,3,S%nat,N,N])
     !
     call transform_tns4(tens4, -1)
+    do nai = 1, S%nat
+      tau_cryst(:,nai) = cryst2cart(S%tau(:,nai), S%bg, -1)
+    enddo
     !
     do site = 1, size(fc2_sc%defects,2)
       call fc_temp%allocate(S, S_sc, fc2_sc%nq)
@@ -708,6 +715,7 @@ contains
         fc_temp%fc = fc2_sc%fc
         fc_temp%taudef = fc2_sc%taudef
       else
+        isym_map = -1
         DO isym = 1, nsym
           IF ( irt(isym, fc2_sc%defects(1,1)) == fc2_sc%defects(1,site) ) THEN
             isym_map = isym
@@ -720,6 +728,15 @@ contains
             EXIT
           END IF
         END DO
+        if (isym_map == -1) call errore("center_V", "could not find symmetry mapping equivalent defect site", site)
+        do nai = 1, S%nat
+          naii = irt(isym_map, nai)
+          shift_real = matmul(transpose(real(SM, dp)), tau_cryst(:,nai)) - &
+            ft(:,isym_map) - tau_cryst(:,naii)
+          atom_shift(:,nai) = nint(shift_real)
+          if (any(abs(shift_real - real(atom_shift(:,nai), dp)) > 1e-8_dp)) &
+            call errore("center_V", "symmetry atom shift is not a lattice vector", nai)
+        enddo
         !
         work = 0.0_DP
         DO nai = 1, S%nat
@@ -728,8 +745,10 @@ contains
             najj = irt(isym_map, naj)
             do iR = 1, N
               do jR = 1, N
-                iiR = v2index(bz2simple(matmul(SM, index2v(iR, fc2_sc%nq)), fc2_sc%nq), fc2_sc%nq)
-                jjR = v2index(bz2simple(matmul(SM, index2v(jR, fc2_sc%nq)), fc2_sc%nq), fc2_sc%nq)
+                iiR = v2index(bz2simple(matmul(SMT, index2v(iR, fc2_sc%nq)) + &
+                  atom_shift(:,nai), fc2_sc%nq), fc2_sc%nq)
+                jjR = v2index(bz2simple(matmul(SMT, index2v(jR, fc2_sc%nq)) + &
+                  atom_shift(:,naj), fc2_sc%nq), fc2_sc%nq)
                 work(:,naii,:,najj,iiR,jjR) = work(:,naii,:,najj,iiR,jjR) + matmul( &
                   matmul( SM1, tens4(:,nai,:,naj,iR,jR) ), SMT1 )
               END DO
@@ -743,6 +762,8 @@ contains
         fc_temp%taudef = S%tau(:,fc2_sc%defects(1,site))
       endif
       call fc_temp%center(fc2_sc%nq, S)
+      write(filename, "(A,I3.3,A)") "fc2_sc", site, ".dat"
+      call write_fc2_sc_RR(S, fc_temp, trim(filename))
       !
       ! call translate_xR(fc_temp, trans)
       do iq = 1, Nq

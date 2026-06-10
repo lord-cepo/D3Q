@@ -214,8 +214,10 @@ contains
         call cryst_to_cart(1, tau, S%bg, -1)
         r_cryst = tau_sc*sc_grid - tau
         if (NORM2(r_cryst - NINT(r_cryst))<1e-1) then
-          if (map_sc2uc(isc) /= -1) &
+          if (map_sc2uc(isc) /= -1) then
+            print*, "i, isc, r_cryst", i, isc, map_sc2uc(isc)
             call errore("map_sc2uc", "We already have found this defect", isc)
+          endif
           iR = v2index(NINT(r_cryst), sc_grid)
           if (which == "R") then
             el = iR
@@ -767,6 +769,7 @@ contains
     integer, dimension(3) :: far_mesh
     real(dp) :: big_at(3,3)
     real(dp), dimension(3) :: R1_cart, R2_cart, R1, R2
+    real(dp) :: block_norm
     !
     real(dp), allocatable :: new_fc(:,:,:,:)
     !
@@ -806,7 +809,6 @@ contains
     nxR1 = 0
     nxR2 = 0
     !
-    open(110, file='fc2_distance-5.dat')
     do na1 = 1, S%nat
       do na2 = 1, S%nat
         d2 = (S%tau(:,na1) - S%tau(:,na2))
@@ -840,9 +842,6 @@ contains
                 new_fc(jn1, jn2, ixR1, ixR2) = &
                   fc%FC(jn1, jn2, iR1, iR2) * &
                   weights1(iR1_big) * weights2(iR2_big)
-                write(110, "(3E20.8)") norm2(R1_cart - R2_cart + S%tau(:,na1) - S%tau(:,na2)), &
-                  norm2(R1_cart + R2_cart + S%tau(:,na1) + S%tau(:,na2) - 2*fc%taudef), &
-                  abs(new_fc(jn1, jn2, ixR1, ixR2))
               enddo
             enddo
             !
@@ -850,7 +849,6 @@ contains
         enddo
       enddo
     enddo
-    close(110)
     !
     deallocate(weights1, weights2)
     deallocate(fc%yR2, fc%xR2, fc%FC, fc%xR1, fc%yR1, fc%n_R1)
@@ -2014,6 +2012,29 @@ contains
     !
     if (ionode) write(*,"(A,E20.8)") "max_diff after ASR3: ", max_diff
     !
+  end subroutine
+  !
+  subroutine write_fc2_sc_RR(S, fc2_sc, filename)
+    type(ph_system_info), intent(in) :: S
+    type(forceconst2_sc), intent(in) :: fc2_sc
+    character(*), intent(in) :: filename
+    integer :: na1, na2, iR1, iR2
+    real(dp) :: block_norm
+    !
+    open(113, file=filename, status='replace', action='write')
+    do na1 = 1, S%nat
+      do na2 = 1, S%nat
+        do iR2 = 1, fc2_sc%n_R2
+          do iR1 = 1, fc2_sc%n_R1(iR2)
+            block_norm = sqrt(sum(fc2_sc%fc(3*(na1-1)+1:3*na1, 3*(na2-1)+1:3*na2, iR1, iR2)**2))
+            write(113, "(3E20.8,4I8)") norm2(fc2_sc%xR1(:,iR1,iR2) - fc2_sc%xR2(:,iR2) + S%tau(:,na1) - S%tau(:,na2)), &
+              norm2(fc2_sc%xR1(:,iR1,iR2) + fc2_sc%xR2(:,iR2) + S%tau(:,na1) + S%tau(:,na2) - 2*fc2_sc%taudef), &
+              block_norm, na1, na2, iR1, iR2
+          enddo
+        enddo
+      enddo
+    enddo
+    close(113)
   end subroutine
   !
 end module

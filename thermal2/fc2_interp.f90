@@ -921,6 +921,8 @@ CONTAINS
     ALLOCATE(Dout(S%nat3,S%nat3))
     ALLOCATE(U(S%nat3,S%nat3))
 
+    lrigid_save = S%lrigid
+    S%lrigid = .false.
     nq = 0
     DO i = 0,nqi-1
       DO j = 0,nqj-1
@@ -961,5 +963,6 @@ CONTAINS
     CALL quter(nqi, nqj, nqk, S%nat,S%tau,S%at,S%bg, matq, gridq, fcout, far=nfar)
     !CALL write_fc2(fileout, S, fcout)
     !
+    S%lrigid = lrigid_save
   END SUBROUTINE
 END MODULE fc2_interpolate
