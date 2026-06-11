@@ -90,6 +90,30 @@ contains
     if (ionode) print"(A,A,E20.8)", name, "-> maximum deviation from Hermiticity:", max_diff
   end subroutine
   !
+  subroutine flip_positive_imag_eigs(n, mat)
+    integer, intent(in) :: n
+    complex(dp), intent(inout) :: mat(n,n)
+    !
+    complex(dp) :: eig_l(n,n), eig_r(n,n), eig(n), eig_r_inv(n,n)
+    integer :: i
+    logical :: changed
+    !
+    eig_l = mat
+    call mat2_diag(n, eig_l, eig_r, eig)
+    changed = .false.
+    do i = 1, n
+      if(aimag(eig(i)) > 0._dp) then
+        eig(i) = cmplx(real(eig(i), dp), -aimag(eig(i)), kind=dp)
+        changed = .true.
+      endif
+    enddo
+    if(changed) then
+      eig_r_inv = eig_r
+      call invzmat(n, eig_r_inv)
+      mat = matmul(eig_r, matmul(diag_cmplx(eig), eig_r_inv))
+    endif
+  end subroutine
+  !
   subroutine symmetrize_mat_cmplx(equiv, vec)
     integer, intent(in) :: equiv(:)
     complex(dp), intent(inout) :: vec(:,:,:)
@@ -404,6 +428,7 @@ contains
     if(ionode) print*, "Starting DCA self-energy calculation..."
     if(ionode) print*, ""
     do iw = 3, input%n_omega
+      ! if(abs(wg%en(iw) * RY_TO_CMM1 - 170._dp) > 2._dp) cycle
       Gi = 0._dp
       do iq = 1, in_grid_full%nq
         iqp = iq + in_grid_full%iq0
@@ -464,6 +489,7 @@ contains
           call invzmat(S%nat3, Gi_avg(:,:,iq,iq))
           self_next(:,:,iq) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
           call apply_sym_q(S, xq(:,iq), self_next(:,:,iq))
+          call flip_positive_imag_eigs(S%nat3, self_next(:,:,iq))
         enddo
         !
         ! call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_next, c_equiv, xq, .true.)
