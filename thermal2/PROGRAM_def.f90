@@ -125,13 +125,13 @@ program defectp
   ! enddo
   ! close(138)
   !
-  open(233, file="freq0.dat", status="replace")
-  allocate(p(S%nat3))
-  do iq = 1, out_grid%nqtot
-    call freq_phq(out_grid%xq(:,iq), S, fc2_centered, p)
-    write(233, "(1000E20.8)") p, 0._dp
-  enddo
-  close(233)
+  ! open(233, file="freq0.dat", status="replace")
+  ! allocate(p(S%nat3))
+  ! do iq = 1, out_grid%nqtot
+  !   call freq_phq(out_grid%xq(:,iq), S, fc2_centered, p)
+  !   write(233, "(1000E20.8)") p
+  ! enddo
+  ! close(233)
   ! stop 1
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&
