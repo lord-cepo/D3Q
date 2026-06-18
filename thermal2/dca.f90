@@ -94,8 +94,8 @@ contains
     integer, intent(in) :: n
     complex(dp), intent(inout) :: mat(n,n)
     !
-    complex(dp) :: eig_l(n,n), eig_r(n,n), eig(n), eig_r_inv(n,n)
-    integer :: i
+    complex(dp) :: eig_l(n,n), eig_r(n,n), eig(n), overlap(n)
+    integer :: i, j, k
     logical :: changed
     !
     eig_l = mat
@@ -108,9 +108,17 @@ contains
       endif
     enddo
     if(changed) then
-      eig_r_inv = eig_r
-      call invzmat(n, eig_r_inv)
-      mat = matmul(eig_r, matmul(diag_cmplx(eig), eig_r_inv))
+      do i = 1, n
+        overlap(i) = dot_product(eig_l(:,i), eig_r(:,i))
+      enddo
+      mat = 0._dp
+      do k = 1, n
+        do j = 1, n
+          do i = 1, n
+            mat(i,j) = mat(i,j) + eig(k) * conjg(eig_l(j,k)) * eig_r(i,k) / overlap(k)
+          enddo
+        enddo
+      enddo
     endif
   end subroutine
   !
