@@ -27,7 +27,7 @@ program defectp
   type(code_input_type) :: input, input_
   class(forceconst3), pointer :: fc3, fc3_
   integer :: n_add, new_it, isc
-  integer, allocatable :: map(:,:), new_ityp(:), new_ityp0(:)
+  integer, allocatable :: map(:,:), new_ityp(:), new_ityp0(:), R_map(:), at_map(:)
   real(dp), allocatable :: new_tau(:,:), DRR(:,:,:,:), new_tau0(:,:), new_fc0(:,:,:)
   real(dp), allocatable :: D_nx_real(:,:,:)
   integer, allocatable :: inclusion_isc(:)
@@ -92,14 +92,6 @@ program defectp
 
   !> ASR imposed on RR representation of fc2d
   !>------------------------------------------------
-  allocate(DRR(S%nat3, S%nat3, nR, nR))
-  DRR = fc_sc2RR(sc_grid, S, Sd, fc2d%fc(:,:,1))
-  if(input%asr3 /= 'no') call asr3(DRR)
-  fc2d%fc(:,:,1) = fc_RR2sc(sc_grid, S, Sd, DRR)
-  deallocate(DRR)
-  call div_mass_fc2(Sd, fc2d)
-  if(input%asr3 /= 'no') call print_message("ASR applied to fc2d")
-  call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
   !
   ! allocate(dos(input%n_omega))
   ! call set_wg(Sd, fc2d_centered, out_grid, input%n_omega, wg)
@@ -133,21 +125,12 @@ program defectp
   ! enddo
   ! close(233)
   ! stop 1
-  CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
-    input%nk_in(2), input%nk_in(3),&
-    in_grid, scatter=.false., xq0=input%xk0_in)
-  !
-  call q_grid_copy(in_grid, sym_grid)
-  call sym_grid%symmetrize(S)
-  call q_grid_copy(sym_grid, in_grid_sym_scat)
-  if(num_procs > 1) call in_grid_sym_scat%scatter()
   ! call q_grid_copy(out_grid, out_grid_sym_scat)
   ! if(.not. out_grid_sym_scat%symmetrized .and. &
   ! (out_grid_sym_scat%type == 'simple' .and. out_grid_sym_scat%type == 'grid')) &
   ! call out_grid_sym_scat%symmetrize(S)
   ! if(num_procs > 1) call out_grid_sym_scat%scatter()
   ! call q_grid_copy(sym_grid, out_grid)
-  CALL fc2_sc%allocate(S, Sd, sc_grid)
   !
   ! Keep the grid in natural Fortran order.  The full-Born Green function
   ! remaps tetrahedron weights explicitly when filling the FFT buffer.
@@ -158,6 +141,7 @@ program defectp
   !
   n_add = Sd%nat - nR*S%nat
   if (n_add < 0) then !> VACANCY ------------------------------------------
+    fc2_sc%def_type = "vacancy"
     allocate(map(S%nat, nR))
     map = map_uc2sc(S, Sd, sc_grid)
     allocate(new_tau(3,nR*S%nat))
@@ -165,35 +149,46 @@ program defectp
     allocate(DRR(S%nat3, S%nat3, nR, nR))
     new_tau(:,:Sd%nat) = Sd%tau
     new_ityp(:Sd%nat) = Sd%ityp
+    Sd%atm(Sd%ntyp+1) = "void"
+    Sd%amass(Sd%ntyp+1) = 1._dp
     DRR = 0._dp
-    new_it = Sd%nat + 1
     do concurrent(j1=1:3, j2=1:3, na1=1:S%nat, na2=1:S%nat, R1=1:nR, R2=1:nR, map(na1,R1) /= -1 .and. map(na2,R2) /= -1)
       DRR(j1+3*(na1-1), j2+3*(na2-1), R1, R2) = fc2d%fc(j1 + 3*(map(na1,R1)-1), j2 + 3*(map(na2,R2)-1), 1)
     enddo
     !
-    taudef = 0._dp
-    do concurrent(i=1:S%nat, iR=1:nR, map(i,iR)==-1)
-      tau = index2v_cart(iR, sc_grid, S%at) + S%tau(:,i)
-      tau = cryst2cart(tau, S%bg, -1)
-      tau = tau / sc_grid
-      taudef = taudef + tau / n_add
-      new_tau(:,new_it) = cryst2cart(tau, S%at, 1)
-      new_ityp(new_it) = S%ityp(i)
-      new_it = new_it + 1
+    new_it = Sd%nat + 1
+    ! taudef = 0._dp
+    do i = 1,S%nat
+      do iR=1, nR
+        if(map(i,iR)/=-1) cycle
+        tau = index2v_cart(iR, sc_grid, S%at) + S%tau(:,i)
+        tau = cryst2cart(tau, S%bg, -1)
+        tau = tau / sc_grid
+        ! taudef = taudef + tau / n_add
+        new_tau(:,new_it) = cryst2cart(tau, S%at, 1)
+        new_ityp(new_it) = Sd%ntyp+1
+        new_it = new_it + 1
+      enddo
     enddo
-    fc2_sc%taudef = taudef
+    ! fc2_sc%taudef = taudef
     call move_alloc(new_tau, Sd%tau)
     call move_alloc(new_ityp, Sd%ityp)
     ! call move_alloc(new_fc, fc2d%fc)
     Sd%nat = nR*S%nat
     deallocate(map)
+    if(allocated(Sd%sqrtmm1)) deallocate(Sd%sqrtmm1)
+    call aux_system(Sd)
   elseif (n_add > 0) then !> INCLUSION ------------------------------------
+    fc2_sc%def_type = "inclusion"
     ! allocate(R_map(Sd%nat))
     ! allocate(map(S%nat, nR))
     ! map = map_uc2sc(S, Sd, sc_grid)
     ! allocate(i_map(Sd%nat))
     !
     !
+    R_map = map_sc2uc(S, Sd, sc_grid, "R")
+    at_map = map_sc2uc(S, Sd, sc_grid, "nat")
+    S%lrigid = .false. ! TODO: zeu
     allocate(new_tau0 (3,S%nat + n_add))
     allocate(new_ityp0(S%nat + n_add))
     new_tau0(:,:S%nat) = S%tau
@@ -204,17 +199,19 @@ program defectp
     new_ityp(:Sd%nat) = Sd%ityp
     S%atm(S%ntyp+1) = "void"
     Sd%atm(Sd%ntyp+1) = "void"
+    S%amass(S%ntyp+1) = 1._dp
+    Sd%amass(Sd%ntyp+1) = 1._dp
     !
     i = 0
     ! taudef = 0._dp
-    do concurrent(isc=1:Sd%nat, fc2_sc%R_map(isc) == -1)
+    do concurrent(isc=1:Sd%nat, R_map(isc) == -1)
       i = i + 1
       tau = cryst2cart(Sd%tau(:,isc), S%bg, -1) * sc_grid
       !
       new_ityp0(S%nat + i) = S%ntyp+1 !Sd%ityp(isc)
       iR = v2index(INT(tau), sc_grid)
-      fc2_sc%R_map(isc) = iR
-      fc2_sc%at_map(isc) = S%nat + i
+      R_map(isc) = iR
+      at_map(isc) = S%nat + i
       new_tau0(:,S%nat + i) = cryst2cart( &
         (tau - index2v(iR, sc_grid)), S%at, 1)
       ! taudef = taudef + new_tau0(:,S%nat + i) / n_add
@@ -239,8 +236,8 @@ program defectp
     !
     DRR = 0._dp
     do concurrent(j1=1:3, j2=1:3, isc1=1:Sd%nat, isc2=1:Sd%nat)
-      DRR(j1 + 3*(fc2_sc%at_map(isc1)-1), j2 + 3*(fc2_sc%at_map(isc2)-1), &
-        fc2_sc%R_map(isc1), fc2_sc%R_map(isc2)) = &
+      DRR(j1 + 3*(at_map(isc1)-1), j2 + 3*(at_map(isc2)-1), &
+        R_map(isc1), R_map(isc2)) = &
         fc2d%fc(j1 + 3*(isc1-1), j2 + 3*(isc2-1), 1)
     enddo
     !
@@ -254,23 +251,38 @@ program defectp
     call move_alloc(new_fc0, fc2_centered%fc)
     !
     S%nat = S%nat + n_add
-    S%nat3 = S%nat * 3
     Sd%nat = Sd%nat + (nR-1) * n_add
-    Sd%nat3 = Sd%nat * 3
     S%ntyp = S%ntyp +1
     Sd%ntyp = Sd%ntyp +1
     !
+    if(allocated(S%sqrtmm1)) deallocate(S%sqrtmm1)
+    if(allocated(Sd%sqrtmm1)) deallocate(Sd%sqrtmm1)
+    call aux_system(S)
+    call aux_system(Sd)
   else
+    fc2_sc%def_type = "substitution"
     allocate(DRR(S%nat3, S%nat3, nR, nR))
     DRR = fc_sc2RR(sc_grid, S, Sd, fc2d%fc)! - fc_uc2RR(fc2_treated)
   endif ! ---------------------------------------------------------------------------------------
   !
+  call asr3(DRR)
+  call div_mass_RR(S, Sd, sc_grid, DRR)
+  CALL fc2_sc%allocate(S, Sd, sc_grid)
   fc2_sc%fc = DRR - fc_uc2RR(fc2_treated)
   deallocate(DRR)
   !
   call fc2_sc_centered%allocate(S, Sd, sc_grid)
   fc2_sc_centered%fc = fc2_sc%fc
   CALL fc2_sc_centered%center(sc_grid, S)
+  !
+  CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
+    input%nk_in(2), input%nk_in(3),&
+    in_grid, scatter=.false., xq0=input%xk0_in)
+  !
+  call q_grid_copy(in_grid, sym_grid)
+  call sym_grid%symmetrize(S)
+  call q_grid_copy(sym_grid, in_grid_sym_scat)
+  if(num_procs > 1) call in_grid_sym_scat%scatter()
   !
   if(contain(input%mode, '1b')) &
     call main_defect(S, fc2_centered, fc2_sc_centered, in_grid, sym_grid, out_grid, input)

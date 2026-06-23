@@ -244,7 +244,7 @@ contains
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
-    cluster_mesh = [6,6,1] !input%sc_grid
+    cluster_mesh = input%sc_grid
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
     defect_conc = conc * n_eq_sites
@@ -283,7 +283,7 @@ contains
     R = grid_vec_cart(cluster_mesh, S%at)
     if(input%calculation == 'dos' .or. input%calculation == 'test') &
       call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
-    call set_wg(S, fc2, in_grid, input%n_omega, wg)
+    call set_wg(S, fc2, in_grid, input%n_omega, wg, skip_w0 = (fc2_sc%def_type == "inclusion"))
     !
     allocate(UT_fine(S%nat3,S%nat3,in_grid_full%nqtot), U_fine(S%nat3,S%nat3,in_grid_full%nqtot))
     allocate(f(S%nat3,in_grid_full%nqtot), U(S%nat3,S%nat3,Nc), UT(S%nat3,S%nat3,Nc))
@@ -435,8 +435,9 @@ contains
     !
     if(ionode) print*, "Starting DCA self-energy calculation..."
     if(ionode) print*, ""
-    do iw = 3, input%n_omega
-      ! if(abs(wg%en(iw) * RY_TO_CMM1 - 170._dp) > 2._dp) cycle
+    do iw = 1, input%n_omega
+      if(fc2_sc%def_type == "inclusion" .and. iw == 1) cycle
+      ! if(abs(wg%en(iw) * RY_TO_CMM1 - 465._dp) > 0.5_dp) cycle
       Gi = 0._dp
       do iq = 1, in_grid_full%nq
         iqp = iq + in_grid_full%iq0
@@ -446,6 +447,7 @@ contains
       call mpi_bsum(S%nat3, S%nat3, in_grid_full%nqtot, Gi)
       do sc_iter = 1, MAXITER
         !
+        print*, sc_iter
         Gf0 = 0._dp
         Gf0i = 0._dp
         Gi_coarse = 0._dp

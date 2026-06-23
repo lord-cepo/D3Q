@@ -2,7 +2,7 @@ module quter_defect
   use kinds,              only : dp
   use fc2_interpolate,    only : forceconst2_grid
   use ph_system,          only : ph_system_info
-  use thutils,            only : v2index, index2v
+  use thutils,            only : v2index, index2v, index2v_cart, print_message
   implicit none
   !
   integer, parameter :: nfar = 2
@@ -13,6 +13,7 @@ module quter_defect
   !
   type forceconst2_sc
     INTEGER :: n_R2 = 0
+    character(len=16) :: def_type
     INTEGER, allocatable :: n_R1(:)
     !! indices : (R2)
     real(dp), allocatable :: FC(:,:,:,:)
@@ -152,7 +153,8 @@ contains
     !
     integer, allocatable :: sites(:)
     integer :: map(S%nat, product(fc%nq))
-    integer :: i, iR, ndef
+    integer, allocatable :: map_sc(:)
+    integer :: i, iR, isc, ndef, ndef_pos
     integer, allocatable :: defects_tmp(:,:)
     real(dp), allocatable :: mass_ratios_tmp(:)
     !
@@ -162,16 +164,26 @@ contains
     allocate(fc%mass_ratios(S%nat * product(fc%nq)))
     !
     ndef = 0
-    do concurrent(iR=1:product(fc%nq), i=1:S%nat, &
-      S_sc%atm(S_sc%ityp(map(i,iR))) /= S%atm(S%ityp(i)))
-      ndef = ndef + 1
-      fc%defects(:, ndef) = [i, iR, map(i,iR)]
-      fc%mass_ratios(ndef) = - (S_sc%amass(S_sc%ityp(map(i,iR))) - S%amass(S%ityp(i))) / S%amass(S%ityp(i))
+    do iR = 1, product(fc%nq)
+      do i = 1, S%nat
+        if(S_sc%atm(S_sc%ityp(map(i,iR))) /= S%atm(S%ityp(i))) then
+          ndef = ndef + 1
+          fc%defects(:, ndef) = [i, iR, map(i,iR)]
+          ! fc%mass_ratios(ndef) = - (S_sc%amass(S_sc%ityp(map(i,iR))) - S%amass(S%ityp(i))) / &
+          !   S%amass(S%ityp(i))
+        endif
+      enddo
     enddo
+    ! do isc = 1, S_sc%nat
+    !   if(map_sc(isc) /= -1) cycle
+    !   ndef = ndef + 1
+    !   fc%defects(:, ndef) = [0, 0, isc]
+    !   ! fc%mass_ratios(ndef) = 0._dp
+    ! enddo
     !
     !
-    if(ndef == 1) then
-      fc%taudef = S%tau(:, fc%defects(1,1))
+    if(ndef == 1 .and. fc%defects(1,1) > 0) then
+      fc%taudef = S%tau(:, fc%defects(1,1)) + index2v_cart(fc%defects(2,1), fc%nq, S%at)
       call get_equiv_sites(S%nat, fc%defects(1,1), sites)
       do i = 1, size(sites)
         ndef = ndef + 1
@@ -179,11 +191,19 @@ contains
         fc%mass_ratios(ndef) = fc%mass_ratios(1)
       enddo
     else
-      fc%taudef = 0._dp
-      do i = 1, ndef
-        fc%taudef = fc%taudef + S%tau(:, fc%defects(1,i))
-      enddo
-      fc%taudef = fc%taudef / REAL(ndef, DP)
+      call errore("find_defects", "more than one defect atom is not supported yet", 1)
+      ! fc%taudef = 0._dp
+      ! ndef_pos = 0
+      ! do i = 1, ndef
+      !   if(fc%defects(1,i) > 0 .and. fc%defects(2,i) > 0) then
+      !     fc%taudef = fc%taudef + S%tau(:, fc%defects(1,i)) + index2v_cart(fc%defects(2,i), fc%nq, S%at)
+      !     ndef_pos = ndef_pos + 1
+      !   elseif(fc%defects(3,i) > 0) then
+      !     fc%taudef = fc%taudef + S_sc%tau(:, fc%defects(3,i))
+      !     ndef_pos = ndef_pos + 1
+      !   endif
+      ! enddo
+      ! if(ndef_pos > 0) fc%taudef = fc%taudef / REAL(ndef_pos, DP)
     endif
     !
     allocate(defects_tmp(3, ndef))
@@ -1809,6 +1829,60 @@ contains
     ENDDO
     !
   END SUBROUTINE
+  !
+  subroutine asr3_div_mass_RR(asr, S, Sd, grid, fc2RR)
+    character(*), intent(in) :: asr
+    type(ph_system_info), intent(in) :: S, Sd
+    integer, intent(in) :: grid(3)
+    real(dp), intent(inout) :: fc2RR(:,:,:,:)
+    !
+    if(trim(asr) /= 'no') call asr3(fc2RR)
+    call div_mass_RR(S, Sd, grid, fc2RR)
+    if(trim(asr) /= 'no') call print_message("ASR applied to DRR")
+  end subroutine
+  !
+  subroutine div_mass_RR(S, Sd, grid, fc2RR)
+    type(ph_system_info), intent(in) :: S, Sd
+    integer, intent(in) :: grid(3)
+    real(dp), intent(inout) :: fc2RR(:,:,:,:)
+    !
+    integer, allocatable :: sc_map_rr(:,:)
+    integer :: na1, na2, j1, j2, jn1, jn2
+    integer :: iR1, iR2, isc1, isc2, nR
+    !
+    if(.not. allocated(Sd%sqrtmm1)) &
+      call errore('div_mass_RR', 'missing sqrtmm1 in Sd, call aux_system first', 1)
+    if(size(fc2RR, 1) /= S%nat3 .or. size(fc2RR, 2) /= S%nat3) &
+      call errore('div_mass_RR', 'RR atom dimensions do not match S', 1)
+    !
+    nR = product(grid)
+    if(size(fc2RR, 3) /= nR .or. size(fc2RR, 4) /= nR) &
+      call errore('div_mass_RR', 'RR grid dimensions do not match grid', 1)
+    !
+    sc_map_rr = map_uc2sc(S, Sd, grid)
+    if(any(sc_map_rr < 1)) &
+      call errore('div_mass_RR', 'some RR atoms are not mapped to Sd', count(sc_map_rr < 1))
+    !
+    do iR2 = 1, nR
+      do na2 = 1, S%nat
+        isc2 = sc_map_rr(na2, iR2)
+        do j2 = 1, 3
+          jn2 = j2 + 3*(na2-1)
+          do iR1 = 1, nR
+            do na1 = 1, S%nat
+              isc1 = sc_map_rr(na1, iR1)
+              do j1 = 1, 3
+                jn1 = j1 + 3*(na1-1)
+                fc2RR(jn1, jn2, iR1, iR2) = fc2RR(jn1, jn2, iR1, iR2) * &
+                  Sd%sqrtmm1(j1 + 3*(isc1-1)) * Sd%sqrtmm1(j2 + 3*(isc2-1))
+              enddo
+            enddo
+          enddo
+        enddo
+      enddo
+    enddo
+    !
+  end subroutine
   !
   subroutine freq_in_grid_degen(S, fc2, fc2sc, grid, freqs, Us, freqs1)
     use q_grids, only : q_grid

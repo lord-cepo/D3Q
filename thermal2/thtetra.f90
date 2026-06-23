@@ -131,7 +131,7 @@ CONTAINS
     !
   end subroutine
   !
-  subroutine set_wg(S, fc2, grid, n_omega, wg, mult)
+  subroutine set_wg(S, fc2, grid, n_omega, wg, mult, skip_w0)
     use thutils, only : freq_in_grid
     use merge_degenerate, only: merge_degen
     !
@@ -141,11 +141,18 @@ CONTAINS
     integer, intent(in) :: n_omega
     type(tetra_output), intent(out) :: wg
     real(dp), intent(in), optional :: mult
+    logical, intent(in), optional :: skip_w0
+    logical :: skip_w0_
     !
     real(dp) :: mult_
     integer :: iq, ibnd, iw
     real(dp) :: freqs(S%nat3,grid%nqtot)
     !
+    if(present(skip_w0)) then
+      skip_w0_ = skip_w0
+    else
+      skip_w0_ = .false.
+    end if
     if(present(mult)) then
       mult_ = mult
     else
@@ -155,6 +162,7 @@ CONTAINS
     call tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult_)
     !
     do iw = 1, n_omega
+      if (skip_w0_ .and. iw == 1) cycle
       wg%w(:,:,iw) = tetra_weights_green(wg%en(iw)**2)
       do iq = 1, grid%nqtot
         do ibnd = 1, S%nat3
