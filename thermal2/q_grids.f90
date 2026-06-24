@@ -88,18 +88,20 @@ CONTAINS
   !
   subroutine symmetrize_system(S)
     USE cell_base,        ONLY : at, bg
-    USE symm_base,        ONLY : set_sym
+    USE symm_base,        ONLY : set_sym, irt
     USE ph_system,        ONLY : ph_system_info
     use ions_base, only : atm
     !
     IMPLICIT NONE
     TYPE(ph_system_info), INTENT(IN) :: S
     REAL(DP), ALLOCATABLE :: m_loc(:,:), xq(:,:), wq(:)
-    ! at is needed as global variable by set_sym_bl
-    if(sum(abs(at)) > 1e-10_dp) return
+    ! at/bg/atm are needed as global variables by set_sym.
     at = S%at
     bg = S%bg
     atm = S%atm
+    if (allocated(irt)) then
+      if (size(irt, 2) /= S%nat) deallocate(irt)
+    endif
     ALLOCATE(m_loc(3,S%nat))
     m_loc = 0._dp
     !
@@ -1077,7 +1079,6 @@ CONTAINS
   END FUNCTION B_right_hand_side
 
 END MODULE q_grids
-
 
 
 

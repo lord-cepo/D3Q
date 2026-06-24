@@ -132,9 +132,17 @@ contains
 
     used(:)       = .FALSE.
     neq           = 0
+    if (na0 < 1 .or. na0 > nat) &
+      call errore("get_equiv_sites", "defect atom index is out of range", max(1, abs(na0)))
+    if (.not. allocated(irt)) &
+      call errore("get_equiv_sites", "symmetry atom map is not initialized", 1)
+    if (size(irt, 1) < nsym .or. size(irt, 2) < nat) &
+      call errore("get_equiv_sites", "symmetry atom map has incompatible dimensions", 1)
     !
     DO isym = 1, nsym
       na = irt(isym, na0)
+      if (na < 1 .or. na > nat) &
+        call errore("get_equiv_sites", "invalid atom index in symmetry map", max(1, abs(na)))
       IF (.NOT. used(na) .and. na /= na0) THEN
         neq = neq + 1
         temp_list(neq) = na
@@ -143,11 +151,12 @@ contains
     END DO
     !
     allocate(equiv_list(neq))
-    equiv_list = temp_list(:neq)
+    if (neq > 0) equiv_list = temp_list(:neq)
     !
   END SUBROUTINE
 !
   subroutine find_defects(S, S_sc, fc)
+    use q_grids, only : symmetrize_system
     TYPE(ph_system_info), intent(in) :: S, S_sc
     CLASS(forceconst2_sc), intent(inout) :: fc
     !
@@ -184,6 +193,7 @@ contains
     !
     if(ndef == 1 .and. fc%defects(1,1) > 0) then
       fc%taudef = S%tau(:, fc%defects(1,1)) + index2v_cart(fc%defects(2,1), fc%nq, S%at)
+      call symmetrize_system(S)
       call get_equiv_sites(S%nat, fc%defects(1,1), sites)
       do i = 1, size(sites)
         ndef = ndef + 1
