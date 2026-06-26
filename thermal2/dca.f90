@@ -282,8 +282,9 @@ contains
       call errore("dca_selfnrg", "grid size not multiple of fc2 grid size", 1)
     R = grid_vec_cart(cluster_mesh, S%at)
     if(input%calculation == 'dos' .or. input%calculation == 'test') &
-      call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
-    call set_wg(S, fc2, in_grid, input%n_omega, wg, skip_w0 = (fc2_sc%def_type == "inclusion"))
+      call set_wg(S, fc2, out_grid, input%n_omega, wg_out, mult = 1._dp)
+    call set_wg(S, fc2, in_grid, input%n_omega, wg, &
+      skip_w0 = (fc2_sc%def_type == "inclusion"), mult = 1.0_dp)
     !
     allocate(UT_fine(S%nat3,S%nat3,in_grid_full%nqtot), U_fine(S%nat3,S%nat3,in_grid_full%nqtot))
     allocate(f(S%nat3,in_grid_full%nqtot), U(S%nat3,S%nat3,Nc), UT(S%nat3,S%nat3,Nc))
@@ -435,7 +436,8 @@ contains
     !
     if(ionode) print*, "Starting DCA self-energy calculation..."
     if(ionode) print*, ""
-    do iw = 1, input%n_omega
+    do iw = 417, input%n_omega
+      print*, wg%en(iw) * RY_TO_CMM1
       if(fc2_sc%def_type == "inclusion" .and. iw == 1) cycle
       ! if(abs(wg%en(iw) * RY_TO_CMM1 - 465._dp) > 0.5_dp) cycle
       Gi = 0._dp
@@ -550,18 +552,18 @@ contains
       call write_self('self-dca.dat', wg%en, self_out_diag)
      case('dos')
       do iw = 1+my_id, input%n_omega, num_procs
-        call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg_out%en(iw)**2, out_den_weights)
+        call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg%en(iw)**2, out_den_weights)
         dos(iw) = sum(matmul(AIMAG(out_den_weights), wg_out%qw)) * product(out_grid%n)
       enddo
       call mpi_bsum(input%n_omega, dos)
-      call write_dos('dos-dca.dat', wg_out%en, dos)
+      call write_dos('dos-dca.dat', wg%en, dos)
      case("test")
       do iw = 1+my_id, input%n_omega, num_procs
-        call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg_out%en(iw)**2, out_den_weights)
+        call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg%en(iw)**2, out_den_weights)
         dos(iw) = sum(matmul(AIMAG(out_den_weights), wg_out%qw)) * product(out_grid%n)
       enddo
       call mpi_bsum(input%n_omega, dos)
-      call write_dos('dos-dca-test.dat', wg_out%en, dos)
+      call write_dos('dos-dca-test.dat', wg%en, dos)
       call write_spf_ndiag('spf-dca-ndiag-test.dat', wg%en, self_out_grid(:,:,:1,:), out_freqs(:,:1))
       call write_spf('spf-dca-test.dat', wg%en, self_out_diag(:,:1,:), out_freqs(:,:1))
       call write_self('self-dca-test.dat', wg%en, self_out_diag(:,:1,:))

@@ -85,6 +85,7 @@ program defectp
   CALL quter(sc_grid(1), sc_grid(2), sc_grid(3), S%nat, S%tau, S%at, S%bg, matq, interp_grid, fc2_treated, 0)
 
   CALL read_fc2(input%file_mat3, Sd, fc2d)
+  fc2d%fc(:,:,1) = (fc2d%fc(:,:,1) + transpose(fc2d%fc(:,:,1))) / 2
   ! call S_uc2sc(S, Sd, sc_grid, S_sc)
   CALL aux_system(Sd)
   ! fc2d%fc(:,:,1) = (fc2d%fc(:,:,1) + transpose(fc2d%fc(:,:,1))) / 2
@@ -108,23 +109,6 @@ program defectp
   ! call deallocate_tetra_output(wg)
   ! stop 1
   !--------------------------------------------------
-  ! call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
-  ! open(138, file="band.dat")
-  ! allocate(freq0(Sd%nat3))
-  ! do iq = 1, out_grid%nqtot
-  !   call freq_phq(out_grid%xq(:,iq), Sd, fc2d_centered, freq0)
-  !   write(138,"(1000E20.8)") freq0
-  ! enddo
-  ! close(138)
-  !
-  ! open(233, file="freq0.dat", status="replace")
-  ! allocate(p(S%nat3))
-  ! do iq = 1, out_grid%nqtot
-  !   call freq_phq(out_grid%xq(:,iq), S, fc2_centered, p)
-  !   write(233, "(1000E20.8)") p
-  ! enddo
-  ! close(233)
-  ! stop 1
   ! call q_grid_copy(out_grid, out_grid_sym_scat)
   ! if(.not. out_grid_sym_scat%symmetrized .and. &
   ! (out_grid_sym_scat%type == 'simple' .and. out_grid_sym_scat%type == 'grid')) &
@@ -284,6 +268,26 @@ program defectp
   call q_grid_copy(sym_grid, in_grid_sym_scat)
   if(num_procs > 1) call in_grid_sym_scat%scatter()
   !
+
+  ! open(233, file="freq0.dat", status="replace")
+  ! allocate(p(S%nat3))
+  ! do iq = 1, out_grid%nqtot
+  !   call freq_phq(out_grid%xq(:,iq), S, fc2_centered, p)
+  !   write(233, "(1000E20.8)") p
+  ! enddo
+  ! close(233)
+  ! stop 1
+
+  !call div_mass_fc2(Sd, fc2d)
+  !call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
+  !open(138, file="band.dat")
+  !allocate(p(Sd%nat3))
+  !do iq = 1, out_grid%nqtot
+  !  call freq_phq(out_grid%xq(:,iq), Sd, fc2d_centered, p)
+  !  write(138,"(1000E20.8)") p
+  !enddo
+  !close(138)
+
   if(contain(input%mode, '1b')) &
     call main_defect(S, fc2_centered, fc2_sc_centered, in_grid, sym_grid, out_grid, input)
   if(contain(input%mode, 'fb')) then
