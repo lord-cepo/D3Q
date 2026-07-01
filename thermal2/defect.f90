@@ -291,7 +291,7 @@ contains
     complex(dp), allocatable :: T(:,:,:)
     complex(dp) :: Tq(S%nat3, S%nat3,out_grid%nqtot, input%n_omega)
     complex(dp) :: self_energy(S%nat3, out_grid%nqtot, input%n_omega)
-    integer :: iw
+    integer :: iw, jn, defat
     type(tetra_output) :: wg, wg_out
     complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
     real(dp) :: freqs(S%nat3, grid%nqtot)
@@ -305,7 +305,8 @@ contains
     complex(dp), allocatable :: phases_out(:,:)
     complex(dp), allocatable :: TRR__(:,:,:)
     !
-    complex(dp), allocatable :: V__(:,:), gV__(:,:), g0__(:,:), T__(:,:), I_gV__(:,:)
+    complex(dp), allocatable :: VK(:,:), gV__(:,:), g0__(:,:), &
+      T__(:,:), I_gV__(:,:), VM(:,:), V__(:,:)
     complex(dp), allocatable :: S__(:,:), S1__(:,:), Sg__(:,:), &
       I_Sg__(:,:), Gm__(:,:), GVS__(:,:), I_GVS__(:,:), G__(:,:)
     integer, allocatable :: g0_iR(:)
@@ -379,12 +380,13 @@ contains
     if(ionode) print*, "Number of unique large diff vectors: ", nR_large
 
     N = S%nat3 * nR
+    allocate(VK(N,N))
+    allocate(VM(N,N))
     allocate(V__(N,N))
     allocate(g0__(N,N))
     allocate(Gm__, gV__, T__, I_gV__, S__, S1__, &
       Sg__, I_Sg__, GVS__, I_GVS__, G__, source=g0__)
     !
-    V__ = 0._dp
     gV__ = 0._dp
     T__ = 0._dp
     Tq = 0._dp
@@ -398,17 +400,26 @@ contains
 
     allocate(T(S%nat3,S%nat3,size(diff_list,2)))
     !
+    VM = 0._dp
+    VK = 0._dp
+    defat = fc2_sc%defects(1,1)
     do iR2 = 1, fc2_sc%n_R2
       call find_where(fc2_sc%yR2(:,iR2), R_list, j)
       do iR1 = 1, fc2_sc%n_R1(iR2)
         call find_where(fc2_sc%yR1(:,iR1,iR2), R_list, i)
-        V__( (i-1)*S%nat3+1:i*S%nat3, (j-1)*S%nat3+1:j*S%nat3 ) = &
+        if(all(fc2_sc%yR1(:,iR1,iR2) == fc2_sc%yR2(:,iR2)) .and. &
+          all(fc2_sc%yR2(:,iR2) == index2v(fc2_sc%defects(2,1), fc2_sc%nq))) then
+          do jn = 1, 3
+            VM( (i-1)*S%nat3+(defat-1)*3+jn, (j-1)*S%nat3+(defat-1)*3+jn ) = fc2_sc%eps
+          enddo
+        endif
+        VK( (i-1)*S%nat3+1:i*S%nat3, (j-1)*S%nat3+1:j*S%nat3 ) = &
           cmplx( fc2_sc%fc(:,:,iR1,iR2), 0._dp, dp )
       enddo
     enddo
     !
 
-    do iw = 3+my_id, input%n_omega, num_procs
+    do iw = 1+my_id, input%n_omega, num_procs
       print*, "Frequency index: ", iw
       g0 = green_0_c(iw, wg, S, grid, Us, diff_large, g0_iR)
       g0__ = 0._dp
@@ -419,6 +430,7 @@ contains
         enddo
       enddo
       !
+      V__ = VK + wg%en(iw)**2 * VM
       call zgemm_N(N, g0__, V__, gV__)
       !
       I_gV__ = id_mat(N) - gV__ * (1-c)

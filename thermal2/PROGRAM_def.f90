@@ -250,14 +250,16 @@ program defectp
   endif ! ---------------------------------------------------------------------------------------
   !
   call asr3(DRR)
-  call div_mass_RR(S, Sd, sc_grid, DRR)
+  call div_mass0_RR(S, Sd, sc_grid, DRR)
   CALL fc2_sc%allocate(S, Sd, sc_grid)
+  fc2_sc%eps = 1._dp - Sd%amass(Sd%ityp(fc2_sc%defects(3,1))) / S%amass(S%ityp(fc2_sc%defects(1,1)))
   fc2_sc%fc = DRR - fc_uc2RR(fc2_treated)
   deallocate(DRR)
   !
   call fc2_sc_centered%allocate(S, Sd, sc_grid)
   fc2_sc_centered%fc = fc2_sc%fc
   CALL fc2_sc_centered%center(sc_grid, S)
+  fc2_sc_centered%eps = fc2_sc%eps
   !
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&

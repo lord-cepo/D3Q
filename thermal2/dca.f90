@@ -18,7 +18,7 @@ module dca
   use code_input, only: code_input_type
   use functions, only: invzmat
   use constants, only: tpi, pi
-  use quter_defect, only : forceconst2_sc, inside_ws, write_fc2_sc_RR
+  use quter_defect, only : forceconst2_sc, inside_ws, write_fc2_sc_RR, init_VM_qq
   use functions, only: f_gauss
   use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
   use merge_degenerate, only: merge_degen
@@ -30,6 +30,8 @@ module dca
   use EPW_utilities, only : mix_broyden_full
   use mpi_thermal, only : mpi_bsum, ionode, num_procs, my_id, mpi_broadcast
   use quter_module, only : quter
+  use nist_isotopes_db, only : get_natural_isotopes
+  use more_constants, only : MASS_DALTON_TO_RY
 contains
   subroutine init_random_seed()
     implicit none
@@ -202,39 +204,37 @@ contains
     ! real(dp), allocatable, intent(in) :: xR_fb(:,:)
     type(tetra_output) :: wg, wg_out
     !
-    complex(dp), allocatable, dimension(:) :: delta_in, delta_out, self_diff
+    complex(dp), allocatable, dimension(:) :: delta_in, delta_out
     complex(dp), allocatable, dimension(:,:) :: &
-      Gf_conf, Gf_avg, out_den_weights, Gf0i, dv, df, V__, Gf0, c_out_scl
+      Gf_conf, Gf_avg, out_den_weights, Gf0i, dv, df, Gf0
     complex(dp), allocatable, dimension(:,:,:) :: &
-      self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, self_prime, weights, &
-      self_out_diag, V_conf, self_before, self_next, G0i_cluster, Gi_coarse, self_outp_diag, &
-      Gi
+      self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, &
+      self_out_diag, self_before, self_next, G0i_cluster, Gi_coarse, &
+      Gi, VM, VK, V, phases
     complex(dp), allocatable, dimension(:,:,:,:) :: &
-      Gi_conf, Gi_avg, phase_mat, V, self_out_grid, c_in, c_out, &
-      self_outp_grid
-    complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs, self_uf
-    real(dp), allocatable, dimension(:,:) :: xq, R, f, out_freqs
-    integer, allocatable :: pos(:), kq(:,:)
+      Gi_avg, phase_mat, mass_phase_mat, self_out_grid, c_out
+    complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs
+    real(dp), allocatable, dimension(:,:) :: xq, R, f, out_freqs, site_mass_eps
+    real(dp), allocatable, dimension(:) :: host_isotope_mass, host_isotope_conc, &
+      host_isotope_cdf, impurity_isotope_mass, impurity_isotope_conc, impurity_isotope_cdf
+    integer, allocatable, dimension(:) :: pos, c_equiv, iq_of, ind, equiv_full, equiv
+    integer, allocatable, dimension(:,:) :: kq
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, na1, na2, j1, j2, &
-      cluster_mesh(3), Npos, ntot, iqp, N_ITER_TOT, iR, jR, RL_iter, Q_mesh(3), idx(S%nat3), locations(3), &
-      jq_match
-    real(dp) :: conc, defect_conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff, max_diff_coarse
-    real(dp) :: dos(input%n_omega), shift(3), simulated_conc, xqq(3)
-    logical :: conv, low_concentration
-    complex(dp) :: A(S%nat3,S%nat3), eta, ialpha(S%nat3,S%nat3), eigc(S%nat3)
-    integer, allocatable :: N_sites(:,:), c_equiv(:), iq_of(:), window_ind(:,:), &
-      ind(:), equiv_full(:), window_count(:), equiv(:)
-    character(len=100) :: filename
+      cluster_mesh(3), iqp, N_ITER_TOT, iR, jR, Q_mesh(3), ntot
+    real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff, max_diff_coarse
+    real(dp) :: dos(input%n_omega), shift(3), simulated_conc
+    logical :: conv, single_sample
+    complex(dp) :: A(S%nat3,S%nat3), eigc(S%nat3)
+    logical, allocatable :: impurity_site(:,:,:)
+    integer :: host_atom, impurity_atom, host_type, na_def
+    real(dp) :: host_reference_mass, host_natural_mass, impurity_natural_mass, output_scale
+    character(len=2) :: host_element, impurity_element
     type(q_grid) :: c_grid, in_grid_full
-    complex(dp), allocatable :: proj(:,:), proj_fine(:,:)
-    real(dp), allocatable :: eig_proj(:)
-    complex(dp), allocatable :: self_uncoarsed(:,:)
     !
+    integer :: defect_idef(S%nat)
     real(dp), allocatable :: img_xR(:,:,:,:), img_weight(:,:,:), xR(:,:)
-    integer :: img_nR(S%nat, S%nat)
-    complex(dp), allocatable :: W(:,:,:)
-    complex(dp), allocatable :: uncoarse(:,:,:,:)
+    integer :: img_nR(S%nat, S%nat), n_tot_sites
     !
     if(input%calculation == "test") call init_random_seed()
     !
@@ -244,10 +244,9 @@ contains
     ALPHA_MIX = 0.3_dp
     MEMORY = 4
     conc = input%conc ! example concentration
-    cluster_mesh = input%sc_grid
+    cluster_mesh = input%dca_grid
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
-    defect_conc = conc * n_eq_sites
     NSAMPLES = 100
     NQ = product(input%nk_in) / Nc
     Q_mesh = input%nk_in / cluster_mesh
@@ -282,9 +281,9 @@ contains
       call errore("dca_selfnrg", "grid size not multiple of fc2 grid size", 1)
     R = grid_vec_cart(cluster_mesh, S%at)
     if(input%calculation == 'dos' .or. input%calculation == 'test') &
-      call set_wg(S, fc2, out_grid, input%n_omega, wg_out, mult = 1._dp)
+      call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
     call set_wg(S, fc2, in_grid, input%n_omega, wg, &
-      skip_w0 = (fc2_sc%def_type == "inclusion"), mult = 1.0_dp)
+      skip_w0 = (fc2_sc%def_type == "inclusion"))
     !
     allocate(UT_fine(S%nat3,S%nat3,in_grid_full%nqtot), U_fine(S%nat3,S%nat3,in_grid_full%nqtot))
     allocate(f(S%nat3,in_grid_full%nqtot), U(S%nat3,S%nat3,Nc), UT(S%nat3,S%nat3,Nc))
@@ -303,6 +302,49 @@ contains
       call freq_phq_safe(xq(:,iq), S, fc2, f(:,iq), U(:,:,iq))
       UT(:,:,iq) = conjg(transpose(U(:,:,iq)))
     enddo
+    !
+    if(input%isotope_scattering) then
+      if(fc2_sc%def_type /= "substitution") &
+        call errore("dca_selfnrg", "isotope_scattering currently requires a substitutional defect", 1)
+      ! All entries in defects are symmetry-equivalent copies of the same
+      ! substitution, so they share one host and one impurity distribution.
+      host_atom = fc2_sc%defects(1,1)
+      impurity_atom = fc2_sc%defects(3,1)
+      host_type = S%ityp(host_atom)
+      host_element = S%atm(host_type)
+      if(len_trim(input%impurity_element) > 0) then
+        impurity_element = input%impurity_element
+      else
+        impurity_element = S_sc%atm(S_sc%ityp(impurity_atom))
+      endif
+      if(len_trim(impurity_element) == 0) &
+        call errore("dca_selfnrg", &
+        "missing impurity symbol in defect FC file; set impurity_element in definput", 1)
+      if(any(S%ityp(fc2_sc%defects(1,:)) /= host_type)) &
+        call errore("dca_selfnrg", "equivalent defect sites have different host species", 1)
+      ! NIST masses are in daltons.  The reference mass remains exactly the
+      ! average host mass supplied by the user and stored internally by QE.
+      call prepare_isotope_distribution(host_element, host_isotope_mass, &
+        host_isotope_conc, host_isotope_cdf)
+      call prepare_isotope_distribution(impurity_element, impurity_isotope_mass, &
+        impurity_isotope_conc, impurity_isotope_cdf)
+      host_reference_mass = S%amass(host_type) / MASS_DALTON_TO_RY
+      ! host_natural_mass = sum(host_isotope_mass * host_isotope_conc)
+      ! impurity_natural_mass = sum(impurity_isotope_mass * impurity_isotope_conc)
+      if(ionode) then
+        print*, "Explicit isotope scattering enabled"
+        ! print"(A,A,A,F12.6)", "Host ", trim(host_element), &
+        !   " reference mass (user average): ", host_reference_mass
+        ! call print_isotope_distribution("Host", host_element, host_isotope_mass, host_isotope_conc)
+        ! call print_isotope_distribution("Impurity", impurity_element, &
+        ! impurity_isotope_mass, impurity_isotope_conc)
+        ! if(abs(host_natural_mass-host_reference_mass) > 1.e-3_dp) &
+        !   print"(A,F12.6,A,F12.6)", "WARNING: NIST natural host average ", &
+        !     host_natural_mass, " differs from the user reference mass ", host_reference_mass
+        ! print"(A,F12.6)", "Impurity natural average mass: ", impurity_natural_mass
+      endif
+    endif
+    !
     if(ionode) print*, "DCA cluster size:", Nc
     if(ionode) print*, "number of configurations to be averaged:", NSAMPLES
     !
@@ -315,26 +357,17 @@ contains
     enddo
     self_out_grid = 0.0_dp
     self_out_diag = 0.0_dp
-    allocate(self_outp_grid(S%nat3,S%nat3,out_grid%nqtot,input%n_omega))
-    allocate(self_outp_diag(S%nat3,out_grid%nqtot,input%n_omega))
-    self_outp_grid = 0.0_dp
-    self_outp_diag = 0.0_dp
     !
     allocate(Gf0i(S%nat3*Nc, S%nat3*Nc))
     allocate(Gf0(S%nat3*Nc, S%nat3*Nc))
-    allocate(V__(S%nat3*Nc, S%nat3*Nc))
-    allocate(Gi_conf(S%nat3, S%nat3, Nc, Nc))
     allocate(Gf_conf(S%nat3*Nc, S%nat3*Nc))
     allocate(Gf_avg(S%nat3*Nc, S%nat3*Nc))
     allocate(Gi_avg(S%nat3, S%nat3, Nc, Nc))
     allocate(Gi_coarse(S%nat3, S%nat3, Nc))
     allocate(G0i_cluster(S%nat3, S%nat3, Nc))
-    allocate(self_uf(3, 3, S%nat, S%nat, Nc))
     allocate(self_fine(S%nat3, S%nat3, in_grid%nqtot))
     allocate(self_before(S%nat3, S%nat3, Nc))
     allocate(self_next(S%nat3, S%nat3, Nc))
-    allocate(self_prime(S%nat3, S%nat3, Nc))
-    allocate(V(S%nat3, S%nat3, Nc, Nc))
     allocate(Gi(S%nat3, S%nat3, in_grid_full%nqtot))
 
     allocate(kq(NQ, Nc))!, big_iq(grid_scat%nqtot))
@@ -345,72 +378,137 @@ contains
     allocate(dv(S%nat3**2*Nc, MEMORY))
     allocate(delta_in(S%nat3**2*Nc))
     allocate(delta_out(S%nat3**2*Nc))
-    allocate(weights(S%nat3, S%nat3, in_grid_full%nqtot))
     df = 0._dp
     dv = 0._dp
     delta_in = 0._dp
     delta_out = 0._dp
     !
     call center_V(xq, S, S_sc, fc2_sc, Vqqs)
-    ! r2q returns the unnormalized double Fourier transform.  The real-space
-    ! full-Born route also uses an unnormalized FFT for G(R), so the matching
-    ! reciprocal VGV expression must use V(q,Q) without a 1/Nc factor.
-    V__ = flatten_RR_cmplx(Vqqs(:,:,:,:,1))
-    ! !> construction of of the phase, used to translate the potential to
-    ! !> random configurations inside the cluster
-    ntot = 0
+    ! Explicit isotope disorder is present on every site, so it must always be
+    ! configuration-averaged even when the impurity concentration is dilute.
+    single_sample = Nc * n_eq_sites * conc < 1._dp
     !
-    low_concentration = Nc * n_eq_sites * conc < 1._dp
-
-    if(.not. low_concentration) then
-      allocate(V_conf(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
-      allocate(phase_mat(Nc, Nc, n_eq_sites, NSAMPLES))
-      phase_mat = 0.0_dp
-      allocate(N_sites(n_eq_sites, NSAMPLES))
-      do idef = 1, n_eq_sites
-        call assign_defect_counts(NSAMPLES, Nc, conc, N_sites(idef,:))
+    if(single_sample) then
+      if(input%isotope_scattering) &
+        call errore("dca_selfnrg", "single_sample approximation is incompatible with isotope_scattering", 1)
+      if(ionode) print*, "Using low concentration approximation (at most 1 defect per configuration)"
+      simulated_conc = conc
+      allocate(VK(S%nat3*Nc, S%nat3*Nc,1))
+      allocate(VM(S%nat3*Nc, S%nat3*Nc,1))
+      allocate(V(S%nat3*Nc, S%nat3*Nc,1))
+      VK(:,:,1) = flatten_RR_cmplx(Vqqs(:,:,:,:,1))
+      VM = 0._dp
+      na_def = fc2_sc%defects(1,1)
+      do jq = 1, Nc
+        do iq = 1, Nc
+          do j1 = 1, 3
+            VM((iq-1)*S%nat3+(na_def-1)*3+j1,(jq-1)*S%nat3+(na_def-1)*3+j1,1) = &
+              fc2_sc%eps / Nc
+          enddo
+        enddo
       enddo
-      call mpi_broadcast(n_eq_sites, NSAMPLES, N_sites)
+    else
+      allocate(phases(Nc, Nc, Nc))
+      allocate(phase_mat(Nc, Nc, S%nat, NSAMPLES))
+      allocate(mass_phase_mat(Nc, Nc, S%nat, NSAMPLES))
+      allocate(impurity_site(S%nat,Nc, NSAMPLES))
+      allocate(site_mass_eps(S%nat,Nc))
+      phase_mat = 0.0_dp
+      mass_phase_mat = 0.0_dp
+      impurity_site = .false.
+      site_mass_eps = 0
       !
+      defect_idef = 0
+      do idef = 1, n_eq_sites
+        defect_idef(fc2_sc%defects(1,idef)) = idef
+      enddo
+      !
+      do iR = 1, Nc
+        do k = 1, Nc
+          do j = 1, Nc
+            phases(j,k,iR) = e_iqr(xq(:,k)-xq(:,j), R(:,iR))
+          enddo
+        enddo
+      enddo
+      !
+      do
+        impurity_site = .false.
+        do it = 1 + my_id, NSAMPLES, num_procs
+          do iR = 1, Nc
+            do idef = 1, n_eq_sites
+              na_def = fc2_sc%defects(1,idef)
+              call sample_defect(conc, impurity_site(na_def,iR,it))
+            enddo
+          enddo
+        enddo
+
+        ntot = count(impurity_site)
+        call mpi_bsum(ntot)
+        if (ntot == nint(real(NSAMPLES*Nc*n_eq_sites, dp) * conc)) exit
+      enddo
+      !
+      if(ionode) print*, "found sampling with concentration:", &
+        ntot / real(NSAMPLES*Nc*n_eq_sites, dp)
+
       do it = 1+my_id, NSAMPLES, num_procs
-        do idef = 1, n_eq_sites
-          ! call sample_binomial(Nc, conc, pos, Npos)
-          Npos = N_sites(idef, it)
-          call sample_canonical(Nc, Npos, pos)
-          ntot = ntot + Npos
-          do ipos = 1, Npos
+        do ipos = 1, Nc
+          do na1 = 1, S%nat
+            if(input%isotope_scattering) then
+              if(impurity_site(na1,ipos,it)) then
+                site_mass_eps(na1,ipos) = 1._dp - sample_isotope_mass( &
+                  impurity_isotope_mass, impurity_isotope_cdf) / host_reference_mass
+              else
+                site_mass_eps(na1,ipos) = 1._dp - sample_isotope_mass( &
+                  host_isotope_mass, host_isotope_cdf) / host_reference_mass
+              endif
+            else
+              if(impurity_site(na1,ipos,it)) site_mass_eps(na1,ipos) = fc2_sc%eps
+            endif
+          enddo
+        enddo
+        !
+        do ipos = 1, Nc
+          do na1 = 1, S%nat
             do k = 1, Nc
               do j = 1, Nc
-                phase_mat(j,k,idef,it) = phase_mat(j,k,idef,it) + &
-                  e_iqr(xq(:,k)-xq(:,j), R(:,pos(ipos)))
-                !       V(:,:,k,j,it) = V(:,:,k,j,it) + Vqqs(:,:,k,j,idef) * &
-                !         phase_mat(k,j,pos(ipos)) / Nc
-                !       ! e_iqr(xq(:,j)-xq(:,k), R(:,pos(ipos))) / Nc
+                if(impurity_site(na1,ipos,it)) then
+                  phase_mat(j,k,na1,it) = phase_mat(j,k,na1,it) + &
+                    phases(j,k,ipos)
+                endif
+                !
+                mass_phase_mat(j,k,na1,it) = mass_phase_mat(j,k,na1,it) + &
+                  site_mass_eps(na1,ipos) * phases(j,k,ipos)
               enddo
             enddo
           enddo
         enddo
       enddo
-      call mpi_bsum(Nc, Nc, n_eq_sites, NSAMPLES, phase_mat)
-      call mpi_bsum(ntot)
-      simulated_conc = real(ntot, dp) / real(NSAMPLES * Nc * n_eq_sites, dp)
+      deallocate(phases)
       !
-      V_conf = 0.0_dp
-      do it = 1, NSAMPLES
+      allocate(VK(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
+      allocate(VM(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
+      allocate(V(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
+      VK = 0._dp
+      VM = 0._dp
+      do it = 1+my_id, NSAMPLES, num_procs
         do jq = 1, Nc
           do iq = 1, Nc
-            do idef = 1, n_eq_sites
-              V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) = &
-                V_conf((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) + &
-                Vqqs(:,:,iq,jq,idef) * phase_mat(iq,jq,idef,it) / Nc
+            do na1 = 1, S%nat
+              do j1 = 1, 3
+                VM((iq-1)*S%nat3+(na1-1)*3+j1,(jq-1)*S%nat3+(na1-1)*3+j1,it) = &
+                  VM((iq-1)*S%nat3+(na1-1)*3+j1,(jq-1)*S%nat3+(na1-1)*3+j1,it) + &
+                  mass_phase_mat(iq,jq,na1,it) / Nc
+              enddo
+              idef = defect_idef(na1)
+              if(idef == 0 .or. (idef /= 1 .and. single_sample)) cycle
+              VK((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) = &
+                VK((iq-1)*S%nat3+1:iq*S%nat3,(jq-1)*S%nat3+1:jq*S%nat3,it) + &
+                Vqqs(:,:,iq,jq,idef) * phase_mat(iq,jq,na1,it)
             enddo
           enddo
         enddo
-        V_conf(:,:,it) = (V_conf(:,:,it)+conjg(transpose(V_conf(:,:,it)))) / 2.0_dp
       enddo
-    else
-      print*, "Using low concentration approximation (at most 1 defect per configuration)"
-      simulated_conc = conc
+      !
     endif
     !
     !> construction of G0_coarse and G0i_coarse, which are averaged over the small
@@ -436,10 +534,10 @@ contains
     !
     if(ionode) print*, "Starting DCA self-energy calculation..."
     if(ionode) print*, ""
-    do iw = 417, input%n_omega
-      print*, wg%en(iw) * RY_TO_CMM1
+    do iw = 1, input%n_omega
       if(fc2_sc%def_type == "inclusion" .and. iw == 1) cycle
-      ! if(abs(wg%en(iw) * RY_TO_CMM1 - 465._dp) > 0.5_dp) cycle
+      ! if(abs(wg%en(iw) * RY_TO_CMM1 - 430._dp) > 0.5_dp) cycle
+      V = VK + VM * wg%en(iw)**2
       Gi = 0._dp
       do iq = 1, in_grid_full%nq
         iqp = iq + in_grid_full%iq0
@@ -449,7 +547,7 @@ contains
       call mpi_bsum(S%nat3, S%nat3, in_grid_full%nqtot, Gi)
       do sc_iter = 1, MAXITER
         !
-        print*, sc_iter
+        if(ionode) print*, sc_iter
         Gf0 = 0._dp
         Gf0i = 0._dp
         Gi_coarse = 0._dp
@@ -464,7 +562,7 @@ contains
           call invzmat(S%nat3, Gi_coarse(:,:,iq))
           G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_before(:,:,iq)
           Gf0i((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = G0i_cluster(:,:,iq)
-          if(low_concentration) then
+          if(single_sample) then
             A = G0i_cluster(:,:,iq)
             call invzmat(S%nat3, A)
             Gf0((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = A
@@ -472,10 +570,10 @@ contains
         enddo
         call mpi_bsum(S%nat3, S%nat3, Nc, G0i_cluster)
         call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf0i)
-        if(low_concentration) call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf0)
+        if(single_sample) call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf0)
         !
-        if(low_concentration) then
-          Gf_conf = Gf0i - V__ / Nc
+        if(single_sample) then
+          Gf_conf = Gf0i - V(:,:,1)
           call invzmat(S%nat3*Nc, Gf_conf)
           Gf_avg = Gf0 * (1-Nc*conc*n_eq_sites) + Gf_conf * (Nc * conc * n_eq_sites)
           !> self energy is G0_cluster^-1 - <G>^-1
@@ -485,7 +583,7 @@ contains
             ! > construction of G_conf for a given configuration
             ! Gi_conf = 0.0_dp
             !
-            Gf_conf = Gf0i - V_conf(:,:,it)
+            Gf_conf = Gf0i - V(:,:,it)
             call invzmat(S%nat3*Nc, Gf_conf)
             !
             Gf_avg = Gf_avg + Gf_conf
@@ -534,8 +632,7 @@ contains
         call apply_sym_q(S, out_grid%xq(:,iq), A)
         ! call invzmat(S%nat3, A)
         ! A = A + ialpha
-        self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(A, U_out(:,:,iq))) * &
-          conc / simulated_conc
+        self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(A, U_out(:,:,iq)))
         do i = 1, S%nat3
           self_out_diag(i,iq,iw) = self_out_grid(i,i,iq,iw)
         enddo
@@ -572,6 +669,48 @@ contains
     end select
     !
   contains
+    !
+    subroutine prepare_isotope_distribution(element_name, isotope_mass, isotope_conc, isotope_cdf)
+      character(len=*), intent(in) :: element_name
+      real(dp), allocatable, intent(out) :: isotope_mass(:), isotope_conc(:), isotope_cdf(:)
+      integer :: i
+      !
+      call get_natural_isotopes(element_name, isotope_mass, isotope_conc)
+      allocate(isotope_cdf(size(isotope_conc)))
+      isotope_cdf(1) = isotope_conc(1)
+      do i = 2, size(isotope_conc)
+        isotope_cdf(i) = isotope_cdf(i-1) + isotope_conc(i)
+      enddo
+      isotope_cdf(size(isotope_cdf)) = 1._dp
+    end subroutine prepare_isotope_distribution
+    !
+    function sample_isotope_mass(isotope_mass, isotope_cdf) result(sampled_mass)
+      real(dp), intent(in) :: isotope_mass(:), isotope_cdf(:)
+      real(dp) :: sampled_mass, random_value
+      integer :: i
+      !
+      call random_number(random_value)
+      sampled_mass = isotope_mass(size(isotope_mass))
+      do i = 1, size(isotope_mass)
+        if(random_value < isotope_cdf(i)) then
+          sampled_mass = isotope_mass(i)
+          exit
+        endif
+      enddo
+    end function sample_isotope_mass
+    !
+    subroutine print_isotope_distribution(label, element_name, isotope_mass, isotope_conc)
+      character(len=*), intent(in) :: label, element_name
+      real(dp), intent(in) :: isotope_mass(:), isotope_conc(:)
+      integer :: i
+      !
+      print"(A,A,A)", trim(label), " isotope distribution for ", trim(element_name)
+      do i = 1, size(isotope_mass)
+        if(isotope_conc(i) > 0._dp) &
+          print"(2X,F12.6,2X,F10.6)", isotope_mass(i), isotope_conc(i)
+      enddo
+    end subroutine print_isotope_distribution
+    !
     subroutine fourier_basis(c_Qq, grid)
       complex(dp), allocatable, intent(out) :: c_Qq(:,:,:,:)
       type(q_grid), intent(in) :: grid
@@ -593,122 +732,22 @@ contains
       enddo
     end subroutine
     !
-    ! subroutine fourier_diff(c_Qq, grid)
-    !   complex(dp), allocatable, intent(out) :: c_Qq(:,:)
-    !   type(q_grid), intent(in) :: grid
-    !   !
-    !   allocate(c_Qq(Nc, grid%nqtot))
-    !   c_Qq = 0._dp
-    !   do jq = 1, grid%nqtot
-    !     do iq = 1, Nc
-    !       do iR = 1, size(diff_large,2)
-    !         c_Qq(iq, jq) = c_Qq(iq, jq) + &
-    !           e_iqr(xq(:,iq)- grid%xq(:,jq), diff_large(:,iR)) / Nc
-    !       enddo
-    !     enddo
-    !   enddo
-    ! end subroutine
+    subroutine sample_defect(c, defect_here)
+      real(dp), intent(in) :: c
+      logical, intent(out) :: defect_here
+      !
+      real(dp) :: random_value
+      !
+      call random_number(random_value)
+      if(random_value < c) then
+        defect_here = .true.
+      else
+        defect_here = .false.
+      endif
+    end subroutine sample_defect
     !
   end subroutine
   !
-  subroutine assign_defect_counts(NSAMPLES, Nc, conc, N_sites)
-    implicit none
-    integer, intent(in) :: NSAMPLES, Nc
-    real(dp), intent(in) :: conc
-    integer, intent(out) :: N_sites(NSAMPLES)
-    real(dp) :: probs(0:Nc), cumsum(0:Nc+1), r
-    integer :: i, j
-
-    ! Compute log probs, then cumulative
-    probs = 0.0_dp
-    do i = 0, Nc
-      probs(i) = log_binom(Nc, i, conc)  ! ln[ binom * c^i * (1-c)^{Nc-i} ]
-    end do
-    cumsum(0) = 0.0_dp
-    do i = 1, Nc+1
-      cumsum(i) = cumsum(i-1) + exp(probs(i-1))
-    end do
-    cumsum(Nc+1) = 1.0_dp + 1.0e-12_dp  ! numerical safety
-
-    ! Assign via inverse CDF
-    do j = 1, NSAMPLES
-      call random_number(r)
-      ! Find i such that cumsum(i) <= r < cumsum(i+1)
-      do i = 0, Nc
-        if (r < cumsum(i+1)) then
-          N_sites(j) = i
-          exit
-        end if
-      end do
-    end do
-  end subroutine
-!
-  function real_to_randint(rr)
-    real(dp), intent(in) :: rr
-    real(dp) :: x
-    integer :: real_to_randint
-    !
-    call random_number(x)
-    if(x > rr - floor(rr)) then
-      real_to_randint = floor(rr)
-    else
-      real_to_randint = ceiling(rr)
-    end if
-    !
-  end function
-  !
-  function log_binom(n, k, c)
-    implicit none
-    integer, intent(in) :: n, k
-    real(dp), intent(in) :: c
-    integer :: i
-    real(dp) :: lb, log_binom
-    !
-    log_binom = log_gamma(real(n+1,dp)) - log_gamma(real(k+1,dp)) - log_gamma(real(n-k+1,dp)) + k*log(c) + (n-k)*log(1-c)
-    ! log_binom = exp(lb)
-  end function
-!
-  subroutine sample_canonical(N, Npos, pos)
-    integer, intent(in) :: N, Npos
-    integer, intent(out) :: pos(N)
-    !
-    real(dp) :: r
-    integer :: i, j, tmp
-    !
-    if (Npos > N) call errore("sample_canonical", "Npos cannot be larger than N", 1)
-    do i = 1, N
-      pos(i) = i
-    enddo
-    do i = 1, Npos
-      call random_number(r)
-      j = i + floor(r * (N - i + 1))
-      tmp = pos(i)
-      pos(i) = pos(j)
-      pos(j) = tmp
-    enddo
-  end subroutine
-  !
-  subroutine sample_binomial(N, c, pos, npos)
-    integer, intent(in) :: N
-    real(dp), intent(in) :: c
-    integer, intent(out) :: pos(N)
-    integer, intent(out) :: npos
-    !
-    integer :: i
-    real(dp) :: r
-    !
-    !
-    npos = 0
-    do i = 1, N
-      call random_number(r)
-      if (r < c) then
-        npos = npos + 1
-        pos(npos) = i
-      end if
-    enddo
-    !
-  end subroutine
-!
   SUBROUTINE center_V(xq, S, S_sc, fc2_sc, Vqqs)
     !-----------------------------------------------------------------------
     ! Apply ONE symmetry that maps atom1 -> atom2 to center potential there
@@ -816,6 +855,7 @@ contains
     enddo
     !
     DEALLOCATE( work )
+    Vqqs = Vqqs / real(Nq, dp)
     !
   contains
     subroutine translate_xR(fc, t)

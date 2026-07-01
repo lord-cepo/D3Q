@@ -156,7 +156,7 @@ CONTAINS
     if(present(mult)) then
       mult_ = mult
     else
-      mult_ = 1.2_dp
+      mult_ = 1._dp
     end if
     !
     call tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult_)

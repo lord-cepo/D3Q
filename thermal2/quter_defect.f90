@@ -55,6 +55,7 @@ module quter_defect
     !!
     integer, allocatable :: sc_map(:,:)
     !!
+    real(dp) :: eps = 0._dp
   contains
     procedure :: allocate => allocate_fc2_sc
     procedure :: deallocate => deallocate_fc2_sc
@@ -1885,6 +1886,40 @@ contains
                 jn1 = j1 + 3*(na1-1)
                 fc2RR(jn1, jn2, iR1, iR2) = fc2RR(jn1, jn2, iR1, iR2) * &
                   Sd%sqrtmm1(j1 + 3*(isc1-1)) * Sd%sqrtmm1(j2 + 3*(isc2-1))
+              enddo
+            enddo
+          enddo
+        enddo
+      enddo
+    enddo
+    !
+  end subroutine
+  !
+  subroutine div_mass0_RR(S, Sd, grid, fc2RR)
+    type(ph_system_info), intent(in) :: S, Sd
+    integer, intent(in) :: grid(3)
+    real(dp), intent(inout) :: fc2RR(:,:,:,:)
+    !
+    integer :: na1, na2, j1, j2, jn1, jn2
+    integer :: iR1, iR2, nR
+    !
+    if(size(fc2RR, 1) /= S%nat3 .or. size(fc2RR, 2) /= S%nat3) &
+      call errore('div_mass0_RR', 'RR atom dimensions do not match S', 1)
+    !
+    nR = product(grid)
+    if(size(fc2RR, 3) /= nR .or. size(fc2RR, 4) /= nR) &
+      call errore('div_mass0_RR', 'RR grid dimensions do not match grid', 1)
+    !
+    do iR2 = 1, nR
+      do na2 = 1, S%nat
+        do j2 = 1, 3
+          jn2 = j2 + 3*(na2-1)
+          do iR1 = 1, nR
+            do na1 = 1, S%nat
+              do j1 = 1, 3
+                jn1 = j1 + 3*(na1-1)
+                fc2RR(jn1, jn2, iR1, iR2) = fc2RR(jn1, jn2, iR1, iR2) * &
+                  S%sqrtmm1(j1 + 3*(na1-1)) * S%sqrtmm1(j2 + 3*(na2-1))
               enddo
             enddo
           enddo

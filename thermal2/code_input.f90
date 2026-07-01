@@ -59,6 +59,8 @@ MODULE code_input
     CHARACTER(10)   :: delta_approx
     integer :: n_omega
     real(dp) :: conc
+    logical :: isotope_scattering
+    character(2) :: impurity_element
     !! can be "tetra" or "gauss"
 
 !threshold to detect degeneracies between phonons, in cm-1
@@ -108,6 +110,7 @@ MODULE code_input
 !
     LOGICAL :: restart
     integer, allocatable :: sites(:)
+    integer :: dca_grid(3)
 !
   END TYPE code_input_type
 
@@ -153,6 +156,8 @@ CONTAINS
     CHARACTER(10)   :: delta_approx = 'tetra'     ! 'gauss': dirac_delta = gaussian, 'tetra' dirac_delta = scattering surface with optimized tetrahedra
     integer :: n_omega = 1
     real(dp) :: conc = 0._dp
+    logical :: isotope_scattering = .false.
+    character(2) :: impurity_element = ""
     INTEGER            :: nconf = -1                 ! number of smearing/temperature couples
     INTEGER            :: nq = -1                    ! number of q-point to read, only for lw
     INTEGER            :: skip_q = 0                 ! skip this many points when computing a BZ path
@@ -161,6 +166,7 @@ CONTAINS
     REAL(DP)           :: xk0_in(3) = (/ DHUGE, DHUGE, DHUGE/)          ! grid shift as fraction of half grid step
     INTEGER            :: nk_in(3) = (/-1, -1, -1/)  ! inner integration grid, only for tk_sma
     integer            :: sc_grid(3) = (/-1, -1, -1/)         ! supercell grid
+    integer            :: dca_grid(3) = (/-1, -1, -1/)         ! supercell grid
     LOGICAL            :: exp_t_factor = .false.     ! add elastic peak of raman, only in spectre calculation
     CHARACTER(9)   :: sort_freq = "default"      ! how to sort frequencies (default, overlap, shifted, reference)
     REAL(DP)           :: xq_ref(3) = 0._dp          ! reference point when sorting by reference
@@ -249,7 +255,7 @@ CONTAINS
     !
     NAMELIST /definput / &
       calculation, mode, file_mat2, file_mat3, outdir, prefix, asr2, asr3, sc_grid, &
-      nk, n_omega, use_symm, delta_approx, conc
+      nk, n_omega, use_symm, delta_approx, conc, dca_grid, isotope_scattering, impurity_element
     NAMELIST  / lwinput / &
       calculation, outdir, prefix, &
       file_mat2, file_mat3, asr2, &
@@ -406,9 +412,12 @@ CONTAINS
     input%asr2                         =  asr2
     input%asr3                         =  asr3
     input%sc_grid                      =  sc_grid
+    input%dca_grid                     =  dca_grid
     input%delta_approx                 =  delta_approx
     input%n_omega                      =  n_omega
     input%conc                         =  conc
+    input%isotope_scattering           =  isotope_scattering
+    input%impurity_element             =  impurity_element
     input%skip_q                       =  skip_q
     input%nconf                        =  nconf
     input%nk                           =  nk
@@ -993,6 +1002,8 @@ CONTAINS
       CALL mpi_broadcast(intrinsic_scattering)
       CALL mpi_broadcast(debug_linewidth)
       CALL mpi_broadcast(isotopic_disorder)
+      CALL mpi_broadcast(isotope_scattering)
+      CALL mpi_broadcast(impurity_element)
       CALL mpi_broadcast(max_seconds)
       CALL mpi_broadcast(max_time)
       CALL mpi_broadcast(mfp_cutoff)
@@ -1002,6 +1013,7 @@ CONTAINS
       CALL mpi_broadcast(3,nk)
       CALL mpi_broadcast(3,nk_in)
       call mpi_broadcast(3, sc_grid)
+      call mpi_broadcast(3, dca_grid)
       CALL mpi_broadcast(nq)
       CALL mpi_broadcast(outdir)
       CALL mpi_broadcast(prefix)

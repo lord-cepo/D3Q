@@ -340,7 +340,9 @@ dca.o : ./fc3_interp.o
 dca.o : ./functions.o
 dca.o : ./input_fc.o
 dca.o : ./merge_degenerate.o
+dca.o : ./more_constants.o
 dca.o : ./mpi_thermal.o
+dca.o : ./nist_isotopes_db.o
 dca.o : ./ph_velocity.o
 dca.o : ./q_grids.o
 dca.o : ./quter.o

@@ -28,7 +28,7 @@ MODULE nist_isotopes_db
     USE kinds, ONLY : DP
 #include "mpi_thermal.h"  
     
-    PUBLIC :: element, search_nist, compute_gs
+    PUBLIC :: element, search_nist, compute_gs, get_natural_isotopes
     ! >>>>>>>>
     PRIVATE !<<<<<<<<<
 ! <<^V^\\=========================================//-//-//========//O\\//
@@ -209,6 +209,29 @@ MODULE nist_isotopes_db
 
   END SUBROUTINE compute_gs
   ! \/o\________\\\_________________________________________/^>
+
+  SUBROUTINE get_natural_isotopes(aname, amass, aconc)
+    IMPLICIT NONE
+    CHARACTER(len=*), INTENT(in) :: aname
+    REAL(DP), ALLOCATABLE, INTENT(out) :: amass(:), aconc(:)
+    TYPE(element) :: elem
+    INTEGER :: i
+    REAL(DP) :: total_conc
+    !
+    elem = search_nist(aname)
+    ALLOCATE(amass(elem%nisot), aconc(elem%nisot))
+    DO i = 1, elem%nisot
+      amass(i) = elem%isot(i)%amass
+      aconc(i) = elem%isot(i)%aconc
+    ENDDO
+    !
+    total_conc = SUM(aconc)
+    IF(total_conc <= 0._dp) &
+      CALL errore("get_natural_isotopes", &
+                  "natural isotope concentrations are undefined for "//TRIM(aname), 1)
+    aconc = aconc / total_conc
+  END SUBROUTINE get_natural_isotopes
+  !
   
   TYPE(element) FUNCTION search_nist(name) RESULT(self)
     IMPLICIT NONE
@@ -965,5 +988,4 @@ MODULE nist_isotopes_db
   END FUNCTION search_nist
 
 END MODULE nist_isotopes_db
-
 
