@@ -10,7 +10,7 @@ program defectp
   use quter_defect
   use quter_module, only : quter
   use test_print
-  use defect_eig, only : full_diag, norm_gV, norm_V
+  !use defect_eig, only : full_diag, norm_gV, norm_V
   use constants, only : RY_TO_CMM1
   use full_born, only : full_born_p, full_born_analytical
   USE parameters, ONLY : ntypx
@@ -95,13 +95,13 @@ program defectp
   !>------------------------------------------------
   !
   ! allocate(dos(input%n_omega))
-  ! call set_wg(Sd, fc2d_centered, out_grid, input%n_omega, wg)
+  ! call set_wg(Sd, fc2d_centered, out_grid, input, wg)
   ! do iw = 1, input%n_omega
   !   dos(iw) = sum(matmul(aimag(wg%w(:,:,iw)), wg%qw))
   ! enddo
   ! call write_dos("SC-dos.dat", wg%en, dos)
   ! call deallocate_tetra_output(wg)
-  ! call set_wg(S, fc2_centered, out_grid, input%n_omega, wg)
+  ! call set_wg(S, fc2_centered, out_grid, input, wg)
   ! do iw = 1, input%n_omega
   !   dos(iw) = sum(matmul(aimag(wg%w(:,:,iw)), wg%qw))
   ! enddo
@@ -301,48 +301,48 @@ program defectp
 
   CALL stop_mpi()
 contains
-  subroutine distance_uc(fc2_centered, S, filename)
-    type(forceconst2_grid), intent(in) :: fc2_centered
-    type(ph_system_info), intent(in) :: S
-    character(len=*), intent(in) :: filename
-    integer :: na1, na2, iR, j1, j2
-    real(dp) :: dist, dist2
+  ! subroutine distance_uc(fc2_centered, S, filename)
+  !   type(forceconst2_grid), intent(in) :: fc2_centered
+  !   type(ph_system_info), intent(in) :: S
+  !   character(len=*), intent(in) :: filename
+  !   integer :: na1, na2, iR, j1, j2
+  !   real(dp) :: dist, dist2
 
-    open(10, file=filename, status='replace')
-    do iR = 1, fc2_centered%n_r
-      do na1 = 1, S%nat
-        do na2 = 1, S%nat
-          dist = norm2(S%tau(:,na1) - S%tau(:,na2) + fc2_centered%xR(:,iR))
-          dist2 = norm2(S%tau(:,na1) + fc2_centered%xR(:,iR)) + norm2(S%tau(:,na2))
-          do j1 = 1, 3
-            do j2 = 1, 3
-              write(10, "(3E20.8, 3I5)") dist, dist2, &
-                fc2_centered%fc(j1+3*(na1-1), j2+3*(na2-1), iR), &
-                iR, na1, na2
-            enddo
-          enddo
-        enddo
-      enddo
-    enddo
-    close(10)
-  end subroutine
-  !
-  subroutine write_fc2_sc_pixels(fc2_sc, filename)
-    type(forceconst2_sc),intent(in) :: fc2_sc
-    character(*), intent(in) :: filename
-    !
-    real(dp), allocatable :: p(:)
-    !
-    open(10, file=filename, status='replace')
-    do R2 = 1, fc2_sc%n_r2
-      allocate(p(fc2_sc%n_R1(R2)))
-      do R1 = 1, fc2_sc%n_r1(R2)
-        p(r1) = sum(abs(fc2_sc%fc(:,:,R1,R2)))
-      enddo
-      write(10, "(1000E15.5)") p
-      deallocate(p)
-    enddo
-    close(10)
-  end subroutine
+  !   open(10, file=filename, status='replace')
+  !   do iR = 1, fc2_centered%n_r
+  !     do na1 = 1, S%nat
+  !       do na2 = 1, S%nat
+  !         dist = norm2(S%tau(:,na1) - S%tau(:,na2) + fc2_centered%xR(:,iR))
+  !         dist2 = norm2(S%tau(:,na1) + fc2_centered%xR(:,iR)) + norm2(S%tau(:,na2))
+  !         do j1 = 1, 3
+  !           do j2 = 1, 3
+  !             write(10, "(3E20.8, 3I5)") dist, dist2, &
+  !               fc2_centered%fc(j1+3*(na1-1), j2+3*(na2-1), iR), &
+  !               iR, na1, na2
+  !           enddo
+  !         enddo
+  !       enddo
+  !     enddo
+  !   enddo
+  !   close(10)
+  ! end subroutine
+  ! !
+  ! subroutine write_fc2_sc_pixels(fc2_sc, filename)
+  !   type(forceconst2_sc),intent(in) :: fc2_sc
+  !   character(*), intent(in) :: filename
+  !   !
+  !   real(dp), allocatable :: p(:)
+  !   !
+  !   open(10, file=filename, status='replace')
+  !   do R2 = 1, fc2_sc%n_r2
+  !     allocate(p(fc2_sc%n_R1(R2)))
+  !     do R1 = 1, fc2_sc%n_r1(R2)
+  !       p(r1) = sum(abs(fc2_sc%fc(:,:,R1,R2)))
+  !     enddo
+  !     write(10, "(1000E15.5)") p
+  !     deallocate(p)
+  !   enddo
+  !   close(10)
+  ! end subroutine
   !
 end program

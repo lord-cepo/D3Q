@@ -18,7 +18,7 @@ module dca
   use code_input, only: code_input_type
   use functions, only: invzmat
   use constants, only: tpi, pi
-  use quter_defect, only : forceconst2_sc, inside_ws, write_fc2_sc_RR, init_VM_qq
+  use quter_defect, only : forceconst2_sc, inside_ws, write_fc2_sc_RR
   use functions, only: f_gauss
   use fc3_interpolate, only: forceconst3, sparse, d3_mixed, sum_R3
   use merge_degenerate, only: merge_degen
@@ -281,8 +281,8 @@ contains
       call errore("dca_selfnrg", "grid size not multiple of fc2 grid size", 1)
     R = grid_vec_cart(cluster_mesh, S%at)
     if(input%calculation == 'dos' .or. input%calculation == 'test') &
-      call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
-    call set_wg(S, fc2, in_grid, input%n_omega, wg, &
+      call set_wg(S, fc2, out_grid, input, wg_out)
+    call set_wg(S, fc2, in_grid, input, wg, &
       skip_w0 = (fc2_sc%def_type == "inclusion"))
     !
     allocate(UT_fine(S%nat3,S%nat3,in_grid_full%nqtot), U_fine(S%nat3,S%nat3,in_grid_full%nqtot))
@@ -536,7 +536,6 @@ contains
     if(ionode) print*, ""
     do iw = 1, input%n_omega
       if(fc2_sc%def_type == "inclusion" .and. iw == 1) cycle
-      ! if(abs(wg%en(iw) * RY_TO_CMM1 - 430._dp) > 0.5_dp) cycle
       V = VK + VM * wg%en(iw)**2
       Gi = 0._dp
       do iq = 1, in_grid_full%nq
@@ -673,13 +672,13 @@ contains
     subroutine prepare_isotope_distribution(element_name, isotope_mass, isotope_conc, isotope_cdf)
       character(len=*), intent(in) :: element_name
       real(dp), allocatable, intent(out) :: isotope_mass(:), isotope_conc(:), isotope_cdf(:)
-      integer :: i
+      integer :: ii
       !
       call get_natural_isotopes(element_name, isotope_mass, isotope_conc)
       allocate(isotope_cdf(size(isotope_conc)))
       isotope_cdf(1) = isotope_conc(1)
-      do i = 2, size(isotope_conc)
-        isotope_cdf(i) = isotope_cdf(i-1) + isotope_conc(i)
+      do ii = 2, size(isotope_conc)
+        isotope_cdf(ii) = isotope_cdf(ii-1) + isotope_conc(ii)
       enddo
       isotope_cdf(size(isotope_cdf)) = 1._dp
     end subroutine prepare_isotope_distribution
@@ -687,13 +686,13 @@ contains
     function sample_isotope_mass(isotope_mass, isotope_cdf) result(sampled_mass)
       real(dp), intent(in) :: isotope_mass(:), isotope_cdf(:)
       real(dp) :: sampled_mass, random_value
-      integer :: i
+      integer :: ii
       !
       call random_number(random_value)
       sampled_mass = isotope_mass(size(isotope_mass))
-      do i = 1, size(isotope_mass)
-        if(random_value < isotope_cdf(i)) then
-          sampled_mass = isotope_mass(i)
+      do ii = 1, size(isotope_mass)
+        if(random_value < isotope_cdf(ii)) then
+          sampled_mass = isotope_mass(ii)
           exit
         endif
       enddo
@@ -702,12 +701,12 @@ contains
     subroutine print_isotope_distribution(label, element_name, isotope_mass, isotope_conc)
       character(len=*), intent(in) :: label, element_name
       real(dp), intent(in) :: isotope_mass(:), isotope_conc(:)
-      integer :: i
+      integer :: ii
       !
       print"(A,A,A)", trim(label), " isotope distribution for ", trim(element_name)
-      do i = 1, size(isotope_mass)
-        if(isotope_conc(i) > 0._dp) &
-          print"(2X,F12.6,2X,F10.6)", isotope_mass(i), isotope_conc(i)
+      do ii = 1, size(isotope_mass)
+        if(isotope_conc(ii) > 0._dp) &
+          print"(2X,F12.6,2X,F10.6)", isotope_mass(ii), isotope_conc(ii)
       enddo
     end subroutine print_isotope_distribution
     !

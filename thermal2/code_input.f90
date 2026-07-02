@@ -254,7 +254,7 @@ CONTAINS
       do_grid=.false.       ! is true, construct a regular grid of q-points
     !
     NAMELIST /definput / &
-      calculation, mode, file_mat2, file_mat3, outdir, prefix, asr2, asr3, sc_grid, &
+      calculation, mode, file_mat2, file_mat3, outdir, prefix, asr2, asr3, sc_grid, e0, &
       nk, n_omega, use_symm, delta_approx, conc, dca_grid, isotope_scattering, impurity_element
     NAMELIST  / lwinput / &
       calculation, outdir, prefix, &

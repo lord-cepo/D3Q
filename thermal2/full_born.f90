@@ -236,7 +236,7 @@ contains
     complex(dp) :: outer_products(S%nat3,S%nat3,S%nat3,grid%nqtot)
     !
     call freq_in_grid(S, fc2, grid, freqs, Us)
-    call set_wg(S, fc2, grid, input%n_omega, wg)
+    call set_wg(S, fc2, grid, input, wg)
     !
     print*, "max freq", wg%en(input%n_omega) * RY_TO_CMM1
     Vb = 0.0_dp

@@ -18,6 +18,8 @@ MODULE thtetra
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe
   use thutils, only : freq_in_grid
+  use code_input, only : code_input_type
+  use constants, only : RY_TO_CMM1
   !
   IMPLICIT NONE
   !
@@ -106,12 +108,12 @@ CONTAINS
     if (allocated(wg%en)) deallocate(wg%en)
   end subroutine
 !
-  subroutine tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult)
+  subroutine tetra_init_grid_sym(grid, S, fc2, wg, input, mult)
+    type(code_input_type), intent(in) :: input
     type(q_grid), intent(in) :: grid
     type(ph_system_info), intent(in) :: S
     type(forceconst2_grid), intent(in) :: fc2
     type(tetra_output), intent(out) :: wg
-    integer, intent(in) :: n_omega
     real(dp), intent(in) :: mult
     ! type(q_grid), intent(out), optional :: grid_sym_
     !
@@ -121,24 +123,28 @@ CONTAINS
     allocate(freqs_sym(S%nat3, grid%nqtot))
     call freq_in_grid(S, fc2, grid, freqs_sym)
     call tetra_init_sym(grid, S, freqs_sym**2, .false., wg)
-    allocate(wg%w(S%nat3, wg%nsym, n_omega))
+    allocate(wg%w(S%nat3, wg%nsym, input%n_omega))
     call move_alloc(freqs_sym, wg%f)
     wg%max_f = maxval(wg%f) * mult
-    allocate(wg%en(n_omega))
-    do iw = 1, n_omega
-      wg%en(iw) = (iw-1) * wg%max_f / REAL(n_omega, dp)
-    enddo
+    allocate(wg%en(input%n_omega))
+    if(input%n_omega == 1) then
+      wg%en(1) = input%e0 / RY_TO_CMM1
+    else
+      do iw = 1, input%n_omega
+        wg%en(iw) = (iw-1) * wg%max_f / REAL(input%n_omega, dp)
+      enddo
+    endif
     !
   end subroutine
   !
-  subroutine set_wg(S, fc2, grid, n_omega, wg, mult, skip_w0)
+  subroutine set_wg(S, fc2, grid, input, wg, mult, skip_w0)
     use thutils, only : freq_in_grid
     use merge_degenerate, only: merge_degen
     !
     type(ph_system_info), intent(in) :: S
     type(forceconst2_grid), intent(in) :: fc2
     type(q_grid), intent(in) :: grid
-    integer, intent(in) :: n_omega
+    type(code_input_type), intent(in) :: input
     type(tetra_output), intent(out) :: wg
     real(dp), intent(in), optional :: mult
     logical, intent(in), optional :: skip_w0
@@ -156,13 +162,13 @@ CONTAINS
     if(present(mult)) then
       mult_ = mult
     else
-      mult_ = 1._dp
+      mult_ = 1.05_dp
     end if
     !
-    call tetra_init_grid_sym(grid, S, fc2, wg, n_omega, mult_)
+    call tetra_init_grid_sym(grid, S, fc2, wg, input, mult_)
     !
-    do iw = 1, n_omega
-      if (skip_w0_ .and. iw == 1) cycle
+    do iw = 1, input%n_omega
+      if (skip_w0_ .and. iw == 1 .and. input%n_omega /= 1) cycle
       wg%w(:,:,iw) = tetra_weights_green(wg%en(iw)**2)
       do iq = 1, grid%nqtot
         do ibnd = 1, S%nat3

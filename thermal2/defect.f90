@@ -315,9 +315,9 @@ contains
     real(dp) :: dos(input%n_omega)
 
     !
-    call set_wg(S, fc2, sym_grid, input%n_omega, wg)
+    call set_wg(S, fc2, sym_grid, input, wg)
     if(input%calculation == 'dos' .or. input%calculation == 'test') &
-      call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
+      call set_wg(S, fc2, out_grid, input, wg_out)
     call freq_in_grid(S, fc2, grid, freqs, Us)
     call freq_in_grid(S, fc2, out_grid, out_freqs, out_Us)
 
@@ -581,9 +581,9 @@ contains
     complex(dp) :: w_self(S%nat3, out_grid%nqtot)
     real(dp) :: dos(input%n_omega)
     !
-    call set_wg(S, fc2, sym_grid, input%n_omega, wg)
+    call set_wg(S, fc2, sym_grid, input, wg)
     if(input%calculation == 'dos' .or. input%calculation == 'test') &
-      call set_wg(S, fc2, out_grid, input%n_omega, wg_out)
+      call set_wg(S, fc2, out_grid, input, wg_out)
     call freq_in_grid(S, fc2, grid, freqs, Us)
     call freq_in_grid(S, fc2, out_grid, out_freqs, out_Us)
 
@@ -766,8 +766,8 @@ contains
     ! call freq_in_grid_degen(S, fc2, fc2_sc, grid, freqs, Us, freqs1)
 
     !
-    call set_wg(S, fc2, sym_grid, input%n_omega, w_in)
-    call set_wg(S, fc2, out_grid, input%n_omega, w_out)
+    call set_wg(S, fc2, sym_grid, input, w_in)
+    call set_wg(S, fc2, out_grid, input, w_out)
     call print_message("end of tetra initialization")
     !
     do iq = 1, out_grid%nq

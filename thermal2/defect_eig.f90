@@ -179,108 +179,108 @@ contains
     lowest_eig = W(1:i)
   end function
   !
-  subroutine norm_gV(S, fc2, fc2_sc, grid, sym_grid, n_omega)
-    use thtetra, only : set_wg, tetra_output
-    use constants, only : RY_TO_CMM1
-    use thutils, only : freq_in_grid
-    use simtet, only : tetra_init_sym_cmplx, tetra_weights_green_cmplx
-    use mpi_thermal, only : num_procs, my_id
-    use full_born, only : zgemm_N
-    type(ph_system_info), intent(in) :: S
-    type(forceconst2_grid), intent(in) :: fc2
-    type(forceconst2_sc), intent(inout) :: fc2_sc
-    type(q_grid), intent(in) :: grid, sym_grid
-    integer, intent(in) :: n_omega
-    ! real(dp), intent(in) :: eta(:)
-    !
-    real(dp), dimension(grid%nqtot*S%nat3,grid%nqtot*S%nat3) :: id
-    complex(dp), dimension(grid%nqtot*S%nat3,grid%nqtot*S%nat3) :: VK, A, gV, V, gV2, gVt
-    integer :: iq, jq, ibnd, jbnd, compi, compj, iw, N, ieta
-    type(tetra_output) :: wg
-    real(dp) :: norm_VK, norm_gV_, w2(grid%nqtot*S%nat3)
-    real(dp) :: freqs(S%nat3,grid%nqtot)
-    complex(dp), allocatable :: wg_cmplx(:,:)
-    complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
-    complex(dp) :: U_dagger(S%nat3, S%nat3)
-    real(dp) :: eta
-    !
-    V = D_or_V(S, fc2, fc2_sc, grid, "V")
-    call set_wg(S, fc2, sym_grid, n_omega, wg, mult=2.0_dp)
-    eta = 1e-12_dp
-    !
-    ! norm_VK = frobenius_norm(VK)
-    ! print*, "norm V matrix", norm_VK
-    N = grid%nqtot * S%nat3
-    id = id_mat(N)
-    !
-    open(10, file="norm.dat")
-    ! do ieta = 1, size(eta)
-    ! print*, "eta =", eta(ieta)
-    ! call tetra_init_sym_cmplx(grid, S, cmplx(freqs**2, eta(ieta), dp))
-    ! call tetra_init_sym(grid, S, freqs**2)
-    do iw = my_id+1, size(wg%en), num_procs
-      print*, "iw = ", iw
-      ! do concurrent(iq=1:grid%nqtot, jq=1:grid%nqtot, ibnd=1:S%nat3, jbnd=1:S%nat3)
-      !   compi = (iq-1)*S%nat3 + ibnd
-      !   compj = (jq-1)*S%nat3 + jbnd
-      !   A(compi,compj) = V(compi,compj) * wg%w(ibnd,wg%e(iq),iw)
-      ! enddo
-      ! V = VK
-      ! wg_cmplx = tetra_weights_green_cmplx(wg%en(iw)**2)
-      ! do iq = 1, grid%nqtot
-      !   U_dagger = conjg(transpose(Us(:,:,iq)))
-      !   U_dagger(:,4:) = 0._dp
-      !   do jq = 1, grid%nqtot
-      !     V((iq-1)*S%nat3+1:iq*S%nat3, (jq-1)*S%nat3+1:jq*S%nat3) = &
-      !       V((iq-1)*S%nat3+1:iq*S%nat3, (jq-1)*S%nat3+1:jq*S%nat3) + &
-      !       matmul(U_dagger, Us(:,:,jq)) * fc2_sc%mass_ratios(1)*E(iw)**2 / grid%nqtot
-      !   end do
-      ! end do
-      !
-      ! gV = 0._dp
-      ! do concurrent(jq=1:grid%nqtot, jbnd=1:S%nat3)
-      !   compj = (jq-1)*S%nat3 + jbnd
-      !   gV(:,compj) = V(:,compj) / (wg%en(iw)**2 - freqs(jbnd,jq)**2 + cmplx(0._dp, eta, dp))
-      ! enddo
+  ! subroutine norm_gV(S, fc2, fc2_sc, grid, sym_grid, n_omega)
+  !   use thtetra, only : set_wg, tetra_output
+  !   use constants, only : RY_TO_CMM1
+  !   use thutils, only : freq_in_grid
+  !   use simtet, only : tetra_init_sym_cmplx, tetra_weights_green_cmplx
+  !   use mpi_thermal, only : num_procs, my_id
+  !   use full_born, only : zgemm_N
+  !   type(ph_system_info), intent(in) :: S
+  !   type(forceconst2_grid), intent(in) :: fc2
+  !   type(forceconst2_sc), intent(inout) :: fc2_sc
+  !   type(q_grid), intent(in) :: grid, sym_grid
+  !   integer, intent(in) :: n_omega
+  !   ! real(dp), intent(in) :: eta(:)
+  !   !
+  !   real(dp), dimension(grid%nqtot*S%nat3,grid%nqtot*S%nat3) :: id
+  !   complex(dp), dimension(grid%nqtot*S%nat3,grid%nqtot*S%nat3) :: VK, A, gV, V, gV2, gVt
+  !   integer :: iq, jq, ibnd, jbnd, compi, compj, iw, N, ieta
+  !   type(tetra_output) :: wg
+  !   real(dp) :: norm_VK, norm_gV_, w2(grid%nqtot*S%nat3)
+  !   real(dp) :: freqs(S%nat3,grid%nqtot)
+  !   complex(dp), allocatable :: wg_cmplx(:,:)
+  !   complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
+  !   complex(dp) :: U_dagger(S%nat3, S%nat3)
+  !   real(dp) :: eta
+  !   !
+  !   V = D_or_V(S, fc2, fc2_sc, grid, "V")
+  !   call set_wg(S, fc2, sym_grid, n_omega, wg, mult=2.0_dp)
+  !   eta = 1e-12_dp
+  !   !
+  !   ! norm_VK = frobenius_norm(VK)
+  !   ! print*, "norm V matrix", norm_VK
+  !   N = grid%nqtot * S%nat3
+  !   id = id_mat(N)
+  !   !
+  !   open(10, file="norm.dat")
+  !   ! do ieta = 1, size(eta)
+  !   ! print*, "eta =", eta(ieta)
+  !   ! call tetra_init_sym_cmplx(grid, S, cmplx(freqs**2, eta(ieta), dp))
+  !   ! call tetra_init_sym(grid, S, freqs**2)
+  !   do iw = my_id+1, size(wg%en), num_procs
+  !     print*, "iw = ", iw
+  !     ! do concurrent(iq=1:grid%nqtot, jq=1:grid%nqtot, ibnd=1:S%nat3, jbnd=1:S%nat3)
+  !     !   compi = (iq-1)*S%nat3 + ibnd
+  !     !   compj = (jq-1)*S%nat3 + jbnd
+  !     !   A(compi,compj) = V(compi,compj) * wg%w(ibnd,wg%e(iq),iw)
+  !     ! enddo
+  !     ! V = VK
+  !     ! wg_cmplx = tetra_weights_green_cmplx(wg%en(iw)**2)
+  !     ! do iq = 1, grid%nqtot
+  !     !   U_dagger = conjg(transpose(Us(:,:,iq)))
+  !     !   U_dagger(:,4:) = 0._dp
+  !     !   do jq = 1, grid%nqtot
+  !     !     V((iq-1)*S%nat3+1:iq*S%nat3, (jq-1)*S%nat3+1:jq*S%nat3) = &
+  !     !       V((iq-1)*S%nat3+1:iq*S%nat3, (jq-1)*S%nat3+1:jq*S%nat3) + &
+  !     !       matmul(U_dagger, Us(:,:,jq)) * fc2_sc%mass_ratios(1)*E(iw)**2 / grid%nqtot
+  !     !   end do
+  !     ! end do
+  !     !
+  !     ! gV = 0._dp
+  !     ! do concurrent(jq=1:grid%nqtot, jbnd=1:S%nat3)
+  !     !   compj = (jq-1)*S%nat3 + jbnd
+  !     !   gV(:,compj) = V(:,compj) / (wg%en(iw)**2 - freqs(jbnd,jq)**2 + cmplx(0._dp, eta, dp))
+  !     ! enddo
 
-      ! gVt = conjg(transpose(gV))
-      ! gV2 = 0._dp
-      ! call zgemm_N(N, gVt, gV, gV2)
-      ! gv2 = matmul(conjg(transpose(gV)), gV)
-      ! norm_gV_ = frobenius_norm(gVVg)
-      ! print*, "iw =", iw, " norm gVg =", norm_gV_
-      ! write(10, "(20E25.8)") wg%en(iw) * RY_TO_CMM1, lowest_eig(N, gV2, 1)
-      ! enddo
-    enddo
-    close(10)
-    !
-  contains
-    function frobenius_norm(M)
-      complex(dp), intent(in) :: M(:,:)
-      real(dp) :: frobenius_norm
-      !
-      frobenius_norm = sqrt(sum(abs(M)**2))
-      !
-    end function
-    !
-    function frobenius_norm_vec(wg, iw)
-      integer, intent(in) :: iw
-      type(tetra_output), intent(in) :: wg
-      real(dp) :: frobenius_norm_vec
-      integer :: i, Nq
-      !
-      ! N = size(wg%w, 1) * size(wg%w, 2)
-      Nq = size(wg%w, 2)
-      frobenius_norm_vec = 0._dp
-      do iq = 1, size(wg%w, 2)
-        do ibnd = 1, size(wg%w, 1)
-          frobenius_norm_vec = frobenius_norm_vec + Nq * wg%qw(iq) * abs(wg%w(ibnd,iq,iw))**2
-        enddo
-      enddo
-      frobenius_norm_vec = sqrt(frobenius_norm_vec)
-      !
-    end function
-  end subroutine
+  !     ! gVt = conjg(transpose(gV))
+  !     ! gV2 = 0._dp
+  !     ! call zgemm_N(N, gVt, gV, gV2)
+  !     ! gv2 = matmul(conjg(transpose(gV)), gV)
+  !     ! norm_gV_ = frobenius_norm(gVVg)
+  !     ! print*, "iw =", iw, " norm gVg =", norm_gV_
+  !     ! write(10, "(20E25.8)") wg%en(iw) * RY_TO_CMM1, lowest_eig(N, gV2, 1)
+  !     ! enddo
+  !   enddo
+  !   close(10)
+  !   !
+  ! contains
+  !   function frobenius_norm(M)
+  !     complex(dp), intent(in) :: M(:,:)
+  !     real(dp) :: frobenius_norm
+  !     !
+  !     frobenius_norm = sqrt(sum(abs(M)**2))
+  !     !
+  !   end function
+  !   !
+  !   function frobenius_norm_vec(wg, iw)
+  !     integer, intent(in) :: iw
+  !     type(tetra_output), intent(in) :: wg
+  !     real(dp) :: frobenius_norm_vec
+  !     integer :: i, Nq
+  !     !
+  !     ! N = size(wg%w, 1) * size(wg%w, 2)
+  !     Nq = size(wg%w, 2)
+  !     frobenius_norm_vec = 0._dp
+  !     do iq = 1, size(wg%w, 2)
+  !       do ibnd = 1, size(wg%w, 1)
+  !         frobenius_norm_vec = frobenius_norm_vec + Nq * wg%qw(iq) * abs(wg%w(ibnd,iq,iw))**2
+  !       enddo
+  !     enddo
+  !     frobenius_norm_vec = sqrt(frobenius_norm_vec)
+  !     !
+  !   end function
+  ! end subroutine
   !
   subroutine norm_V(S, fc2, fc2_sc)
     use q_grids, only : setup_simple_grid

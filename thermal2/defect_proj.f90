@@ -1,7 +1,7 @@
 module defect_proj
   use kinds, only: dp
   use thtetra, only: tetra_init_sym, tetra_init, tetra_weights_green, &
-    deallocate_tetra, tetra_output, set_wg
+    deallocate_tetra, tetra_output
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
     fc2_recenter, fftinterp_mat2, mat2_diag
   use thutils
