@@ -7,7 +7,7 @@ module dca
     fc2_recenter, fftinterp_mat2, mat2_diag
   use thutils, only: bz2simple, grid_vec_cart, &
     e_iqr, index2v, cryst2cart, v2index, freq_in_grid, diag_cmplx, diag, &
-    id_mat, zgemm_N
+    id_mat, zgemm_N, contain
   use defutils, only : flatten_RR_cmplx, unflatten_RR_cmplx, &
     quter_cmplx, fftinterp_mat2_cmplx, quter_R
   use defect, only : tetra_from_self_cart, write_spf_ndiag, write_spf, &
@@ -451,6 +451,7 @@ contains
         ntot / real(NSAMPLES*Nc*n_eq_sites, dp)
 
       do it = 1+my_id, NSAMPLES, num_procs
+        site_mass_eps = 0._dp
         do ipos = 1, Nc
           do na1 = 1, S%nat
             if(input%isotope_scattering) then
@@ -536,7 +537,16 @@ contains
     if(ionode) print*, ""
     do iw = 1, input%n_omega
       if(fc2_sc%def_type == "inclusion" .and. iw == 1) cycle
-      V = VK + VM * wg%en(iw)**2
+      if(.not. contain(input%mode, "mass") .and. .not. contain(input%mode, "fc")) then
+        V = VK + VM * wg%en(iw)**2
+      elseif(contain(input%mode, "mass")) then
+        V = VM * wg%en(iw)**2
+      elseif(contain(input%mode, "fc")) then
+        V = VK
+      else
+        call errore("dca_selfnrg", "invalid mode for DCA self-energy calculation", 1)
+      endif
+      !
       Gi = 0._dp
       do iq = 1, in_grid_full%nq
         iqp = iq + in_grid_full%iq0
@@ -572,10 +582,21 @@ contains
         if(single_sample) call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf0)
         !
         if(single_sample) then
-          Gf_conf = Gf0i - V(:,:,1)
-          call invzmat(S%nat3*Nc, Gf_conf)
-          Gf_avg = Gf0 * (1-Nc*conc*n_eq_sites) + Gf_conf * (Nc * conc * n_eq_sites)
-          !> self energy is G0_cluster^-1 - <G>^-1
+          ! In the dilute branch V(:,:,1) represents one defect fixed at the
+          ! cluster origin.  Its cluster-momentum matrix elements contain a
+          ! factor 1/Nc, so Nc*c_eff is required in the numerator to account
+          ! for all translated defect positions.  The ATA overcounting
+          ! correction, however, is local and must contain the probability
+          ! c_eff = conc*n_eq_sites that a primitive cell is defective, not
+          ! the probability Nc*c_eff that the whole cluster contains a defect.
+          !
+          ! Sigma = Nc*c_eff*V [1-(1-c_eff)*G0*V]^{-1}
+          Gf_conf = matmul(Gf0, V(:,:,1))
+          Gf_avg = id_mat(S%nat3*Nc) - &
+            (1._dp-conc*n_eq_sites) * Gf_conf
+          call invzmat(S%nat3*Nc, Gf_avg)
+          Gf_conf = matmul(Nc*conc*n_eq_sites*V(:,:,1), Gf_avg)
+          Gi_avg = unflatten_RR_cmplx(Gf_conf, Nc, Nc)
         else
           Gf_avg = 0.0_dp
           do it = 1+my_id, NSAMPLES, num_procs
@@ -590,13 +611,17 @@ contains
           enddo
           call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf_avg)
           Gf_avg = Gf_avg / real(NSAMPLES, dp)
+          !> self energy is G0_cluster^-1 - <G>^-1
+          call invzmat(S%nat3*Nc, Gf_avg)
+          Gi_avg = unflatten_RR_cmplx(Gf_avg, Nc, Nc)
         endif
         !
-        !> self energy is G0_cluster^-1 - <G>^-1
-        Gi_avg = unflatten_RR_cmplx(Gf_avg, Nc, Nc)
         do iq = 1, Nc
-          call invzmat(S%nat3, Gi_avg(:,:,iq,iq))
-          self_next(:,:,iq) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
+          if(single_sample) then
+            self_next(:,:,iq) = Gi_avg(:,:,iq,iq)
+          else
+            self_next(:,:,iq) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
+          endif
           call apply_sym_q(S, xq(:,iq), self_next(:,:,iq))
           call flip_positive_imag_eigs(S%nat3, self_next(:,:,iq))
         enddo

@@ -521,7 +521,7 @@ CONTAINS
     gamma = ALL( ABS(cq-NINT(cq))<epsq)
     IF( gamma )THEN
       freq(1:3) = 0._dp
-      if(present(U)) U(:,1:3) = (0._dp, 0._dp)
+      !if(present(U)) U(:,1:3) = (0._dp, 0._dp)
     ENDIF
 
     chk(:) = cq(:)*fc2%nq(:)

@@ -430,7 +430,15 @@ contains
         enddo
       enddo
       !
-      V__ = VK + wg%en(iw)**2 * VM
+      if(.not. contain(input%mode, "mass") .and. .not. contain(input%mode, "fc")) then
+        V__ = VK + VM * wg%en(iw)**2
+      elseif(contain(input%mode, "mass")) then
+        V__ = VM * wg%en(iw)**2
+      elseif(contain(input%mode, "fc")) then
+        V__ = VK
+      else
+        call errore("full_born_center", "invalid mode for DCA self-energy calculation", 1)
+      endif
       call zgemm_N(N, g0__, V__, gV__)
       !
       I_gV__ = id_mat(N) - gV__ * (1-c)
