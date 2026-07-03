@@ -437,21 +437,7 @@ contains
         enddo
       enddo
       !
-      do
-        impurity_site = .false.
-        do it = 1, NSAMPLES_LOCAL
-          do iR = 1, Nc
-            do idef = 1, n_eq_sites
-              na_def = fc2_sc%defects(1,idef)
-              call sample_defect(conc, impurity_site(na_def,iR,it))
-            enddo
-          enddo
-        enddo
-
-        ntot = count(impurity_site)
-        call mpi_bsum(ntot)
-        if (ntot == nint(real(NSAMPLES*Nc*n_eq_sites, dp) * conc)) exit
-      enddo
+      call sample_fixed_concentration(conc, impurity_site, ntot)
       !
       if(ionode) print*, "found sampling with concentration:", &
         ntot / real(NSAMPLES*Nc*n_eq_sites, dp)
@@ -763,19 +749,60 @@ contains
       enddo
     end subroutine
     !
-    subroutine sample_defect(c, defect_here)
+    subroutine sample_fixed_concentration(c, defect_sites, n_selected)
       real(dp), intent(in) :: c
-      logical, intent(out) :: defect_here
+      logical, intent(out) :: defect_sites(:,:,:)
+      integer, intent(out) :: n_selected
       !
+      integer, allocatable :: selected_sites(:), permutation(:)
+      integer :: i, j, tmp, site, idef_site, iR_site, global_sample, local_sample
+      integer :: n_available, n_target, sample_offset
       real(dp) :: random_value
       !
-      call random_number(random_value)
-      if(random_value < c) then
-        defect_here = .true.
-      else
-        defect_here = .false.
+      n_available = NSAMPLES * Nc * n_eq_sites
+      n_target = nint(real(n_available, dp) * c)
+      if(n_target < 0 .or. n_target > n_available) &
+        call errore("sample_fixed_concentration", "concentration must be between zero and one", 1)
+
+      allocate(selected_sites(n_target))
+      if(ionode) then
+        allocate(permutation(n_available))
+        permutation = [(i, i=1,n_available)]
+        ! The first n_target entries of a partial Fisher-Yates shuffle are
+        ! a uniform sample without replacement.
+        do i = 1, n_target
+          call random_number(random_value)
+          j = i + int(random_value * real(n_available-i+1, dp))
+          tmp = permutation(i)
+          permutation(i) = permutation(j)
+          permutation(j) = tmp
+        enddo
+        selected_sites = permutation(:n_target)
+        deallocate(permutation)
       endif
-    end subroutine sample_defect
+      if(n_target > 0) call mpi_broadcast(n_target, selected_sites)
+
+      defect_sites = .false.
+      sample_offset = my_id * (NSAMPLES / num_procs) + &
+        min(my_id, mod(NSAMPLES, num_procs))
+      do i = 1, n_target
+        site = selected_sites(i) - 1
+        idef_site = mod(site, n_eq_sites) + 1
+        site = site / n_eq_sites
+        iR_site = mod(site, Nc) + 1
+        global_sample = site / Nc + 1
+        if(global_sample > sample_offset .and. &
+          global_sample <= sample_offset + NSAMPLES_LOCAL) then
+          local_sample = global_sample - sample_offset
+          defect_sites(fc2_sc%defects(1,idef_site),iR_site,local_sample) = .true.
+        endif
+      enddo
+      deallocate(selected_sites)
+      n_selected = count(defect_sites)
+      call mpi_bsum(n_selected)
+      if(n_selected /= n_target) &
+        call errore("sample_fixed_concentration", "failed to distribute the selected defects", 1)
+    end subroutine sample_fixed_concentration
     !
   end subroutine
   !
