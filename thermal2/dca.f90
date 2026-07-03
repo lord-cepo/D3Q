@@ -220,7 +220,7 @@ contains
     integer, allocatable, dimension(:) :: pos, c_equiv, iq_of, ind, equiv_full, equiv
     integer, allocatable, dimension(:,:) :: kq
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
-      it, NSAMPLES, MAXITER, sc_iter, MEMORY, NQ, kkq, na1, na2, j1, j2, &
+      it, NSAMPLES, NSAMPLES_LOCAL, MAXITER, sc_iter, MEMORY, NQ, kkq, na1, na2, j1, j2, &
       cluster_mesh(3), iqp, N_ITER_TOT, iR, jR, Q_mesh(3), ntot
     real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff, max_diff_coarse
     real(dp) :: dos(input%n_omega), shift(3), simulated_conc
@@ -248,6 +248,10 @@ contains
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
     NSAMPLES = 100
+    ! Configurations are independent until their Green functions are summed,
+    ! so each MPI rank only stores the configurations that it processes.
+    NSAMPLES_LOCAL = NSAMPLES / num_procs
+    if(my_id < mod(NSAMPLES, num_procs)) NSAMPLES_LOCAL = NSAMPLES_LOCAL + 1
     NQ = product(input%nk_in) / Nc
     Q_mesh = input%nk_in / cluster_mesh
     xq = grid_vec_cart(cluster_mesh, S%bg, divide=.true.)
@@ -347,6 +351,8 @@ contains
     !
     if(ionode) print*, "DCA cluster size:", Nc
     if(ionode) print*, "number of configurations to be averaged:", NSAMPLES
+    if(ionode) print*, "maximum configurations stored per process:", &
+      (NSAMPLES + num_procs - 1) / num_procs
     !
     allocate(self_out_diag(S%nat3,out_grid%nqtot,input%n_omega))
     allocate(UT_out(S%nat3,S%nat3,out_grid%nqtot), U_out(S%nat3,S%nat3,out_grid%nqtot))
@@ -409,9 +415,9 @@ contains
       enddo
     else
       allocate(phases(Nc, Nc, Nc))
-      allocate(phase_mat(Nc, Nc, S%nat, NSAMPLES))
-      allocate(mass_phase_mat(Nc, Nc, S%nat, NSAMPLES))
-      allocate(impurity_site(S%nat,Nc, NSAMPLES))
+      allocate(phase_mat(Nc, Nc, S%nat, NSAMPLES_LOCAL))
+      allocate(mass_phase_mat(Nc, Nc, S%nat, NSAMPLES_LOCAL))
+      allocate(impurity_site(S%nat,Nc, NSAMPLES_LOCAL))
       allocate(site_mass_eps(S%nat,Nc))
       phase_mat = 0.0_dp
       mass_phase_mat = 0.0_dp
@@ -433,7 +439,7 @@ contains
       !
       do
         impurity_site = .false.
-        do it = 1 + my_id, NSAMPLES, num_procs
+        do it = 1, NSAMPLES_LOCAL
           do iR = 1, Nc
             do idef = 1, n_eq_sites
               na_def = fc2_sc%defects(1,idef)
@@ -450,7 +456,7 @@ contains
       if(ionode) print*, "found sampling with concentration:", &
         ntot / real(NSAMPLES*Nc*n_eq_sites, dp)
 
-      do it = 1+my_id, NSAMPLES, num_procs
+      do it = 1, NSAMPLES_LOCAL
         site_mass_eps = 0._dp
         do ipos = 1, Nc
           do na1 = 1, S%nat
@@ -486,12 +492,12 @@ contains
       enddo
       deallocate(phases)
       !
-      allocate(VK(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
-      allocate(VM(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
-      allocate(V(S%nat3*Nc, S%nat3*Nc, NSAMPLES))
+      allocate(VK(S%nat3*Nc, S%nat3*Nc, NSAMPLES_LOCAL))
+      allocate(VM(S%nat3*Nc, S%nat3*Nc, NSAMPLES_LOCAL))
+      allocate(V(S%nat3*Nc, S%nat3*Nc, NSAMPLES_LOCAL))
       VK = 0._dp
       VM = 0._dp
-      do it = 1+my_id, NSAMPLES, num_procs
+      do it = 1, NSAMPLES_LOCAL
         do jq = 1, Nc
           do iq = 1, Nc
             do na1 = 1, S%nat
@@ -509,6 +515,7 @@ contains
           enddo
         enddo
       enddo
+      deallocate(phase_mat, mass_phase_mat, impurity_site, site_mass_eps)
       !
     endif
     !
@@ -599,7 +606,7 @@ contains
           Gi_avg = unflatten_RR_cmplx(Gf_conf, Nc, Nc)
         else
           Gf_avg = 0.0_dp
-          do it = 1+my_id, NSAMPLES, num_procs
+          do it = 1, NSAMPLES_LOCAL
             ! > construction of G_conf for a given configuration
             ! Gi_conf = 0.0_dp
             !
