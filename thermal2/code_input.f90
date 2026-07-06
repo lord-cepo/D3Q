@@ -111,6 +111,7 @@ MODULE code_input
     LOGICAL :: restart
     integer, allocatable :: sites(:)
     integer :: dca_grid(3)
+    integer :: n_samples
 !
   END TYPE code_input_type
 
@@ -167,6 +168,7 @@ CONTAINS
     INTEGER            :: nk_in(3) = (/-1, -1, -1/)  ! inner integration grid, only for tk_sma
     integer            :: sc_grid(3) = (/-1, -1, -1/)         ! supercell grid
     integer            :: dca_grid(3) = (/-1, -1, -1/)         ! supercell grid
+    integer            :: n_samples = -1
     LOGICAL            :: exp_t_factor = .false.     ! add elastic peak of raman, only in spectre calculation
     CHARACTER(9)   :: sort_freq = "default"      ! how to sort frequencies (default, overlap, shifted, reference)
     REAL(DP)           :: xq_ref(3) = 0._dp          ! reference point when sorting by reference
@@ -255,7 +257,8 @@ CONTAINS
     !
     NAMELIST /definput / &
       calculation, mode, file_mat2, file_mat3, outdir, prefix, asr2, asr3, sc_grid, e0, &
-      nk, n_omega, use_symm, delta_approx, conc, dca_grid, isotope_scattering, impurity_element
+      nk, n_omega, use_symm, delta_approx, conc, dca_grid, isotope_scattering, &
+      impurity_element, n_samples
     NAMELIST  / lwinput / &
       calculation, outdir, prefix, &
       file_mat2, file_mat3, asr2, &
@@ -413,6 +416,7 @@ CONTAINS
     input%asr3                         =  asr3
     input%sc_grid                      =  sc_grid
     input%dca_grid                     =  dca_grid
+    input%n_samples                    =  n_samples
     input%delta_approx                 =  delta_approx
     input%n_omega                      =  n_omega
     input%conc                         =  conc
@@ -1014,6 +1018,7 @@ CONTAINS
       CALL mpi_broadcast(3,nk_in)
       call mpi_broadcast(3, sc_grid)
       call mpi_broadcast(3, dca_grid)
+      call mpi_broadcast(n_samples)
       CALL mpi_broadcast(nq)
       CALL mpi_broadcast(outdir)
       CALL mpi_broadcast(prefix)

@@ -247,7 +247,16 @@ contains
     cluster_mesh = input%dca_grid
     Nc = product(cluster_mesh) !* size(fc2_sc%defects,2)
     n_eq_sites = size(fc2_sc%defects,2)
-    NSAMPLES = 100
+    if(input%n_samples > 0) then
+      NSAMPLES = input%n_samples
+    else
+      if(num_procs > 1) then
+        NSAMPLES = 3 * num_procs
+      else
+        NSAMPLES = 100
+      endif
+    endif
+    if(ionode) print*, "Number of samples requested:", NSAMPLES
     ! Configurations are independent until their Green functions are summed,
     ! so each MPI rank only stores the configurations that it processes.
     NSAMPLES_LOCAL = NSAMPLES / num_procs
