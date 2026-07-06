@@ -21,8 +21,212 @@ module symm_q_mat
   !
   ! We want to compute: phi (the perfectly averaged matrix at xq)
   ! ====================================================================
-  public :: apply_sym, apply_sym_q
+  public :: apply_sym, apply_sym_q, apply_sym_q_full
+  public :: get_symmetry_q_star, apply_sym_q_star
 contains
+  !
+  subroutine get_symmetry_q_star(Sph, xq_, xq_star)
+    !-----------------------------------------------------------------------
+    !! Return the unique crystal-symmetry star of xq_.  The coordinates use
+    !! the same Cartesian reciprocal-space convention as xq_.
+    type(ph_system_info), intent(in) :: Sph
+    real(dp), intent(in) :: xq_(3)
+    real(dp), allocatable, intent(out) :: xq_star(:,:)
+    !
+    integer :: isq(48), imq, nstar, nat
+    real(dp) :: sxq(3,48)
+    real(dp), allocatable :: m_loc(:,:)
+    !
+    at = Sph%at
+    bg = Sph%bg
+    ityp = Sph%ityp
+    tau = Sph%tau
+    nat = Sph%nat
+    !
+    allocate(m_loc(3,nat))
+    m_loc = 0._dp
+    call set_sym_bl()
+    call find_sym(nat, tau, ityp, .false., m_loc)
+    call inverse_s()
+    call star_q(xq_, at, bg, nsym, s, invs, nstar, sxq, isq, imq, .false.)
+    !
+    allocate(xq_star(3,nstar))
+    xq_star = sxq(:,1:nstar)
+    deallocate(m_loc)
+  end subroutine get_symmetry_q_star
+  !
+  subroutine apply_sym_q_star(Sph, xq_, xq_star, dyn_star, dyn_avg)
+    !-----------------------------------------------------------------------
+    !! Symmetrize a q-dependent matrix from explicitly calculated matrices
+    !! on the unique symmetry star of xq_.
+    !!
+    !! Use get_symmetry_q_star first, calculate dyn_star(:,:,iq) at every
+    !! returned xq_star(:,iq), and then call this routine.  For every crystal
+    !! operation, the corresponding star matrix is transported back to xq_
+    !! with the inverse operation.  The final average includes all symmetry
+    !! operations, including the multiplicity of operations producing the
+    !! same unique star point.
+    type(ph_system_info), intent(in) :: Sph
+    real(dp), intent(in) :: xq_(3)
+    real(dp), intent(in) :: xq_star(:,:)
+    complex(dp), intent(in) :: dyn_star(:,:,:)
+    complex(dp), intent(out) :: dyn_avg(:,:)
+    !
+    integer :: isq(48), imq, nstar, nat
+    integer :: isym, iq, jq
+    integer :: input_index(48)
+    real(dp) :: sxq(3,48), diff(3)
+    real(dp), allocatable :: m_loc(:,:)
+    complex(dp), allocatable :: phi_star(:,:,:,:,:)
+    complex(dp) :: phi_avg(3,3,Sph%nat,Sph%nat)
+    complex(dp) :: d2(3*Sph%nat,3*Sph%nat)
+    logical :: found
+    !
+    nat = Sph%nat
+    if (size(xq_star,1) /= 3) &
+      call errore("apply_sym_q_star", "xq_star must have shape (3,nstar)", 1)
+    if (size(dyn_star,1) /= 3*nat .or. size(dyn_star,2) /= 3*nat) &
+      call errore("apply_sym_q_star", "wrong dyn_star matrix size", 1)
+    if (size(dyn_star,3) /= size(xq_star,2)) &
+      call errore("apply_sym_q_star", "inconsistent number of star matrices", 1)
+    if (size(dyn_avg,1) /= 3*nat .or. size(dyn_avg,2) /= 3*nat) &
+      call errore("apply_sym_q_star", "wrong output matrix size", 1)
+    !
+    at = Sph%at
+    bg = Sph%bg
+    ityp = Sph%ityp
+    tau = Sph%tau
+    !
+    if (allocated(rtau)) then
+      if (size(rtau,3) /= nat) then
+        deallocate(rtau)
+        allocate(rtau(3,48,nat))
+      endif
+    else
+      allocate(rtau(3,48,nat))
+    endif
+    allocate(m_loc(3,nat))
+    m_loc = 0._dp
+    call set_sym_bl()
+    call find_sym(nat, tau, ityp, .false., m_loc)
+    call inverse_s()
+    call sgam_lr(at, bg, nsym, s, irt, tau, rtau, nat)
+    call star_q(xq_, at, bg, nsym, s, invs, nstar, sxq, isq, imq, .false.)
+    !
+    if (size(xq_star,2) /= nstar) &
+      call errore("apply_sym_q_star", "wrong number of q points in the star", 1)
+    !
+    ! Match the supplied points to star_q's canonical ordering. Reciprocal
+    ! lattice translations are allowed in the comparison.
+    input_index(1:nstar) = 0
+    do iq = 1, nstar
+      found = .false.
+      do jq = 1, nstar
+        diff = cryst2cart(sxq(:,iq)-xq_star(:,jq), at, -1)
+        if (norm2(diff-nint(diff)) < 1.e-5_dp) then
+          input_index(iq) = jq
+          found = .true.
+          exit
+        endif
+      enddo
+      if (.not. found) &
+        call errore("apply_sym_q_star", "input point is not in the q star", iq)
+    enddo
+    !
+    allocate(phi_star(3,3,nat,nat,nstar))
+    do jq = 1, nstar
+      d2 = dyn_star(:,:,jq)
+      call scompact_dyn(nat, d2, phi_star(:,:,:,:,jq))
+      call trntnsc_ats(phi_star(:,:,:,:,jq), at, bg, -1)
+    enddo
+    !
+    phi_avg = (0._dp,0._dp)
+    do isym = 1, nsym
+      iq = isq(isym)
+      jq = input_index(iq)
+      ! invs(isym) maps the matrix at sxq(:,iq) back to xq_.  The phase
+      ! convention of rotate_and_add_dyn uses the destination wavevector.
+      call rotate_and_add_dyn(phi_star(:,:,:,:,jq), phi_avg, nat, &
+        invs(isym), s, invs, irt, rtau, xq_)
+    enddo
+    phi_avg = phi_avg / real(nsym,dp)
+    !
+    call trntnsc_ats(phi_avg, at, bg, +1)
+    call compact_dyn(nat, d2, phi_avg)
+    dyn_avg = d2
+    !
+    deallocate(phi_star, m_loc)
+  end subroutine apply_sym_q_star
+  !
+  subroutine apply_sym_q_full(Sph, xq_, dyn)
+    !-----------------------------------------------------------------------
+    !! Full space-group average of a q-independent Cartesian operator.
+    !!
+    !! apply_sym_q projects only on the little group of xq_.  Here every
+    !! crystal symmetry is included.  Each contribution is the symmetry
+    !! image at xq_ of the same raw operator at the inverse-rotated q point.
+    !! The number of terms is therefore independent of xq_, and the result
+    !! is a continuous, space-group-covariant matrix along a q path.
+    !!
+    !! This interface is valid when dyn is q independent, as for the local
+    !! analytical T matrix.  For a genuinely q-dependent matrix, use
+    !! get_symmetry_q_star followed by apply_sym_q_star, or apply_sym on a
+    !! complete symmetry-closed grid.
+    type(ph_system_info), intent(in) :: Sph
+    real(dp), intent(in) :: xq_(3)
+    complex(dp), intent(inout) :: dyn(:,:)
+    !
+    integer :: isym, nat
+    real(dp), allocatable :: m_loc(:,:)
+    complex(dp) :: phi(3,3,Sph%nat,Sph%nat)
+    complex(dp) :: phi_avg(3,3,Sph%nat,Sph%nat)
+    complex(dp) :: d2(3*Sph%nat,3*Sph%nat)
+    !
+    if (size(dyn,1) /= 3*Sph%nat .or. size(dyn,2) /= 3*Sph%nat) &
+      call errore("apply_sym_q_full", "wrong matrix size", 1)
+    !
+    at = Sph%at
+    bg = Sph%bg
+    ityp = Sph%ityp
+    tau = Sph%tau
+    nat = Sph%nat
+    !
+    if (allocated(rtau)) then
+      if (size(rtau,3) /= nat) then
+        deallocate(rtau)
+        allocate(rtau(3,48,nat))
+      endif
+    else
+      allocate(rtau(3,48,nat))
+    endif
+    allocate(m_loc(3,nat))
+    m_loc = 0._dp
+    !
+    d2 = dyn
+    call scompact_dyn(nat, d2, phi)
+    call trntnsc_ats(phi, at, bg, -1)
+    !
+    call set_sym_bl()
+    call find_sym(nat, tau, ityp, .false., m_loc)
+    call inverse_s()
+    call sgam_lr(at, bg, nsym, s, irt, tau, rtau, nat)
+    !
+    phi_avg = (0._dp,0._dp)
+    do isym = 1, nsym
+      ! Includes the Cartesian rotation, atom permutation, and the
+      ! exp[-i q.(R_a-R_b)] phase from fractional translations.
+      call rotate_and_add_dyn(phi, phi_avg, nat, isym, s, invs, irt, &
+        rtau, xq_)
+    enddo
+    phi_avg = phi_avg / real(nsym,dp)
+    !
+    call trntnsc_ats(phi_avg, at, bg, +1)
+    call compact_dyn(nat, d2, phi_avg)
+    dyn = d2
+    !
+    deallocate(m_loc)
+  end subroutine apply_sym_q_full
+  !
 subroutine apply_sym_q(Sph, xq_, dyn)
     type(ph_system_info), intent(in) :: Sph
     real(dp), intent(in) :: xq_(3)
@@ -81,33 +285,39 @@ subroutine apply_sym_q(Sph, xq_, dyn)
     deallocate(m_loc)
   end subroutine
   !
-  subroutine apply_sym(at_, bg_, nat, ityp_, tau_, dyn_in, equiv, grid, average)
-    real(dp), intent(in) :: at_(3,3), bg_(3,3)
-    integer, intent(in) :: nat
-    real(dp), intent(in) :: tau_(3,nat)
-    integer, intent(in) :: ityp_(nat)
+  subroutine apply_sym(Sph, dyn_in, equiv, grid, average)
+    type(ph_system_info), intent(in) :: Sph
     integer, intent(in) :: equiv(:)
     real(dp), intent(in) :: grid(:,:)
     complex(dp), allocatable, intent(inout) :: dyn_in(:,:,:)
     logical, intent(in) :: average
     !
+    integer :: nat
     real(dp) :: sxq(3,48), diff(3), xq(3)
     logical :: sym(48)
     logical :: found
     integer :: isym, iq, i, j, nqs, iiq, iq_sym
     integer :: nq, iq_irr, isq(48), iq_isym, nq_irr, invsm, imq
-    complex(dp) :: phi_in(3,3,nat,nat, size(dyn_in,3))
-    complex(DP) :: phi_tmp(3,3,nat,nat), d2(3*nat, 3*nat)
+    complex(dp) :: phi_in(3,3,Sph%nat,Sph%nat, size(dyn_in,3))
+    complex(DP) :: phi_tmp(3,3,Sph%nat,Sph%nat), d2(Sph%nat3, Sph%nat3)
     complex(DP), allocatable :: phi_avg(:,:,:,:,:), dyn_star(:,:,:)
     real(dp), allocatable :: m_loc(:,:)
     integer, allocatable :: irr_map(:)
     !
-    at = at_
-    bg = bg_
-    ityp = ityp_
-    tau = tau_
+    at = Sph%at
+    bg = Sph%bg
+    ityp = Sph%ityp
+    tau = Sph%tau
+    nat = Sph%nat
     !
-    if(.not. allocated(rtau)) allocate(rtau(3, 48, nat))
+    if(allocated(rtau)) then
+      if(size(rtau, 3) /= nat) then
+        deallocate(rtau)
+        allocate(rtau(3, 48, nat))
+      endif
+    else
+      allocate(rtau(3, 48, nat))
+    endif
     ALLOCATE(m_loc(3,nat))
     m_loc = 0._dp
     do iq = 1, size(dyn_in, 3)
@@ -126,6 +336,7 @@ subroutine apply_sym_q(Sph, xq_, dyn)
     ! ~~~~~~~~ setup crystal symmetry ~~~~~~~~
     CALL set_sym_bl ( )
     CALL find_sym ( nat, tau, ityp, .false., m_loc )
+    CALL inverse_s ( )
     !
     CALL sgam_lr(at, bg, nsym, s, irt, tau, rtau, nat)
     !
@@ -139,7 +350,8 @@ subroutine apply_sym_q(Sph, xq_, dyn)
       end if
       !
       if(average) then
-        CALL star_q(grid(:,iq_irr), at, bg, nsym, s, invs, nqs, sxq, isq, imq, .false. )
+        xq = grid(:,iq_irr)
+        CALL star_q(xq, at, bg, nsym, s, invs, nqs, sxq, isq, imq, .false. )
         ! Loop over all symmetry operations of the crystal
         do isym = 1, nsym
           ! Find which q-point in the star this symmetry operation generates
@@ -163,10 +375,10 @@ subroutine apply_sym_q(Sph, xq_, dyn)
 
           ! 3. Rotate it BACK to the irreducible point xq
           ! We use the INVERSE operation (invs(isym)) to map q_eq -> xq.
-          ! Note: rotate_and_add_dyn handles the rtau phases internally.
-          ! The last argument is the wavevector we are coming FROM (sxq(:, iq)).
+          ! rotate_and_add_dyn handles the rtau phases internally.  For the
+          ! inverse operation its last argument is the destination/reference q.
           call rotate_and_add_dyn (phi_in(:,:,:,:,iq_isym), phi_avg(:,:,:,:,equiv(iq_irr)), &
-            nat, invs(isym), s, invs, irt, rtau, sxq(:,isq(isym)) )
+            nat, invs(isym), s, invs, irt, rtau, xq )
         enddo
       endif
       ! ====================================================================

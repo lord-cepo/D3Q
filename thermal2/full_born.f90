@@ -20,6 +20,7 @@ module full_born
   use test_print, only: allclose
   use simtet, only: tetra_init_sym_cmplx, tetra_weights_green_cmplx
   use ph_velocity, only : velocity
+  use symm_q_mat, only: apply_sym_q_full
   !
 contains
   !
@@ -214,13 +215,13 @@ contains
     !
   end subroutine
   !
-  subroutine full_born_analytical(input, S, fc2, grid, out_grid)
+  subroutine full_born_analytical(input, S, fc2, grid, sym_grid, out_grid)
     use constants, only: RY_TO_CMM1
     !
     type(code_input_type), intent(in) :: input
     type(ph_system_info), intent(in) :: S
     type(forceconst2_grid), intent(in) :: fc2
-    type(q_grid), intent(in) :: grid, out_grid
+    type(q_grid), intent(in) :: grid, sym_grid, out_grid
     !
     real(dp) :: freqs(S%nat3, grid%nqtot)
     complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
@@ -229,14 +230,19 @@ contains
     integer :: iq, ibnd, iw
     real(dp) :: epsilon
     real(dp) :: Vb(S%nat3,S%nat3), V(S%nat3,S%nat3)
-    complex(dp) :: I_gV(S%nat3,S%nat3), T(S%nat3,S%nat3)
+    !
+    complex(dp) :: I_gV(S%nat3,S%nat3), T(S%nat3,S%nat3), A(S%nat3,S%nat3)
     complex(dp) :: Tq(S%nat3,out_grid%nqtot,input%n_omega)
     complex(dp) :: lws(S%nat3, out_grid%nqtot)
     character(20) :: filename
     complex(dp) :: outer_products(S%nat3,S%nat3,S%nat3,grid%nqtot)
     !
+    real(dp)    :: out_freqs(S%nat3,out_grid%nqtot)
+    complex(dp) :: out_Us(S%nat3,S%nat3,out_grid%nqtot)
+    !
+    call freq_in_grid(S, fc2, out_grid, out_freqs, out_Us)
     call freq_in_grid(S, fc2, grid, freqs, Us)
-    call set_wg(S, fc2, grid, input, wg)
+    call set_wg(S, fc2, sym_grid, input, wg, mult = 1.25_dp)
     !
     print*, "max freq", wg%en(input%n_omega) * RY_TO_CMM1
     Vb = 0.0_dp
@@ -265,21 +271,23 @@ contains
       call invzmat(S%nat3, I_gV )
       T = matmul(V, I_gV)
       do iq = 1, out_grid%nqtot
+        A = T
+        call apply_sym_q_full(S, out_grid%xq(:,iq), A)
         do ibnd = 1, S%nat3
-          Tq(ibnd,iq,iw) = braket(Us(:,ibnd,iq), T)
+          Tq(ibnd,iq,iw) = braket(out_Us(:,ibnd,iq), A)
         enddo
+        call merge_degen(S%nat3, Tq(:,iq,iw), out_freqs(:,iq))
       enddo
       !
     enddo
     !
-    do ibnd = 1, S%nat3
-      write(filename, "(A3,I1,A4)") "fba", ibnd, ".dat"
-      open(124, file=filename)
-      do iw = 1, input%n_omega
-        write(124, "(1200E20.8)") aimag(Tq(ibnd,:,iw))
+    open(124, file="fba.dat")
+    do iw = 1, input%n_omega
+      do iq = 1, out_grid%nqtot
+        write(124, "(E20.8, I5, E20.8)") wg%en(iw)*RY_TO_CMM1, iq, aimag(Tq(1,iq,iw))
       enddo
-      close(124)
     enddo
+    close(124)
     !
   end subroutine
 end module

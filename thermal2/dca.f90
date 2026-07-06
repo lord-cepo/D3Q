@@ -1,6 +1,6 @@
 module dca
   use kinds, only: dp
-  use symm_q_mat, only : apply_sym_q, apply_sym
+  use symm_q_mat, only : apply_sym
   use thtetra, only: tetra_init_sym, tetra_init, tetra_weights_green, &
     deallocate_tetra, tetra_output, set_wg, equiv_grid
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
@@ -210,9 +210,9 @@ contains
     complex(dp), allocatable, dimension(:,:,:) :: &
       self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, &
       self_out_diag, self_before, self_next, G0i_cluster, Gi_coarse, &
-      Gi, VM, VK, V, phases
+      Gi, VM, VK, V, phases, G_avg
     complex(dp), allocatable, dimension(:,:,:,:) :: &
-      Gi_avg, phase_mat, mass_phase_mat, self_out_grid, c_out
+      phase_mat, mass_phase_mat, self_out_grid, c_out
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs
     real(dp), allocatable, dimension(:,:) :: xq, R, f, out_freqs, site_mass_eps
     real(dp), allocatable, dimension(:) :: host_isotope_mass, host_isotope_conc, &
@@ -368,7 +368,7 @@ contains
     allocate(Gf0(S%nat3*Nc, S%nat3*Nc))
     allocate(Gf_conf(S%nat3*Nc, S%nat3*Nc))
     allocate(Gf_avg(S%nat3*Nc, S%nat3*Nc))
-    allocate(Gi_avg(S%nat3, S%nat3, Nc, Nc))
+    allocate(G_avg(S%nat3, S%nat3, Nc))
     allocate(Gi_coarse(S%nat3, S%nat3, Nc))
     allocate(G0i_cluster(S%nat3, S%nat3, Nc))
     allocate(self_fine(S%nat3, S%nat3, in_grid%nqtot))
@@ -393,6 +393,8 @@ contains
     ! Explicit isotope disorder is present on every site, so it must always be
     ! configuration-averaged even when the impurity concentration is dilute.
     single_sample = Nc * n_eq_sites * conc < 1._dp
+    if(single_sample) &
+      call errore("dca_selfnrg", "less than one defect per configuration, please use fb", 1)
     !
     if(single_sample) then
       if(input%isotope_scattering) &
@@ -585,11 +587,11 @@ contains
           !
           ! Sigma = Nc*c_eff*V [1-(1-c_eff)*G0*V]^{-1}
           Gf_conf = matmul(Gf0, V(:,:,1))
-          Gf_avg = id_mat(S%nat3*Nc) - &
-            (1._dp-conc*n_eq_sites) * Gf_conf
+          Gf_avg = id_mat(S%nat3*Nc) - (1._dp-conc*n_eq_sites) * Gf_conf
           call invzmat(S%nat3*Nc, Gf_avg)
-          Gf_conf = matmul(Nc*conc*n_eq_sites*V(:,:,1), Gf_avg)
-          Gi_avg = unflatten_RR_cmplx(Gf_conf, Nc, Nc)
+          Gf_avg = matmul(Nc*conc*n_eq_sites*V(:,:,1), Gf_avg)
+          ! Average the fixed defect over cluster translations and its full
+          ! point-group orbit before extracting the momentum-diagonal T.
         else
           Gf_avg = 0.0_dp
           do it = 1, NSAMPLES_LOCAL
@@ -604,22 +606,26 @@ contains
           enddo
           call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf_avg)
           Gf_avg = Gf_avg / real(NSAMPLES, dp)
-          !> self energy is G0_cluster^-1 - <G>^-1
-          call invzmat(S%nat3*Nc, Gf_avg)
-          Gi_avg = unflatten_RR_cmplx(Gf_avg, Nc, Nc)
+
         endif
         !
         do iq = 1, Nc
+          G_avg(:,:,iq) = Gf_avg((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3)
+        enddo
+        call apply_sym(S, G_avg, equiv, xq, .true.)
+        !
+        do iq = 1, Nc
+          call invzmat(S%nat3, G_avg(:,:,iq))
           if(single_sample) then
-            self_next(:,:,iq) = Gi_avg(:,:,iq,iq)
+            self_next(:,:,iq) = G_avg(:,:,iq)
           else
-            self_next(:,:,iq) = G0i_cluster(:,:,iq) - Gi_avg(:,:,iq,iq)
+            self_next(:,:,iq) = G0i_cluster(:,:,iq) - G_avg(:,:,iq)
           endif
-          call apply_sym_q(S, xq(:,iq), self_next(:,:,iq))
+        enddo
+        do iq = 1, Nc
           call flip_positive_imag_eigs(S%nat3, self_next(:,:,iq))
         enddo
         !
-        ! call apply_sym(S%at, S%bg, S%nat, S%ityp, S%tau, self_next, c_equiv, xq, .true.)
         ! self_before = self_next
         ! exit
         delta_out = reshape(self_next, [S%nat3**2*Nc])
@@ -646,7 +652,6 @@ contains
           A = A + self_before(:,:,jq) * c_out(:,:,jq,iq)
         enddo
         call mpi_bsum(S%nat3, S%nat3, A)
-        call apply_sym_q(S, out_grid%xq(:,iq), A)
         ! call invzmat(S%nat3, A)
         ! A = A + ialpha
         self_out_grid(:,:,iq,iw) = matmul(UT_out(:,:,iq), matmul(A, U_out(:,:,iq)))

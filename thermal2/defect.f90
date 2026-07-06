@@ -20,7 +20,7 @@ module defect
   use ph_velocity, only : velocity
   use constants, only : RY_TO_CMM1
   use mpi_thermal, only : my_id, num_procs, mpi_bsum, ionode
-  use symm_q_mat, only : apply_sym_q
+  use symm_q_mat, only : get_symmetry_q_star, apply_sym_q_star
   !
   implicit none
   !
@@ -274,6 +274,9 @@ contains
   !
   subroutine full_born_center(S, input, fc2, fc2_sc, grid, sym_grid, out_grid)
     use quter_defect, only: fc_sc2RR, allocate_fc2_sc
+    type :: q_star_cache_type
+      real(dp), allocatable :: q(:,:)
+    end type q_star_cache_type
     type(ph_system_info), intent(in) :: S
     type(code_input_type), intent(in) :: input
     type(forceconst2_grid), intent(in) :: fc2
@@ -285,7 +288,6 @@ contains
     real(dp) :: c
     integer, pointer :: R_list(:,:), diff_list(:,:)
     integer :: R(3)
-    real(dp), allocatable :: Rij_cart(:,:,:)
     real(dp), allocatable :: diffs(:,:)
     complex(dp), allocatable :: g0(:,:,:)
     complex(dp), allocatable :: T(:,:,:)
@@ -302,7 +304,6 @@ contains
     integer, pointer :: diff_list_large(:,:)
     real(dp), allocatable :: diff_large(:,:)
     integer, allocatable :: iR_large(:,:)
-    complex(dp), allocatable :: phases_out(:,:)
     complex(dp), allocatable :: TRR__(:,:,:)
     !
     complex(dp), allocatable :: VK(:,:), gV__(:,:), g0__(:,:), &
@@ -313,6 +314,9 @@ contains
     real(dp), parameter :: alpha = 1.0_dp
     complex(dp) :: w_self(S%nat3, out_grid%nqtot)
     real(dp) :: dos(input%n_omega)
+    type(q_star_cache_type), allocatable :: out_stars(:)
+    complex(dp) :: T_star(S%nat3,S%nat3,48)
+    integer :: istar, nstar
 
     !
     call set_wg(S, fc2, sym_grid, input, wg)
@@ -355,29 +359,25 @@ contains
       enddo
     enddo
     !
-    allocate(Rij_cart(3,nR,nR))
     allocate(iR_large(nR,nR))
-    allocate(phases_out(nR_large,out_grid%nqtot))
     allocate(TRR__(S%nat3,S%nat3,nR_large))
     allocate(g0_iR(nR_large))
-    do iq = 1, out_grid%nqtot
-      do j = 1, nR
-        do i = 1, nR
-          if (iq == 1) then
-            Rij_cart(:,i,j) = cryst2cart(real(R_list(:,i) - R_list(:,j),dp), S%at, 1)
-            call find_where(R_list(:,i) - R_list(:,j), diff_list_large, iR)
-            iR_large(i,j) = iR
-            R = diff_list_large(:,iR)
-            g0_iR(iR) = v2index_n(bz2simple(R, grid%n), grid%n)
-          endif
-          phases_out(iR_large(i,j),iq) = e_iqr(out_grid%xq(:,iq), -Rij_cart(:,i,j))
-        enddo
+    do j = 1, nR
+      do i = 1, nR
+        call find_where(R_list(:,i) - R_list(:,j), diff_list_large, iR)
+        iR_large(i,j) = iR
+        R = diff_list_large(:,iR)
+        g0_iR(iR) = v2index_n(bz2simple(R, grid%n), grid%n)
       enddo
     enddo
     !
     allocate(diff_large(3,nR_large))
     diff_large = cryst2cart(real(diff_list_large,dp), S%at, 1)
     if(ionode) print*, "Number of unique large diff vectors: ", nR_large
+    allocate(out_stars(out_grid%nqtot))
+    do iq = 1, out_grid%nqtot
+      call get_symmetry_q_star(S, out_grid%xq(:,iq), out_stars(iq)%q)
+    enddo
 
     N = S%nat3 * nR
     allocate(VK(N,N))
@@ -455,12 +455,16 @@ contains
       enddo
       !
       do iq = 1, out_grid%nqtot
-        do iR = 1, nR_large
-          Tq(:,:,iq,iw) = Tq(:,:,iq,iw) + &
-            TRR__(:,:,iR) * &
-            phases_out(iR,iq)
+        nstar = size(out_stars(iq)%q,2)
+        T_star(:,:,1:nstar) = 0._dp
+        do istar = 1, nstar
+          do iR = 1, nR_large
+            T_star(:,:,istar) = T_star(:,:,istar) + TRR__(:,:,iR) * &
+              e_iqr(out_stars(iq)%q(:,istar), -diff_large(:,iR))
+          enddo
         enddo
-        call apply_sym_q(S, out_grid%xq(:,iq), Tq(:,:,iq,iw))
+        call apply_sym_q_star(S, out_grid%xq(:,iq), out_stars(iq)%q, &
+          T_star(:,:,1:nstar), Tq(:,:,iq,iw))
         Tq(:,:,iq,iw) = matmul(out_Us_c(:,:,iq), matmul(Tq(:,:,iq,iw), out_Us(:,:,iq)))
         do ibnd = 1, S%nat3
           self_energy(ibnd,iq,iw) = Tq(ibnd,ibnd,iq,iw)
@@ -561,6 +565,9 @@ contains
   !
   subroutine full_born_periodic(S, input, fc2, fc2_sc, grid, sym_grid, out_grid)
     use defutils, only : flatten_RR_cmplx, flatten_RR_real
+    type :: q_star_cache_type
+      real(dp), allocatable :: q(:,:)
+    end type q_star_cache_type
     type(ph_system_info), intent(in) :: S
     type(code_input_type), intent(in) :: input
     type(forceconst2_grid), intent(in) :: fc2
@@ -568,7 +575,7 @@ contains
     type(q_grid), intent(in) :: grid, sym_grid, out_grid
     !
     integer :: iR1, iR2, iR, nR, nR_large, jR
-    integer :: i, j, iq, ibnd, N
+    integer :: i, j, iq, ibnd, N, istar, nstar
     real(dp) :: c
     integer :: R(3)
     complex(dp), allocatable :: g0(:,:,:,:)
@@ -588,6 +595,8 @@ contains
       I_Sg__(:,:), Gm__(:,:), GVS__(:,:), I_GVS__(:,:), G__(:,:)
     complex(dp) :: w_self(S%nat3, out_grid%nqtot)
     real(dp) :: dos(input%n_omega)
+    type(q_star_cache_type), allocatable :: out_stars(:)
+    complex(dp) :: T_star(S%nat3,S%nat3,48)
     !
     call set_wg(S, fc2, sym_grid, input, wg)
     if(input%calculation == 'dos' .or. input%calculation == 'test') &
@@ -598,6 +607,10 @@ contains
     c = input%conc * size(fc2_sc%defects,2)
     do iq = 1, out_grid%nqtot
       out_Us_c(:,:,iq) = conjg(transpose(out_Us(:,:,iq)))
+    enddo
+    allocate(out_stars(out_grid%nqtot))
+    do iq = 1, out_grid%nqtot
+      call get_symmetry_q_star(S, out_grid%xq(:,iq), out_stars(iq)%q)
     enddo
 
     nR = product(fc2_sc%nq)
@@ -640,14 +653,20 @@ contains
       call zgemm_N(N, c*V__, I_gV__, T__)
       !
       do iq = 1, out_grid%nqtot
-        do jR = 1, nR
-          do iR = 1, nR
-            Tq(:,:,iq,iw) = Tq(:,:,iq,iw) + &
-              T__((iR-1)*S%nat3+1:iR*S%nat3, (jR-1)*S%nat3+1:jR*S%nat3) * &
-              e_iqr(out_grid%xq(:,iq), fc2_sc%xR2(:,jR) - fc2_sc%xR1(:,iR,jR))
+        nstar = size(out_stars(iq)%q,2)
+        T_star(:,:,1:nstar) = 0._dp
+        do istar = 1, nstar
+          do jR = 1, nR
+            do iR = 1, nR
+              T_star(:,:,istar) = T_star(:,:,istar) + &
+                T__((iR-1)*S%nat3+1:iR*S%nat3, (jR-1)*S%nat3+1:jR*S%nat3) * &
+                e_iqr(out_stars(iq)%q(:,istar), &
+                fc2_sc%xR2(:,jR) - fc2_sc%xR1(:,iR,jR))
+            enddo
           enddo
         enddo
-        call apply_sym_q(S, out_grid%xq(:,iq), Tq(:,:,iq,iw))
+        call apply_sym_q_star(S, out_grid%xq(:,iq), out_stars(iq)%q, &
+          T_star(:,:,1:nstar), Tq(:,:,iq,iw))
         Tq(:,:,iq,iw) = matmul(out_Us_c(:,:,iq), matmul(Tq(:,:,iq,iw), out_Us(:,:,iq)))
         do ibnd = 1, S%nat3
           self_energy(ibnd,iq,iw) = Tq(ibnd,ibnd,iq,iw)
