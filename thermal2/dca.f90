@@ -11,7 +11,8 @@ module dca
   use defutils, only : flatten_RR_cmplx, unflatten_RR_cmplx, &
     quter_cmplx, fftinterp_mat2_cmplx, quter_R
   use defect, only : tetra_from_self_cart, write_spf_ndiag, write_spf, &
-    write_self, write_dos, tetra_from_self_diag, find_where, tetra_from_self
+    write_self, write_dos, tetra_from_self_diag, find_where, tetra_from_self, &
+    interpolate_self_on_shell, self_to_scattering_rate_cmm1, write_scattering_rates
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize, setup_simple_grid
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
@@ -233,7 +234,7 @@ contains
     !
     complex(dp), allocatable, dimension(:) :: delta_in, delta_out
     complex(dp), allocatable, dimension(:,:) :: &
-      Gf_conf, Gf_avg, out_den_weights, Gf0i, dv, df, Gf0
+      Gf_conf, Gf_avg, out_den_weights, Gf0i, dv, df, Gf0, self_out_lw
     complex(dp), allocatable, dimension(:,:,:) :: &
       self_fine, U, UT, UT_fine, U_fine, UT_out, U_out, &
       self_out_diag, self_before, self_next, G0i_cluster, Gi_coarse, &
@@ -241,7 +242,7 @@ contains
     complex(dp), allocatable, dimension(:,:,:,:) :: &
       phase_mat, mass_phase_mat, self_out_grid, c_out
     complex(dp), allocatable, dimension(:,:,:,:,:) :: Vqqs
-    real(dp), allocatable, dimension(:,:) :: xq, R, f, out_freqs, site_mass_eps
+    real(dp), allocatable, dimension(:,:) :: xq, R, f, out_freqs, site_mass_eps, scattering_rate
     real(dp), allocatable, dimension(:) :: host_isotope_mass, host_isotope_conc, &
       host_isotope_cdf, impurity_isotope_mass, impurity_isotope_conc, impurity_isotope_cdf
     integer, allocatable, dimension(:) :: pos, c_equiv, iq_of, ind, equiv_full, equiv
@@ -398,6 +399,8 @@ contains
       (NSAMPLES + num_procs - 1) / num_procs
     !
     allocate(self_out_diag(S%nat3,out_grid%nqtot,input%n_omega))
+    allocate(self_out_lw(S%nat3,out_grid%nqtot))
+    allocate(scattering_rate(S%nat3,out_grid%nqtot))
     allocate(UT_out(S%nat3,S%nat3,out_grid%nqtot), U_out(S%nat3,S%nat3,out_grid%nqtot))
     allocate(out_freqs(S%nat3,out_grid%nqtot), self_out_grid(S%nat3,S%nat3,out_grid%nqtot,input%n_omega))
     call freq_in_grid(S, fc2, out_grid, out_freqs, U_out)
@@ -712,6 +715,9 @@ contains
     !
     if(ionode) print*, "Average number of iterations per frequency:", real(N_ITER_TOT,dp) / input%n_omega
     select case(input%calculation)
+     case ('lw')
+      call interpolate_self_on_shell(wg%en, out_freqs, self_out_diag, self_out_lw)
+      call write_lw(out_freqs, self_out_lw, 'lw-dca.dat')
      case ('spf-def')
       call write_spf_ndiag('spf-dca-ndiag.dat', wg%en, self_out_grid, out_freqs)
       call write_spf('spf-dca.dat', wg%en, self_out_diag, out_freqs)

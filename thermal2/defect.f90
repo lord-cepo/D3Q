@@ -313,6 +313,8 @@ contains
     integer, allocatable :: g0_iR(:)
     real(dp), parameter :: alpha = 1.0_dp
     complex(dp) :: w_self(S%nat3, out_grid%nqtot)
+    complex(dp) :: self_lw(S%nat3, out_grid%nqtot)
+    real(dp) :: scattering_rate(S%nat3, out_grid%nqtot)
     real(dp) :: dos(input%n_omega)
     type(q_star_cache_type), allocatable :: out_stars(:)
     complex(dp) :: T_star(S%nat3,S%nat3,48)
@@ -493,6 +495,9 @@ contains
     ! !
     ! call write_file(out_freqs, lws, "spectral-full.dat", out_grid%type)
     select case(input%calculation)
+     case('lw')
+      call interpolate_self_on_shell(wg%en, out_freqs, self_energy, self_lw)
+      call write_lw(out_freqs, self_lw, "self-lw.dat")
      case('self')
       call write_self("self-fb.dat", wg%en, self_energy)
      case('spf-def')
@@ -887,27 +892,66 @@ contains
     !
   end subroutine
   !
-  subroutine write_file(freqs_, lws_, filename_, type)
+  subroutine write_lw(freqs_, lws_, filename_)
     real(dp), intent(in) :: freqs_(:,:)
     complex(dp), intent(in) :: lws_(:,:)
     character(*), intent(in) :: filename_
-    character(*), intent(in) :: type
+    real(dp) :: lw(size(freqs_, 1))
     !
     integer :: iq_, ibnd_
     !
+    if(.not. ionode) return
     open(10, file=filename_)
-    if (trim(type) == 'path') then
-      do iq_ = 1, size(freqs_, 2)
-        write(10, "(1000e14.5)") freqs_(:,iq_), -AIMAG(lws_(:,iq_))
-      enddo
-    else
-      do iq_ = 1, size(freqs_, 2)
-        do ibnd_ = 1, size(freqs_, 1)
-          write(10, "(3E15.5,I2)") freqs_(ibnd_,iq_), lws_(ibnd_,iq_), ibnd_
-        enddo
-      enddo
-    endif
+    do iq_ = 1, size(freqs_, 2)
+      where(freqs_(:,iq_) > 0._dp)
+        lw = -AIMAG(lws_(:,iq_)) / freqs_(:,iq_) * RY_TO_CMM1
+      elsewhere
+        lw = 0._dp
+      endwhere
+      write(10, "(I4,100E20.8)") iq_, freqs_(:,iq_), lw
+    enddo
     close(10)
+  end subroutine
+  !
+  subroutine interpolate_self_on_shell(en, freqs, self_energy, self_on_shell)
+    real(dp), intent(in) :: en(:), freqs(:,:)
+    complex(dp), intent(in) :: self_energy(:,:,:)
+    complex(dp), intent(out) :: self_on_shell(:,:)
+    !
+    integer :: iq_, ibnd_, iw0, nw
+    real(dp) :: omega, weight
+    !
+    nw = size(en)
+    if(size(self_energy,1) /= size(freqs,1) .or. &
+      size(self_energy,2) /= size(freqs,2) .or. &
+      size(self_on_shell,1) /= size(freqs,1) .or. &
+      size(self_on_shell,2) /= size(freqs,2)) &
+      call errore("interpolate_self_on_shell", "inconsistent q/band dimensions", 1)
+    if(size(self_energy,3) /= nw) &
+      call errore("interpolate_self_on_shell", "frequency grid mismatch", 1)
+    if(nw < 2) &
+      call errore("interpolate_self_on_shell", "lw calculation requires n_omega > 1", 1)
+    !
+    do iq_ = 1, size(freqs, 2)
+      do ibnd_ = 1, size(freqs, 1)
+        omega = freqs(ibnd_, iq_)
+        if(omega <= en(1)) then
+          self_on_shell(ibnd_, iq_) = self_energy(ibnd_, iq_, 1)
+        elseif(omega >= en(nw)) then
+          self_on_shell(ibnd_, iq_) = self_energy(ibnd_, iq_, nw)
+        else
+          iw0 = 1
+          do while(iw0 < nw - 1 .and. omega > en(iw0+1))
+            iw0 = iw0 + 1
+          enddo
+          if(abs(en(iw0+1)-en(iw0)) < tiny(1._dp)) &
+            call errore("interpolate_self_on_shell", "degenerate frequency grid", iw0)
+          weight = (omega - en(iw0)) / (en(iw0+1) - en(iw0))
+          self_on_shell(ibnd_, iq_) = (1._dp - weight) * self_energy(ibnd_, iq_, iw0) + &
+            weight * self_energy(ibnd_, iq_, iw0+1)
+        endif
+      enddo
+    enddo
   end subroutine
   !
   subroutine read_lw(filename, nq, nbnd, lws)
