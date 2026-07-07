@@ -441,7 +441,7 @@ contains
       endif
       call zgemm_N(N, g0__, V__, gV__)
       !
-      I_gV__ = id_mat(N) - gV__ * (1-c)
+      I_gV__ = id_mat(N) - gV__ * (1-input%conc)
       call invzmat(N, I_gV__)
       !
       call zgemm_N(N, c*V__, I_gV__, T__)
@@ -647,7 +647,7 @@ contains
       !
       call zgemm_N(N, g0__, V__, gV__)
       !
-      I_gV__ = id_mat(N) - gV__ * (1-c)
+      I_gV__ = id_mat(N) - gV__ * (1-input%conc)
       call invzmat(N, I_gV__)
       !
       call zgemm_N(N, c*V__, I_gV__, T__)
