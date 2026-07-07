@@ -1,6 +1,6 @@
 module dca
   use kinds, only: dp
-  use symm_q_mat, only : apply_sym
+  use symm_q_mat, only : apply_sym, get_symmetry_q_star, apply_sym_q_star
   use thtetra, only: tetra_init_sym, tetra_init, tetra_weights_green, &
     deallocate_tetra, tetra_output, set_wg, equiv_grid
   use fc2_interpolate, only: forceconst2_grid, freq_phq_safe, &
@@ -91,6 +91,29 @@ contains
     enddo
     if (ionode) print"(A,A,E20.8)", name, "-> maximum deviation from Hermiticity:", max_diff
   end subroutine
+  !
+  subroutine check_apply_symmetry(name, S, equiv, grid, matq, iw, sc_iter)
+    character(*), intent(in) :: name
+    type(ph_system_info), intent(in) :: S
+    integer, intent(in) :: equiv(:)
+    real(dp), intent(in) :: grid(:,:)
+    complex(dp), intent(in) :: matq(:,:,:)
+    integer, intent(in) :: iw, sc_iter
+    !
+    complex(dp), allocatable :: mat_sym(:,:,:)
+    real(dp) :: max_diff, rel_diff, scale
+    !
+    allocate(mat_sym(size(matq,1), size(matq,2), size(matq,3)))
+    mat_sym = matq
+    call apply_sym(S, mat_sym, equiv, grid, .true.)
+    max_diff = maxval(abs(mat_sym - matq))
+    scale = max(1._dp, maxval(abs(matq)))
+    rel_diff = max_diff / scale
+    if (ionode) print"(A,A,A,I5,A,I5,A,ES14.6,A,ES14.6)", &
+      "DCA symmetry check ", trim(name), " iw=", iw, " iter=", sc_iter, &
+      " abs=", max_diff, " rel=", rel_diff
+    deallocate(mat_sym)
+  end subroutine check_apply_symmetry
   !
   subroutine flip_positive_imag_eigs(n, mat)
     integer, intent(in) :: n
@@ -190,6 +213,10 @@ contains
   end subroutine
   !
   subroutine dca_selfnrg(S, S_sc, input, fc2, fc2_sc, out_grid)
+    type :: q_star_cache_type
+      real(dp), allocatable :: q(:,:)
+    end type q_star_cache_type
+    !
     type(ph_system_info), intent(in) :: S, S_sc
     type(code_input_type), intent(in) :: input
     type(forceconst2_grid), intent(in) :: fc2
@@ -221,22 +248,29 @@ contains
     integer, allocatable, dimension(:,:) :: kq
     integer :: Nc, idef, ipos, i, j, k, iq, jq, iw, n_eq_sites, &
       it, NSAMPLES, NSAMPLES_LOCAL, MAXITER, sc_iter, MEMORY, NQ, kkq, na1, na2, j1, j2, &
-      cluster_mesh(3), iqp, N_ITER_TOT, iR, jR, Q_mesh(3), ntot
+      cluster_mesh(3), iqp, N_ITER_TOT, iR, jR, Q_mesh(3), ntot, istar, nstar
     real(dp) :: conc, ABS_TOLERANCE, REL_TOLERANCE, ALPHA_MIX, max_diff, max_diff_coarse
     real(dp) :: dos(input%n_omega), shift(3), simulated_conc
-    logical :: conv, single_sample
+    logical :: conv, single_sample, check_symmetry, symmetrize_output
     complex(dp) :: A(S%nat3,S%nat3), eigc(S%nat3)
     logical, allocatable :: impurity_site(:,:,:)
     integer :: host_atom, impurity_atom, host_type, na_def
     real(dp) :: host_reference_mass, host_natural_mass, impurity_natural_mass, output_scale
     character(len=2) :: host_element, impurity_element
     type(q_grid) :: c_grid, in_grid_full
+    type(q_star_cache_type), allocatable :: out_stars(:)
+    complex(dp), allocatable :: self_star(:,:,:)
+    character(len=32) :: env_value
     !
     integer :: defect_idef(S%nat)
     real(dp), allocatable :: img_xR(:,:,:,:), img_weight(:,:,:), xR(:,:)
     integer :: img_nR(S%nat, S%nat), n_tot_sites
     !
     if(input%calculation == "test") call init_random_seed()
+    call get_environment_variable("DCA_CHECK_SYM", env_value)
+    check_symmetry = len_trim(env_value) > 0 .and. trim(env_value) /= "0"
+    call get_environment_variable("DCA_OUTPUT_SYM", env_value)
+    symmetrize_output = .not. (len_trim(env_value) > 0 .and. trim(env_value) == "0")
     !
     MAXITER = 100
     ABS_TOLERANCE = 1e-12_dp
@@ -572,18 +606,24 @@ contains
             call invzmat(S%nat3, A)
             Gi_coarse(:,:,iq) = Gi_coarse(:,:,iq) + A / NQ
           enddo
+        enddo
+        call mpi_bsum(S%nat3, S%nat3, Nc, Gi_coarse)
+        call apply_sym(S, Gi_coarse, c_equiv, xq, .true.)
+        !
+        do iq = 1+my_id, Nc, num_procs
           call invzmat(S%nat3, Gi_coarse(:,:,iq))
           G0i_cluster(:,:,iq) = Gi_coarse(:,:,iq) + self_before(:,:,iq)
-          Gf0i((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = G0i_cluster(:,:,iq)
+        enddo
+        call mpi_bsum(S%nat3, S%nat3, Nc, G0i_cluster)
+        do iq = 1, Nc
+          Gf0i((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = &
+            G0i_cluster(:,:,iq)
           if(single_sample) then
             A = G0i_cluster(:,:,iq)
             call invzmat(S%nat3, A)
             Gf0((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3) = A
           endif
         enddo
-        call mpi_bsum(S%nat3, S%nat3, Nc, G0i_cluster)
-        call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf0i)
-        if(single_sample) call mpi_bsum(S%nat3*Nc, S%nat3*Nc, Gf0)
         !
         if(single_sample) then
           ! In the dilute branch V(:,:,1) represents one defect fixed at the
@@ -621,7 +661,7 @@ contains
         do iq = 1, Nc
           G_avg(:,:,iq) = Gf_avg((iq-1)*S%nat3+1:iq*S%nat3,(iq-1)*S%nat3+1:iq*S%nat3)
         enddo
-        call apply_sym(S, G_avg, equiv, xq, .true.)
+        call apply_sym(S, G_avg, c_equiv, xq, .true.)
         !
         do iq = 1, Nc
           call invzmat(S%nat3, G_avg(:,:,iq))
