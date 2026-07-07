@@ -58,7 +58,7 @@ MODULE fc3_interpolate
   END TYPE
   ! Interfaces to the deferred subroutines:
   ABSTRACT INTERFACE
-    SUBROUTINE fft_interp_sum_R2(fc, xq, nat3, Dqr, def)
+    SUBROUTINE fft_interp_sum_R2(fc, xq, nat3, Dqr)
       USE kinds,     ONLY : DP
       IMPORT forceconst3
       IMPORT d3_mixed
@@ -66,7 +66,6 @@ MODULE fc3_interpolate
       REAL(DP), INTENT(IN) :: xq(3)
       INTEGER, INTENT(IN) :: nat3
       TYPE(d3_mixed), INTENT(OUT)  :: Dqr
-    logical, INTENT(in), OPTIONAL :: def
 
     END SUBROUTINE
   END INTERFACE
@@ -107,24 +106,22 @@ MODULE fc3_interpolate
   END INTERFACE
   !
   ABSTRACT INTERFACE
-    SUBROUTINE read_fc3_error(fc, filename, S, def)
+    SUBROUTINE read_fc3_error(fc, filename, S)
       USE input_fc,              ONLY : ph_system_info
       IMPORT forceconst3
       CHARACTER(*),INTENT(in)        :: filename
       TYPE(ph_system_info),INTENT(inout) :: S ! = System
       CLASS(forceconst3),INTENT(inout)   :: fc
-      logical, INTENT(in), OPTIONAL :: def
     END SUBROUTINE read_fc3_error
   END INTERFACE
   !
   ABSTRACT INTERFACE
-    SUBROUTINE write_fc3_error(fc, filename, S, def)
+    SUBROUTINE write_fc3_error(fc, filename, S)
       USE input_fc,              ONLY : ph_system_info
       IMPORT forceconst3
       CHARACTER(*),INTENT(in)     :: filename
       TYPE(ph_system_info),INTENT(in) :: S ! = System
       CLASS(forceconst3),INTENT(in)   :: fc
-      logical, intent(in), optional :: def
     END SUBROUTINE write_fc3_error
   END INTERFACE
   !
@@ -244,25 +241,23 @@ CONTAINS
     if (allocated(this%DR3)) deallocate(this%DR3)
   end subroutine
 !
-  SUBROUTINE todo_sum_R2(fc, xq, nat3, Dqr, def)
+  SUBROUTINE todo_sum_R2(fc, xq, nat3, Dqr)
     ! USE kinds,     ONLY : DP
     ! IMPORT forceconst3
     CLASS(grid), INTENT(IN)               :: fc
     REAL(DP), INTENT(IN)                  :: xq(3)
     INTEGER, INTENT(IN)                   :: nat3
     TYPE(d3_mixed), INTENT(OUT)           :: Dqr
-    logical, INTENT(in), OPTIONAL :: def
     ! TODO
   END SUBROUTINE
 
-  SUBROUTINE todo_sum_R2_const(fc, xq, nat3, Dqr, def)
+  SUBROUTINE todo_sum_R2_const(fc, xq, nat3, Dqr)
     ! USE kinds,     ONLY : DP
     ! IMPORT forceconst3
     CLASS(constant), INTENT(IN)               :: fc
     REAL(DP), INTENT(IN)                  :: xq(3)
     INTEGER, INTENT(IN)                   :: nat3
     TYPE(d3_mixed), INTENT(OUT)           :: Dqr
-    logical, INTENT(in), OPTIONAL :: def
 
     ! TODO
   END SUBROUTINE
@@ -313,7 +308,7 @@ CONTAINS
   !
   ! Convert regular-grid FCs to sparse
   ! \/o\________\\\_________________________________________/^>
-  SUBROUTINE fc3_grid_to_sparse(nat,fc, sfc, thr, def)
+  SUBROUTINE fc3_grid_to_sparse(nat,fc, sfc, thr)
     !
     IMPLICIT NONE
     !
@@ -321,7 +316,6 @@ CONTAINS
     TYPE(grid),INTENT(in)    :: fc
     TYPE(sparse),INTENT(out) :: sfc
     REAL(DP),OPTIONAL,INTENT(in) :: thr
-    logical,INTENT(in),OPTIONAL :: def
     integer :: natd, pold
     !
     REAL(DP),PARAMETER :: eps12 = 1.d-12
@@ -329,13 +323,8 @@ CONTAINS
     INTEGER :: na1,  na2,  na3,  j1,  j2,  j3, jn1, jn2, jn3
     REAL(DP) :: eps
     !
-    if(present(def) .and. def) then
-      natd = 1
-      pold = 1
-    else
-      natd = nat
-      pold = 3
-    endif
+    natd = nat
+    pold = 3
     eps = eps12
     IF(present(thr)) eps = thr
     !
@@ -692,7 +681,7 @@ CONTAINS
   END SUBROUTINE fftinterp_mat3_sparse
   !
 
-  SUBROUTINE sum_R2_sparse(fc, xq, nat3, Dqr, def)
+  SUBROUTINE sum_R2_sparse(fc, xq, nat3, Dqr)
     USE constants, ONLY : tpi
     IMPLICIT NONE
     !
@@ -700,7 +689,6 @@ CONTAINS
     REAL(DP), INTENT(IN)                  :: xq(3)
     INTEGER, INTENT(IN)                   :: nat3
     TYPE(d3_mixed), INTENT(OUT)           :: Dqr
-    logical, intent(in), optional :: def
     !
     INTEGER :: i,j, index3(3), iR3, nr, limits(3)
     REAL(DP) :: varg(fc%n_R), vcos(fc%n_R), vsin(fc%n_R)
@@ -708,11 +696,7 @@ CONTAINS
     integer :: natd3
     !
 
-    if(present(def) .and. def) then
-      natd3 = 1
-    else
-      natd3 = nat3
-    endif
+    natd3 = nat3
     dqr%natd3 = natd3
     !
     DO i = 1, 3
@@ -965,13 +949,12 @@ CONTAINS
   END SUBROUTINE fft_doubleinterp_mat3_sparse_prec
   !
   ! \/o\________\\\______________________//\/___________________/~^>>
-  SUBROUTINE read_fc3_sparse(fc, filename, S, def)
+  SUBROUTINE read_fc3_sparse(fc, filename, S)
     USE input_fc, ONLY : read_system, ph_system_info
     IMPLICIT NONE
     CHARACTER(*),INTENT(in)          :: filename
     TYPE(ph_system_info),INTENT(inout)   :: S ! = System
     CLASS(sparse),INTENT(inout) :: fc
-    logical, INTENT(in), OPTIONAL :: def
     !
     CHARACTER(13),PARAMETER :: sub = "read_fc3_sparse"
     !
@@ -1031,13 +1014,12 @@ CONTAINS
   END SUBROUTINE read_fc3_sparse
   !
   ! \/o\________\\\______________________//\/___________________/~^>>
-  SUBROUTINE write_fc3_sparse(fc, filename, S, def)
+  SUBROUTINE write_fc3_sparse(fc, filename, S)
     USE input_fc, ONLY : write_system, ph_system_info
     IMPLICIT NONE
     CHARACTER(*),INTENT(in)          :: filename
     TYPE(ph_system_info),INTENT(in)   :: S ! = System
     CLASS(sparse),INTENT(in) :: fc
-    logical, INTENT(in), optional :: def
     !
     CHARACTER(14),PARAMETER :: sub = "write_fc3_sparse"
     !
@@ -1141,7 +1123,7 @@ CONTAINS
   END SUBROUTINE div_mass_fc3_sparse
   !
   ! \/o\________\\\______________________//\/___________________/~^>>
-  SUBROUTINE read_fc3_grid(fc, filename, S, def)
+  SUBROUTINE read_fc3_grid(fc, filename, S)
     USE input_fc, ONLY : read_system
     USE input_fc, ONLY : ph_system_info
     IMPLICIT NONE
@@ -1153,7 +1135,6 @@ CONTAINS
     !
     INTEGER :: unit, ios
     INTEGER, EXTERNAL :: find_free_unit
-    logical, INTENT(in), OPTIONAL :: def
     integer :: natd, pold
     !
     INTEGER :: na1,  na2,  na3,  j1,  j2,  j3, jn1, jn2, jn3
@@ -1168,13 +1149,8 @@ CONTAINS
     ioWRITE(stdout,*) "** Reading full grid FC3 file ", TRIM(filename)
     !
     CALL read_system(unit, S)
-    if(present(def) .and. def) then
-      natd = 1
-      pold = 1
-    else
-      natd = S%nat
-      pold = 3
-    endif
+    natd = S%nat
+    pold = 3
     !
     READ(unit, *) fc%nq
     ioWRITE(stdout,*) "   Original FC3 grid:", fc%nq
@@ -1233,7 +1209,7 @@ CONTAINS
   END SUBROUTINE read_fc3_grid
   !
   ! \/o\________\\\______________________//\/___________________/~^>>
-  SUBROUTINE write_fc3_grid(fc, filename, S, def)
+  SUBROUTINE write_fc3_grid(fc, filename, S)
     USE input_fc, ONLY : write_system, ph_system_info
     IMPLICIT NONE
     CHARACTER(*),INTENT(in)          :: filename
@@ -1241,7 +1217,6 @@ CONTAINS
     CLASS(grid),INTENT(in) :: fc
     !
     CHARACTER(14),PARAMETER :: sub = "write_fc3_grid"
-    logical, INTENT(in), OPTIONAL :: def
     integer :: natd, pold
     !
     INTEGER :: unit, ios
@@ -1254,13 +1229,8 @@ CONTAINS
     INTEGER :: na1,  na2,  na3,  j1,  j2,  j3, jn1, jn2, jn3
     INTEGER :: i
     !
-    if(present(def) .and. def) then
-      natd = 1
-      pold = 1
-    else
-      natd = S%nat
-      pold = 3
-    endif
+    natd = S%nat
+    pold = 3
     !
     unit = find_free_unit()
     OPEN(unit=unit,file=filename,action='write',status='unknown',iostat=ios)
@@ -1447,7 +1417,7 @@ CONTAINS
     !
   END SUBROUTINE destroy_fc3_constant
   ! \/o\________\\\______________________//\/___________________/~^>>
-  SUBROUTINE read_fc3_constant(fc, filename, S, def)
+  SUBROUTINE read_fc3_constant(fc, filename, S)
     USE input_fc, ONLY : read_system
     USE input_fc, ONLY : ph_system_info
     IMPLICIT NONE
@@ -1458,7 +1428,6 @@ CONTAINS
     CHARACTER(17),PARAMETER :: sub = "read_fc3_constant"
     CHARACTER(32) :: buf
     INTEGER,EXTERNAL :: find_free_unit
-    logical, INTENT(in), OPTIONAL :: def
     !
     unit = find_free_unit()
     OPEN(unit=unit,file=filename,action='read',status='old',iostat=ios)
@@ -1475,7 +1444,7 @@ CONTAINS
     !
   END SUBROUTINE read_fc3_constant
   ! \/o\________\\\______________________//\/___________________/~^>>
-  SUBROUTINE write_fc3_constant(fc, filename, S, def)
+  SUBROUTINE write_fc3_constant(fc, filename, S)
     USE input_fc, ONLY : write_system, ph_system_info
     IMPLICIT NONE
     CHARACTER(*),INTENT(in)          :: filename
@@ -1484,7 +1453,6 @@ CONTAINS
     CHARACTER(14),PARAMETER :: sub = "write_fc3_constant"
     INTEGER :: unit, ios
     INTEGER, EXTERNAL :: find_free_unit
-    logical, INTENT(in), optional :: def
     !
     unit = find_free_unit()
     OPEN(unit=unit,file=filename,action='write',status='unknown',iostat=ios)
