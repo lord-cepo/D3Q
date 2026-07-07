@@ -271,7 +271,7 @@ CONTAINS
       isotopic_disorder, &
       casimir_scattering,  &
       sample_length_au, sample_length_mu, sample_length_mm, sample_dir,&
-      max_seconds, max_time
+      max_seconds, max_time, use_symm
 
     NAMELIST  / tkinput / &
       calculation, outdir, prefix, &
