@@ -869,7 +869,7 @@ contains
       else
         write(filename, '(I2.2,I2.2,A4)') out_grid%n(1), grid%n(1), '.dat'
       endif
-      call write_file(out_freqs, lws_out, filename, out_grid%type)
+      ! call write_file(out_freqs, lws_out, filename, out_grid%type)
      case("spf-def")
       call write_spf('spf-1b.dat', w_in%en, self_energy, freqs)
       call write_self("self-1b.dat", w_in%en, self_energy)

@@ -12,7 +12,7 @@ module dca
     quter_cmplx, fftinterp_mat2_cmplx, quter_R
   use defect, only : tetra_from_self_cart, write_spf_ndiag, write_spf, &
     write_self, write_dos, tetra_from_self_diag, find_where, tetra_from_self, &
-    interpolate_self_on_shell, self_to_scattering_rate_cmm1, write_scattering_rates
+    interpolate_self_on_shell, write_lw
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize, setup_simple_grid
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
