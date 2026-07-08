@@ -463,8 +463,8 @@ CONTAINS
     tetra = 0
     ! tetra_ik = 0
     DO itettot = 1+my_id, ntetra, num_procs
-      itet = mod(itettot,6) + 1
-      rest = itettot / 6
+      itet = mod(itettot - 1, 6) + 1
+      rest = (itettot - 1) / 6
       i3 = mod(rest,grid%n(3)) + 1
       rest = rest / grid%n(3)
       i2 = mod(rest,grid%n(2)) + 1
@@ -514,7 +514,7 @@ CONTAINS
       endif
     ENDDO ! itettot
     !
-    MULTIPLIER = SUM(ek_sort)/REAL(SIZE(ek_sort), dp)
+    MULTIPLIER = SUM(ABS(ek_sort))/REAL(SIZE(ek_sort), dp)
     ! print*, "multiplier", MULTIPLIER
     ek_sort = ek_sort / MULTIPLIER
     MIN_DISTANCE = MULTIPLIER * min_relative_distance
@@ -711,8 +711,8 @@ CONTAINS
     itetra = 0
     tetra = 0
     DO itettot = 1+my_id, ntetra, num_procs
-      itet = mod(itettot,6) + 1
-      rest = itettot / 6
+      itet = mod(itettot - 1, 6) + 1
+      rest = (itettot - 1) / 6
       i3 = mod(rest,nq(3)) + 1
       rest = rest / nq(3)
       i2 = mod(rest,nq(2)) + 1
@@ -741,7 +741,7 @@ CONTAINS
     call mpi_bsum(4, nbnd, ntetra, ek_sort)
     call mpi_bsum(4, nbnd, ntetra, itetra)
     !
-    MULTIPLIER = SUM(ek_sort)/REAL(SIZE(ek_sort), dp)
+    MULTIPLIER = SUM(ABS(ek_sort))/REAL(SIZE(ek_sort), dp)
     ! print*, "multiplier", MULTIPLIER
     ek_sort = ek_sort / MULTIPLIER
     MIN_DISTANCE = MULTIPLIER * min_relative_distance
@@ -757,9 +757,10 @@ CONTAINS
     !! COMPLEX Integration weight of each k
     REAL(DP), INTENT(IN) :: ef
     !! The Fermi energy
-    INTEGER :: ik, ibnd, ii, it, jbnd, kbnd
-    REAL(DP) :: e(4), wI0(4), wg1
+    INTEGER :: ik, ibnd, ii, it
+    REAL(DP) :: e(4), wI0(4), ef_mult
     !
+    ef_mult = ef / MULTIPLIER
     wI = 0._dp
     !
     DO it = 1+my_id, ntetra, num_procs
@@ -773,7 +774,7 @@ CONTAINS
         ! D = -e
         ! call rm_degen_vertices(ef, e)
         ! e = -D
-        wI0 = delta_vertices(ef, e)
+        wI0 = delta_vertices(ef_mult, e)
         ! if(ef < maxval(e) .and. ef > minval(e)) print*, "non va"
         ! if(any(wi0 > 0)) print"(4E12.4)", e, ef
         !
@@ -794,33 +795,10 @@ CONTAINS
       !
     ENDDO ! nt
     ! wg = wg / REAL(ntetra, dp)
-    wI = wI / ntetra
+    wI = wI / (ntetra * MULTIPLIER)
     !
     ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
     CALL mpi_bsum(nbnd, nqs, wI)
-    !
-    DO ik = 1, nqs
-      DO ibnd = 1, nbnd
-        !
-        wg1 = wI(ibnd,ik)
-        !
-        DO jbnd = ibnd + 1, nbnd
-          !
-          IF (ABS(ek_in(ibnd,ik) - ek_in(jbnd,ik)) < MIN_DISTANCE) THEN
-            wg1 = wg1 + wI(jbnd,ik)
-          ELSE
-            !
-            DO kbnd = ibnd, jbnd - 1
-              wI(kbnd,ik) = wg1 / REAL(jbnd - ibnd, dp)
-            ENDDO
-            !
-            EXIT
-          ENDIF
-          !
-        ENDDO
-        !
-      ENDDO
-    ENDDO
     !
   END subroutine
   !
@@ -835,8 +813,9 @@ CONTAINS
     REAL(DP), INTENT(IN) :: ef
     !! The Fermi energy
     INTEGER :: ik, ibnd, ii_, ii, it
-    REAL(DP) :: e(4), wI0(4)
+    REAL(DP) :: e(4), wI0(4), ef_mult
     !
+    ef_mult = ef / MULTIPLIER
     wI = 0._dp
     !
     DO it = 1+my_id, nvalid, num_procs
@@ -847,7 +826,7 @@ CONTAINS
         !
         e = ek_sort(:,ibnd,it)
         ! print"(4E12.4)", e, ef
-        wI0 = delta_vertices(ef, e)
+        wI0 = delta_vertices(ef_mult, e)
         ! if(any(wi0 > 0)) print"(4E12.4)", e, ef
         !
         DO ii_ = 1, iisize_tetra(it)
@@ -869,7 +848,7 @@ CONTAINS
       !
     ENDDO ! nt
     ! wg = wg / REAL(ntetra, dp)
-    wI = wI / (6.0_dp * nqs)
+    wI = wI / (6.0_dp * nqs * MULTIPLIER)
     !
     ! I LEFT OUT THE PART OF AVERAGING OF DEGENERACIES
     CALL mpi_bsum(nbnd, nqs, wI)
@@ -956,14 +935,13 @@ CONTAINS
   FUNCTION delta_vertices(ef, e) result(wI0)
     !
     real(dp), INTENT(IN) :: ef
-    real(dp) :: e(4)
+    real(dp), INTENT(IN) :: e(4)
     !
     real(dp) :: wI0(4)
     !
     real(dp) :: C, a(4,4)
     !
     integer :: i, ii
-    logical :: near(4,4)
     !
     !
     !
@@ -974,8 +952,7 @@ CONTAINS
     !
     DO ii = 1, 4
       DO i = 1, 4
-        near(ii,i) = ABS(e(i)-e(ii)) < MIN_DISTANCE
-        IF ( e(ii) == e(i) ) then
+        IF ( ABS(e(i)-e(ii)) < 1.d-12 ) then
           a(ii,i) = 0.0_dp
         else
           a(ii,i) = ( ef - e(i) ) / (e(ii) - e(i) )
@@ -983,23 +960,17 @@ CONTAINS
       ENDDO
     ENDDO
     !
+    wI0 = 0.0_dp
     !
-    ! if((near(1,2) .and. near(3,4)) .or. &
-    !   (near(1,2) .and. near(2,3)) .or. &
-    !   (near(2,3) .and. near(3,4))) then
-    !   call rm_degen_vertices(ef, e)
-    ! endif
-    !
-    IF( e(1) <= ef .AND. ef <= e(2) ) THEN
+    IF( e(1) < ef .AND. ef < e(2) ) THEN
       !
-      C = a(2,1) * a(3,1)
+      C = a(2,1) * a(3,1) * a(4,1) / (ef - e(1))
       wI0(1) = a(1,2) + a(1,3) + a(1,4)
       wI0(2:4) = a(2:4,1)
 
       wI0 = wI0 * C
-      IF (near(1,2)) wI0 = 0.0_dp
       !
-    ELSEIF( e(2) < ef .AND. ef <= e(3)) THEN
+    ELSEIF( e(2) <= ef .AND. ef < e(3)) THEN
       !
       C = a(2,3) * a(3,1) + a(3,2) * a(2,4)
       !
@@ -1008,23 +979,18 @@ CONTAINS
       wI0(3) = a(3,2) * C + a(3,1)**2 * a(2,3)
       wI0(4) = a(4,1) * C + a(4,2) * a(2,4) * a(3,2)
       !
-      if (near(2,3)) then
-        wI0 = 0.0_dp
-        wI0(2:3) = 1._dp
-      endif
-    ELSEIF ( e(3) < ef .AND. ef <= e(4)) THEN
+      wI0 = wI0 / (e(4) - e(1))
       !
-      C = a(2,4) * a(3,4)
+    ELSEIF ( e(3) <= ef .AND. ef < e(4)) THEN
+      !
+      C = a(1,4) * a(2,4) * a(3,4) / (e(4) - ef)
       !
       wI0(1:3) = a(1:3,4)
       wI0(4) = a(4,1) + a(4,2) + a(4,3)
       !
       wI0 = wI0 * C
-      IF (near(3,4)) wI0 = 0.0_dp
       !
     ENDIF
-
-    wI0 = wI0 / (e(4) - e(1))
     !
   END FUNCTION
   !
