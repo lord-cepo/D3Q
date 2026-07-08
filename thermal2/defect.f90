@@ -497,7 +497,7 @@ contains
     select case(input%calculation)
      case('lw')
       call interpolate_self_on_shell(wg%en, out_freqs, self_energy, self_lw)
-      call write_lw(out_freqs, self_lw, "self-lw.dat")
+      call write_lw(out_freqs, self_lw, "lw-fb.dat")
      case('self')
       call write_self("self-fb.dat", wg%en, self_energy)
      case('spf-def')
