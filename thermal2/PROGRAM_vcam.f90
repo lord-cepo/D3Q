@@ -10,12 +10,14 @@ program vcam
   use asr2_module, only : impose_asr2
   use quter_defect, only : forceconst2_sc, fc_sc2RR, &
     allocate_fc2_sc, fc_uc2RR, div_mass0_RR, asr3
-  use defect, only : full_born_center, write_self, interpolate_self_on_shell, write_lw
+  use defect, only : full_born_center, write_self, &
+  interpolate_self_on_shell, write_lw, write_freq
   use constants, only : RY_TO_CMM1
   use thtetra, only : set_wg, tetra_output
   use mpi_thermal, only: my_id, num_procs, mpi_bsum
   use thutils, only: id_mat
   use functions, only: invzmat
+  use ph_velocity, only: velocity
   implicit none
   !
   type(tetra_output) :: wg_out
@@ -32,6 +34,8 @@ program vcam
   complex(dp), allocatable :: T(:,:,:,:)
   complex(dp), allocatable :: A(:,:)
   complex(dp), allocatable :: self_energy(:,:,:), self_lw(:,:)
+  character(len=256) :: out_file
+  real(dp), allocatable :: velsq(:,:)
   !
   call start_mpi()
   !
@@ -129,7 +133,16 @@ program vcam
    case('lw')
     allocate(self_lw(S_vca%nat3, out_grid%nqtot))
     call interpolate_self_on_shell(wg_out%en, wg_out%f, self_energy, self_lw)
-    call write_lw(wg_out%f, self_lw, "lw-fb.dat")
+    write(out_file, "(A,F2.1,A)") "lw-vca-", input%conc, ".dat"
+    call write_lw(wg_out%f, self_lw, out_file)
+    write(out_file, "(A,F2.1,A)") "f-vca-", input%conc, ".dat"
+    call write_freq(out_file, out_grid, wg_out%f)
+    S_vca%lrigid = .true.
+    do iq = 1, out_grid%nqtot
+      velsq(:,iq) = sum(velocity(S_vca, fc2c_vca, out_grid%xq(:,iq))**2,1)
+    enddo
+    write(out_file, "(A,F2.1,A)") "vel-vca-", input%conc, ".dat"
+    call write_freq(out_file, out_grid, velsq)
    case('self')
     call write_self("self-fb.dat", wg_out%en, self_energy)
   end select

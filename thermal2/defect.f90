@@ -1013,17 +1013,17 @@ contains
     close(10)
   end subroutine
   !
-  subroutine write_freq(filename, xq, freqs)
+  subroutine write_freq(filename, grid, freqs)
     character(*), intent(in) :: filename
-    real(dp), intent(in) :: xq(:, :)
+    type(q_grid), intent(in) :: grid
     real(dp), intent(in) :: freqs(:, :)
     !
     integer :: iq
     !
     if(.not. ionode) return
     open(10, file=filename)
-    do iq = 1, size(xq, 2)
-      write(10, "(100E20.8)") xq(:, iq), freqs(:, iq)
+    do iq = 1, size(grid%xq, 2)
+      write(10, "(100E20.8)") grid%w(iq), grid%xq(:, iq), freqs(:, iq)
     enddo
     close(10)
   end subroutine
