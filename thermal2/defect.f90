@@ -926,7 +926,7 @@ contains
       elsewhere
         lw = 0._dp
       endwhere
-      write(10, "(I4,100E20.8)") iq_, freqs_(:,iq_), lw
+      write(10, "(I4,100E20.8)") iq_, freqs_(:,iq_)*RY_TO_CMM1, lw
     enddo
     close(10)
   end subroutine

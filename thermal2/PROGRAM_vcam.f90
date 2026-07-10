@@ -15,7 +15,7 @@ program vcam
   use constants, only : RY_TO_CMM1
   use thtetra, only : set_wg, tetra_output
   use mpi_thermal, only: my_id, num_procs, mpi_bsum
-  use thutils, only: id_mat
+  use thutils, only: id_mat, contain
   use functions, only: invzmat
   use ph_velocity, only: velocity
   implicit none
@@ -133,10 +133,14 @@ program vcam
    case('lw')
     allocate(self_lw(S_vca%nat3, out_grid%nqtot))
     call interpolate_self_on_shell(wg_out%en, wg_out%f, self_energy, self_lw)
-    write(out_file, "(A,F3.1,A)") "lw-vca-", input%conc, ".dat"
+    if(contain(input%mode, "mass")) then
+      write(out_file, "(A,F3.1,A)") "lw-vcam-", input%conc, ".dat"
+    else
+      write(out_file, "(A,F3.1,A)") "lw-vca-", input%conc, ".dat"
+    endif
     call write_lw(wg_out%f, self_lw, out_file)
-    write(out_file, "(A,F3.1,A)") "f-vca-", input%conc, ".dat"
-    call write_freq(out_file, out_grid, wg_out%f)
+    ! write(out_file, "(A,F3.1,A)") "f-vca-", input%conc, ".dat"
+    ! call write_freq(out_file, out_grid, wg_out%f)
     S_vca%lrigid = .true.
     allocate(velsq(S_vca%nat3, out_grid%nqtot))
     do iq = 1, out_grid%nqtot
