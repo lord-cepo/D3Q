@@ -12,11 +12,10 @@ program defectp
   use test_print
   !use defect_eig, only : full_diag, norm_gV, norm_V
   use constants, only : RY_TO_CMM1
-  use full_born, only : full_born_p, full_born_analytical
-  USE parameters, ONLY : ntypx
-  use defect_proj, only: project
+  use full_born, only : full_born_analytical
   use dca, only : dca_selfnrg
   use thtetra, only : tetra_output, deallocate_tetra_output
+  use ph_velocity, only : velocity
   ! use symm_base, only : nofrac
   IMPLICIT NONE
   !
@@ -289,7 +288,16 @@ program defectp
   !  write(138,"(1000E20.8)") p
   !enddo
   !close(138)
-
+  ! call full_born_analytical(input, S, fc2_centered, in_grid, sym_grid, out_grid)
+  ! stop 1
+  !
+  ! open(123, file="ge-wvel.dat")
+  ! do iq = 1, out_grid%nqtot
+  !   write(123, "(100E20.8)") out_grid%w(iq), sum(velocity(S, fc2_centered, out_grid%xq(:,iq))**2, 1)
+  ! enddo
+  ! close(123)
+  ! stop 1
+  !
   if(contain(input%mode, '1b')) &
     call main_defect(S, fc2_centered, fc2_sc_centered, in_grid, sym_grid, out_grid, input)
   if(contain(input%mode, 'fb')) then

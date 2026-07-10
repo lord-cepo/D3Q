@@ -215,26 +215,26 @@ contains
     !
   end subroutine
   !
-  subroutine full_born_analytical(input, S, fc2, grid, sym_grid, out_grid)
+  subroutine full_born_analytical(input, S, fc2, grid, sym_grid, out_grid, epsilon)
     use constants, only: RY_TO_CMM1
     !
     type(code_input_type), intent(in) :: input
     type(ph_system_info), intent(in) :: S
     type(forceconst2_grid), intent(in) :: fc2
     type(q_grid), intent(in) :: grid, sym_grid, out_grid
+    real(dp), intent(in) :: epsilon
     !
     real(dp) :: freqs(S%nat3, grid%nqtot)
     complex(dp) :: Us(S%nat3, S%nat3, grid%nqtot)
     type(tetra_output) :: wg
     complex(dp) :: g0(S%nat3,S%nat3)
-    integer :: iq, ibnd, iw
-    real(dp) :: epsilon
+    integer :: iq, jq, ibnd, jbnd, iw
     real(dp) :: Vb(S%nat3,S%nat3), V(S%nat3,S%nat3)
     !
-    complex(dp) :: I_gV(S%nat3,S%nat3), T(S%nat3,S%nat3), A(S%nat3,S%nat3)
-    complex(dp) :: Tq(S%nat3,out_grid%nqtot,input%n_omega)
-    complex(dp) :: lws(S%nat3, out_grid%nqtot)
-    character(20) :: filename
+    complex(dp) :: I_gV(S%nat3,S%nat3), T(S%nat3,S%nat3)
+    complex(dp) :: green_weight(S%nat3,sym_grid%nqtot), self_on_shell
+    real(dp) :: fwhm(S%nat3,out_grid%nqtot)
+    complex(dp) :: self(input%n_omega)
     complex(dp) :: outer_products(S%nat3,S%nat3,S%nat3,grid%nqtot)
     !
     real(dp)    :: out_freqs(S%nat3,out_grid%nqtot)
@@ -242,52 +242,57 @@ contains
     !
     call freq_in_grid(S, fc2, out_grid, out_freqs, out_Us)
     call freq_in_grid(S, fc2, grid, freqs, Us)
-    call set_wg(S, fc2, sym_grid, input, wg, mult = 1.25_dp)
+    call set_wg(S, fc2, sym_grid, input, wg, mult = 1.05_dp)
+    if(input%n_omega <= 1) &
+      call errore("full_born_analytical", "n_omega must be > 1 to interpolate T", 1)
     !
     print*, "max freq", wg%en(input%n_omega) * RY_TO_CMM1
     Vb = 0.0_dp
-    do iw = 1, 3
-      Vb(iw,iw) = 1._dp
+    do ibnd = 1, 3
+      Vb(ibnd,ibnd) = 1._dp
     enddo
-    !
-    epsilon = 0.6_dp
     !
     do iq = 1, grid%nqtot
       do ibnd = 1, S%nat3
         outer_products(:,:,ibnd,iq) = outer_product(Us(:,ibnd,iq))
       enddo
     enddo
-    !
-    do iw = 1, input%n_omega
-      ! print*, iw
+    self = 0._dp
+    do iw = 1+my_id, input%n_omega, num_procs
       g0 = 0.0_dp
-      do iq = 1, grid%nqtot
-        do ibnd = 1, S%nat3
-          g0 = g0 + outer_products(:,:,ibnd,iq) * wg%w(ibnd,wg%e(iq),iw)
+      do jq = 1, grid%nqtot
+        do jbnd = 1, S%nat3
+          g0 = g0 + outer_products(:,:,jbnd,jq) * wg%w(jbnd,wg%e(jq),iw)
         enddo
-      enddo
-      V = Vb * epsilon * wg%en(iw)**2
-      I_gV = id_mat(S%nat3) - matmul(g0, V) + Vb * (0._dp, 1e-6_dp)
-      call invzmat(S%nat3, I_gV )
-      T = matmul(V, I_gV)
-      do iq = 1, out_grid%nqtot
-        A = T
-        call apply_sym_q_full(S, out_grid%xq(:,iq), A)
-        do ibnd = 1, S%nat3
-          Tq(ibnd,iq,iw) = braket(out_Us(:,ibnd,iq), A)
-        enddo
-        call merge_degen(S%nat3, Tq(:,iq,iw), out_freqs(:,iq))
       enddo
       !
+      V = Vb * epsilon * wg%en(iw)**2
+      I_gV = id_mat(S%nat3) - (1-input%conc)*matmul(g0, V) !+ Vb * (0._dp, 1e-6_dp)
+      call invzmat(S%nat3, I_gV )
+      T = 2 * input%conc * matmul(V, I_gV)
+      !
+      ! In the analytical Si/Ge mass case T is scalar in phonon space, so
+      ! store only the scalar self-energy and interpolate it on shell below.
+      self(iw) = T(1,1)
     enddo
+    call mpi_bsum(input%n_omega, self)
     !
-    open(124, file="fba.dat")
-    do iw = 1, input%n_omega
-      do iq = 1, out_grid%nqtot
-        write(124, "(E20.8, I5, E20.8)") wg%en(iw)*RY_TO_CMM1, iq, aimag(Tq(1,iq,iw))
+    fwhm = 0._dp
+    do iq = 1, out_grid%nqtot
+      do ibnd = 1, S%nat3
+        if(out_freqs(ibnd,iq) <= 0._dp) cycle
+        self_on_shell = interp1_scl(self, out_freqs(ibnd,iq)*input%n_omega/wg%max_f)
+        fwhm(ibnd,iq) = -aimag(self_on_shell) / out_freqs(ibnd,iq) * RY_TO_CMM1
       enddo
     enddo
-    close(124)
+    !
+    if(ionode) then
+      open(124, file="fba.dat")
+      do iq = 1, out_grid%nqtot
+        write(124, "(I6,100E20.8)") iq, out_freqs(:,iq)*RY_TO_CMM1, fwhm(:,iq)
+      enddo
+      close(124)
+    endif
     !
   end subroutine
 end module

@@ -995,28 +995,6 @@ contains
     close(10)
   end subroutine
   !
-  subroutine write_self_discrepancy(filename, en, self_energy, self_ref)
-    character(*), intent(in) :: filename
-    real(dp), intent(in) :: en(:)
-    complex(dp), intent(in) :: self_energy(:,:,:), self_ref(:,:,:)
-    !
-    integer :: iw
-    real(dp) :: diff_norm, ref_norm, max_abs, max_ref
-    !
-    if(.not. ionode) return
-    open(10, file=filename)
-    do iw = 1, size(self_energy,3)
-      max_abs = maxval(abs(self_energy(:,:,iw) - self_ref(:,:,iw)))
-      max_ref = maxval(abs(self_ref(:,:,iw)))
-      diff_norm = sqrt(sum(abs(self_energy(:,:,iw) - self_ref(:,:,iw))**2))
-      ref_norm = sqrt(sum(abs(self_ref(:,:,iw))**2))
-      write(10, "(5E20.8)") en(iw)*RY_TO_CMM1, &
-        max_abs * RY_TO_CMM1**2, max_abs / max(max_ref, tiny(1._dp)), &
-        diff_norm * RY_TO_CMM1**2, diff_norm / max(ref_norm, tiny(1._dp))
-    enddo
-    close(10)
-  end subroutine
-  !
   subroutine write_freq(filename, xq, freqs)
     character(*), intent(in) :: filename
     real(dp), intent(in) :: xq(:, :)
