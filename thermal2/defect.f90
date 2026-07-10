@@ -272,7 +272,7 @@ contains
     !
   end subroutine
   !
-  subroutine full_born_center(S, input, fc2, fc2_sc, grid, sym_grid, out_grid)
+  subroutine full_born_center(S, input, fc2, fc2_sc, grid, sym_grid, out_grid, Tq_)
     use quter_defect, only: fc_sc2RR, allocate_fc2_sc
     type :: q_star_cache_type
       real(dp), allocatable :: q(:,:)
@@ -282,6 +282,9 @@ contains
     type(forceconst2_grid), intent(in) :: fc2
     type(forceconst2_sc), intent(inout) :: fc2_sc
     type(q_grid), intent(in) :: grid, sym_grid, out_grid
+    logical :: overcounting_
+    complex(dp), intent(out), optional :: Tq_(S%nat3, S%nat3,out_grid%nqtot, input%n_omega)
+    complex(dp) :: Tq(S%nat3, S%nat3,out_grid%nqtot, input%n_omega)
     !
     integer :: iR1, iR2, iR, nR, nR_large
     integer :: i, j, iq, ibnd, N
@@ -291,7 +294,6 @@ contains
     real(dp), allocatable :: diffs(:,:)
     complex(dp), allocatable :: g0(:,:,:)
     complex(dp), allocatable :: T(:,:,:)
-    complex(dp) :: Tq(S%nat3, S%nat3,out_grid%nqtot, input%n_omega)
     complex(dp) :: self_energy(S%nat3, out_grid%nqtot, input%n_omega)
     integer :: iw, jn, defat
     type(tetra_output) :: wg, wg_out
@@ -319,7 +321,15 @@ contains
     type(q_star_cache_type), allocatable :: out_stars(:)
     complex(dp) :: T_star(S%nat3,S%nat3,48)
     integer :: istar, nstar
-
+    !
+    overcounting_ = .true.
+    if(present(Tq_)) overcounting_ = .false.
+    !
+    if(overcounting_) then
+      c = input%conc * size(fc2_sc%defects,2)
+    else
+      c = size(fc2_sc%defects,2)
+    endif
     !
     call set_wg(S, fc2, sym_grid, input, wg)
     if(input%calculation == 'dos' .or. input%calculation == 'test') &
@@ -327,7 +337,6 @@ contains
     call freq_in_grid(S, fc2, grid, freqs, Us)
     call freq_in_grid(S, fc2, out_grid, out_freqs, out_Us)
 
-    c = input%conc * size(fc2_sc%defects,2)
     do iq = 1, out_grid%nqtot
       out_Us_c(:,:,iq) = conjg(transpose(out_Us(:,:,iq)))
     enddo
@@ -443,7 +452,12 @@ contains
       endif
       call zgemm_N(N, g0__, V__, gV__)
       !
-      I_gV__ = id_mat(N) - gV__ * (1-input%conc)
+      if(overcounting_) then
+        I_gV__ = id_mat(N) - gV__ * (1-input%conc)
+      else
+        I_gV__ = id_mat(N) - gV__
+      endif
+      !
       call invzmat(N, I_gV__)
       !
       call zgemm_N(N, c*V__, I_gV__, T__)
@@ -482,6 +496,10 @@ contains
     call mpi_bsum( S%nat3, out_grid%nqtot, input%n_omega, self_energy)
     call mpi_bsum( S%nat3, S%nat3, out_grid%nqtot, input%n_omega, Tq)
 
+    if(.not. overcounting_) then
+      Tq_ = Tq
+      return
+    endif
     !
     ! do iq = 1, out_grid%nqtot
     !   do ibnd = 1, S%nat3

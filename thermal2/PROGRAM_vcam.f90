@@ -4,25 +4,34 @@ program vcam
   use code_input, only : code_input_type, read_input
   use mpi_thermal, only: start_mpi, stop_mpi, num_procs
   use input_fc, only: read_fc2, aux_system, ph_system_info, &
-  forceconst2_grid, allocate_fc2_grid
+    forceconst2_grid, allocate_fc2_grid
   use q_grids, only : q_grid, setup_grid, q_grid_copy
   use fc2_interpolate, only : fc2_recenter, freq_phq
   use asr2_module, only : impose_asr2
   use quter_defect, only : forceconst2_sc, fc_sc2RR, &
     allocate_fc2_sc, fc_uc2RR, div_mass0_RR, asr3
-  use defect, only : full_born_center
+  use defect, only : full_born_center, write_self, interpolate_self_on_shell, write_lw
   use constants, only : RY_TO_CMM1
+  use thtetra, only : set_wg, tetra_output
+  use mpi_thermal, only: my_id, num_procs, mpi_bsum
+  use thutils, only: id_mat
+  use functions, only: invzmat
   implicit none
   !
+  type(tetra_output) :: wg_out
   type(code_input_type) :: input
   type(ph_system_info) :: S(4), S_, S_vca
   type(forceconst2_grid) :: fc2_, fc2(4), fc2_vca, fc2c_vca
   type(q_grid) :: out_grid, in_grid, sym_grid
   type(forceconst2_sc) :: fc2_sc(2)
   character(len=256) :: input_files(4)
-  integer :: i, sc_grid(3), nR
+  integer :: i, sc_grid(3), nR, iw, iq, ibnd
   real(dp) :: c, m_vca, def_mass, p(6)
   real(dp), allocatable :: DRR(:,:,:,:)
+  complex(dp), allocatable :: Tq(:,:,:,:,:)
+  complex(dp), allocatable :: T(:,:,:,:)
+  complex(dp), allocatable :: A(:,:)
+  complex(dp), allocatable :: self_energy(:,:,:), self_lw(:,:)
   !
   call start_mpi()
   !
@@ -79,18 +88,50 @@ program vcam
     fc2_sc(i)%eps = 1._dp - S(3-i)%amass(1) / m_vca
     call fc2_sc(i)%center(sc_grid, S(i))
   enddo
+  DRR = (1-c) * fc2_sc(1)%fc - c * fc2_sc(2)%fc
+  fc2_sc(1)%fc = (1-c) * DRR
+  fc2_sc(2)%fc = -c * DRR
   deallocate(DRR)
-  fc2_sc(1)%fc = (1-c) * fc2_sc(1)%fc
-  fc2_sc(2)%fc = c * fc2_sc(2)%fc
   !
+  allocate(Tq(S_vca%nat3, S_vca%nat3, out_grid%nqtot, input%n_omega, 2))
   S_vca%atm = S(1)%atm
-  call full_born_center(S_vca, input, fc2c_vca, fc2_sc(1), in_grid, sym_grid, out_grid)
-  call execute_command_line("mv lw-fb.dat lwa.dat")
+  call full_born_center(S_vca, input, fc2c_vca, fc2_sc(1), &
+    in_grid, sym_grid, out_grid, Tq(:,:,:,:,1))
   S_vca%atm = S(2)%atm
-  input%conc = 1 - c
-  call full_born_center(S_vca, input, fc2c_vca, fc2_sc(2), in_grid, sym_grid, out_grid)
-  call execute_command_line("mv lw-fb.dat lwb.dat")
+  call full_born_center(S_vca, input, fc2c_vca, fc2_sc(2), &
+    in_grid, sym_grid, out_grid, Tq(:,:,:,:,2))
   !
+  allocate(T(S_vca%nat3, S_vca%nat3, out_grid%nqtot, input%n_omega))
+  T = c * Tq(:,:,:,:,1) + (1-c) * Tq(:,:,:,:,2)
+  deallocate(Tq)
   !
+  call set_wg(S_vca, fc2c_vca, out_grid, input, wg_out)
+  !
+  allocate(A(S_vca%nat3, S_vca%nat3))
+  allocate(self_energy(S_vca%nat3, out_grid%nqtot, input%n_omega))
+  do iw = 1+my_id, input%n_omega, num_procs
+    do iq = 1, out_grid%nqtot
+      A = 0._dp
+      do ibnd = 1, S_vca%nat3
+        A(:,ibnd) = wg_out%w(:,wg_out%e(iq),iw) * T(:,ibnd,iq,iw)
+      enddo
+      A = id_mat(S_vca%nat3) + A
+      call invzmat(S_vca%nat3, A)
+      T(:,:,iq,iw) = matmul(T(:,:,iq,iw), A)
+      do ibnd = 1, S_vca%nat3
+        self_energy(ibnd,iq,iw) = T(ibnd,ibnd,iq,iw)
+      enddo
+    enddo
+  enddo
+  call mpi_bsum(S_vca%nat3, out_grid%nqtot, input%n_omega, self_energy)
+  !
+  select case(input%calculation)
+   case('lw')
+    allocate(self_lw(S_vca%nat3, out_grid%nqtot))
+    call interpolate_self_on_shell(wg_out%en, wg_out%f, self_energy, self_lw)
+    call write_lw(wg_out%f, self_lw, "lw-fb.dat")
+   case('self')
+    call write_self("self-fb.dat", wg_out%en, self_energy)
+  end select
   call stop_mpi()
 end program
