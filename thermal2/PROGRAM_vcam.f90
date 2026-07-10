@@ -133,15 +133,16 @@ program vcam
    case('lw')
     allocate(self_lw(S_vca%nat3, out_grid%nqtot))
     call interpolate_self_on_shell(wg_out%en, wg_out%f, self_energy, self_lw)
-    write(out_file, "(A,F2.1,A)") "lw-vca-", input%conc, ".dat"
+    write(out_file, "(A,F3.1,A)") "lw-vca-", input%conc, ".dat"
     call write_lw(wg_out%f, self_lw, out_file)
-    write(out_file, "(A,F2.1,A)") "f-vca-", input%conc, ".dat"
+    write(out_file, "(A,F3.1,A)") "f-vca-", input%conc, ".dat"
     call write_freq(out_file, out_grid, wg_out%f)
     S_vca%lrigid = .true.
+    allocate(velsq(S_vca%nat3, out_grid%nqtot))
     do iq = 1, out_grid%nqtot
       velsq(:,iq) = sum(velocity(S_vca, fc2c_vca, out_grid%xq(:,iq))**2,1)
     enddo
-    write(out_file, "(A,F2.1,A)") "vel-vca-", input%conc, ".dat"
+    write(out_file, "(A,F3.1,A)") "vel-vca-", input%conc, ".dat"
     call write_freq(out_file, out_grid, velsq)
    case('self')
     call write_self("self-fb.dat", wg_out%en, self_energy)
