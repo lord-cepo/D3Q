@@ -90,11 +90,13 @@ program vcam
     fc2_sc(i)%fc = ( DRR - &
       fc_uc2RR(fc2(i))) / m_vca
     fc2_sc(i)%eps = 1._dp - S(3-i)%amass(1) / m_vca
-    call fc2_sc(i)%center(sc_grid, S(i))
   enddo
   DRR = (1-c) * fc2_sc(1)%fc - c * fc2_sc(2)%fc
   fc2_sc(1)%fc = (1-c) * DRR
   fc2_sc(2)%fc = -c * DRR
+  do i = 1, 2
+    call fc2_sc(i)%center(sc_grid, S(i))
+  enddo
   deallocate(DRR)
   !
   allocate(Tq(S_vca%nat3, S_vca%nat3, out_grid%nqtot, input%n_omega, 2))
@@ -113,6 +115,7 @@ program vcam
   !
   allocate(A(S_vca%nat3, S_vca%nat3))
   allocate(self_energy(S_vca%nat3, out_grid%nqtot, input%n_omega))
+  self_energy = 0._dp
   do iw = 1+my_id, input%n_omega, num_procs
     do iq = 1, out_grid%nqtot
       A = 0._dp
