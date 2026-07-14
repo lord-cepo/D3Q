@@ -246,6 +246,7 @@ CONTAINS
     USE input_fc,       ONLY : forceconst2_grid, ph_system_info
     USE fc3_interpolate,ONLY : forceconst3
     USE code_input,     ONLY : code_input_type
+    USE thutils,        ONLY : freq_in_grid
     !USE nanoclock,      ONLY : print_percent_wall
     IMPLICIT NONE
     !
@@ -260,7 +261,7 @@ CONTAINS
     COMPLEX(DP):: ls(S%nat3,input%nconf)
     REAL(DP)   :: sigma_ry(input%nconf)
     !
-    REAL(DP),ALLOCATABLE :: ener(:), spectralf(:,:,:)
+    REAL(DP),ALLOCATABLE :: ener(:), spectralf(:,:,:), grid_freqs(:,:)
     COMPLEX(DP),ALLOCATABLE :: caux(:,:,:)
     !
     COMPLEX(DP) :: D(S%nat3, S%nat3)
@@ -270,26 +271,48 @@ CONTAINS
     REAL(DP) :: w2(S%nat3)
     CHARACTER(len=6), EXTERNAL :: int_to_char
     CHARACTER(len=6) :: pos
-    REAL(DP) :: UNIT_CONVERSION
+    CHARACTER(len=7) :: fstatus
+    REAL(DP) :: UNIT_CONVERSION, de_cm, ener_max_cm
     !
     ioWRITE(*,*) "--> Setting up inner grid"
     CALL setup_grid(input%grid_type, S%bg, input%nk(1), input%nk(2), input%nk(3), grid, scatter=.true., xq0=input%xk0)
     !CALL grid%scatter()
     !
     ALLOCATE(ener(input%ne))
-    FORALL(ie = 1:input%ne) ener(ie) = (ie-1)*input%de+input%e0
+    IF(input%de > 0._dp) THEN
+      de_cm = input%de
+      ener_max_cm = input%e0 + (input%ne-1) * de_cm
+    ELSE
+      IF(input%ne < 2) CALL errore("SPECTR_QBZ_LINE", "automatic de requires ne > 1", 1)
+      ALLOCATE(grid_freqs(S%nat3, grid%nqtot))
+      CALL freq_in_grid(S, fc2, grid, grid_freqs)
+      ener_max_cm = MAXVAL(grid_freqs) * RY_TO_CMM1
+      DEALLOCATE(grid_freqs)
+      IF(ener_max_cm <= input%e0) &
+        CALL errore("SPECTR_QBZ_LINE", "automatic energy range has ener_max <= e0", 1)
+      de_cm = (ener_max_cm - input%e0) / REAL(input%ne-1, DP)
+    ENDIF
+    FORALL(ie = 1:input%ne) ener(ie) = (ie-1)*de_cm+input%e0
     ener = ener/RY_TO_CMM1
     sigma_ry = input%sigma/RY_TO_CMM1
+    IF(ionode) WRITE(stdout,'(2x,a,f12.6,a,f12.6,a,f12.6,a)') &
+      "Energy grid: e0=", input%e0, " de=", de_cm, " emax=", ener_max_cm, " cm^-1"
     !
     IF(ionode)THEN
-      IF(input%skip_q>0) THEN; pos="append"; ELSE; pos = "asis"; ENDIF
+      IF(input%skip_q>0) THEN
+        pos = "append"
+        fstatus = "unknown"
+      ELSE
+        pos = "asis"
+        fstatus = "replace"
+      ENDIF
       newfile=0
       DO it = 1,input%nconf
-        OPEN(unit=1000+it, position=pos, &
+        OPEN(unit=1000+it, status=fstatus, position=pos, &
           file=TRIM(input%outdir)//"/"//TRIM(input%prefix)//&
           "_T"//TRIM(write_conf(it,input%nconf,input%T))//&
           "_s"//TRIM(write_conf(it,input%nconf,input%sigma))//".out")
-        ioWRITE(1000+it, *) "# spectral function mode: ", input%mode
+        ioWRITE(1000+it, *) "# spectral calculation: ", input%calculation, " mode: ", input%mode
         ioWRITE(1000+it, '(a,i6,a,f6.1,a,100f6.1)') "#", it, "T=",input%T(it), "sigma=", input%sigma(it)
         ioWRITE(1000+it, *) "#   q-path     energy (cm^-1)         total      band1      band2    ....     "
         ioFLUSH(1000+it)
@@ -308,7 +331,7 @@ CONTAINS
         IF(qpath%w(iq)==0._dp .and. iq>1 .and. ionode) THEN
           CLOSE(1000+it)
           newfile = newfile+1
-          OPEN(unit=1000+it, position=pos, &
+          OPEN(unit=1000+it, status=fstatus, position=pos, &
             file=TRIM(input%outdir)//"/"//TRIM(input%prefix)//&
             "_T"//TRIM(write_conf(it,input%nconf,input%T))//&
             "_s"//TRIM(write_conf(it,input%nconf,input%sigma))//&
@@ -320,7 +343,6 @@ CONTAINS
       !
       IF (TRIM(input%calculation) == "spf") THEN
         ALLOCATE(spectralf(input%ne,S%nat3,input%nconf))
-        allocate(selfnrg(input%ne,S%nat3,input%nconf))
         IF (TRIM(input%mode) == "full") THEN
           UNIT_CONVERSION = 1/RY_TO_CMM1**2 / pi
           spectralf = spectre_q(qpath%xq(:,iq), input%nconf, input%T, sigma_ry, &
@@ -397,6 +419,8 @@ CONTAINS
           UNIT_CONVERSION = RY_TO_CMM1
           caux = selfnrg_omega_q(qpath%xq(:,iq), input%nconf, input%T, sigma_ry, &
             S, grid, fc2, fc3, input%ne, ener, w2, D)
+        ELSE
+          CALL errore("SPECTR_QBZ_LINE", 'unknown calculation "'//TRIM(input%calculation)//'"', 1)
         ENDIF
         !
         DO it = 1,input%nconf
@@ -612,4 +636,3 @@ PROGRAM linewidth
 
 END PROGRAM
 !-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!-!
-
