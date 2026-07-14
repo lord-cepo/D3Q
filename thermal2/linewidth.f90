@@ -491,7 +491,7 @@ CONTAINS
     USE q_grids,          ONLY : q_grid
     USE input_fc,         ONLY : ph_system_info
     USE fc2_interpolate,  ONLY : forceconst2_grid, freq_phq_safe, bose_phq, set_nu0
-    USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat
+    USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat_gemm, sum_R3, d3_mixed
     IMPLICIT NONE
     !
     REAL(DP),INTENT(in) :: xq0(3)
@@ -513,7 +513,8 @@ CONTAINS
     !
     COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:)
     REAL(DP),ALLOCATABLE    :: V3sq(:,:,:)
-    INTEGER :: iq, jq, it
+    TYPE(d3_mixed) :: Dqr
+    INTEGER :: iq, jq, it, i, j, k
     INTEGER :: nu0(3)
     !
     REAL(DP) :: freq(S%nat3,3), bose(S%nat3,3), xq(3,3)
@@ -536,6 +537,8 @@ CONTAINS
     ENDIF
     timer_CALL t_freq%stop()
 
+    CALL fc3%sum_R2(xq(:,1), S%nat3, Dqr)
+
     DO iq = 1, grid%nq
       !
       timer_CALL t_freq%start()
@@ -550,13 +553,19 @@ CONTAINS
       timer_CALL t_freq%stop()
       !
       timer_CALL t_fc3int%start()
-      CALL fc3%interpolate(xq(:,2), xq(:,3), S%nat3, D3)
+      CALL sum_R3(S, xq(:,3), Dqr, D3)
       timer_CALL t_fc3int%stop()
       timer_CALL t_fc3rot%start()
-      CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,2), U(:,:,3))
+      CALL ip_cart2pat_gemm(D3, S%nat3, U(:,:,2), U(:,:,1), U(:,:,3))
       timer_CALL t_fc3rot%stop()
       timer_CALL t_fc3m2%start()
-      V3sq = REAL( CONJG(D3)*D3 , kind=DP)
+      DO k = 1, S%nat3
+        DO j = 1, S%nat3
+          DO i = 1, S%nat3
+            V3sq(i,j,k) = REAL(CONJG(D3(j,i,k))*D3(j,i,k), kind=DP)
+          ENDDO
+        ENDDO
+      ENDDO
       timer_CALL t_fc3m2%stop()
       !
       DO it = 1,nconf
@@ -582,7 +591,8 @@ CONTAINS
     timer_CALL t_mpicom%stop()
     selfnrg_q = -0.5_dp * se
     !
-    DEALLOCATE(U, V3sq)
+    DEALLOCATE(U, V3sq, D3)
+    CALL Dqr%deallocate()
     !
   END FUNCTION selfnrg_q
   ! \/o\________\\\_________________________________________/^>
@@ -676,7 +686,7 @@ CONTAINS
     USE q_grids,          ONLY : q_grid
     USE input_fc,         ONLY : ph_system_info
     USE fc2_interpolate,  ONLY : forceconst2_grid, freq_phq_safe, bose_phq, set_nu0
-    USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat
+    USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat_gemm, sum_R3, d3_mixed
     !
     IMPLICIT NONE
     !
@@ -697,9 +707,10 @@ CONTAINS
     COMPLEX(DP),OPTIONAL,INTENT(in) :: U1(S%nat3,S%nat3)
     !
     ! To interpolate D2 and D3:
-    INTEGER :: iq, jq, it
+    INTEGER :: iq, jq, it, i, j, k
     COMPLEX(DP),ALLOCATABLE :: U(:,:,:), D3(:,:,:)
     REAL(DP),ALLOCATABLE    :: V3sq(:,:,:)
+    TYPE(d3_mixed) :: Dqr
     REAL(DP) :: freq(S%nat3,3), bose(S%nat3,3), xq(3,3)
     !
     ! To compute the spectral function from the self energy:
@@ -727,6 +738,8 @@ CONTAINS
     ENDIF
     timer_CALL t_freq%stop()
     !
+    CALL fc3%sum_R2(xq(:,1), S%nat3, Dqr)
+    !
     DO iq = 1, grid%nq
       !CALL print_percent_wall(33.333_dp, 300._dp, iq, grid%nq, (iq==1))
       !
@@ -744,13 +757,19 @@ CONTAINS
       !
       ! ------ start of CALL scatter_3q(S,fc2,fc3, xq(:,1),xq(:,2),xq(:,3), V3sq)
       timer_CALL t_fc3int%start()
-      CALL fc3%interpolate(xq(:,2), xq(:,3), S%nat3, D3)
+      CALL sum_R3(S, xq(:,3), Dqr, D3)
       timer_CALL t_fc3int%stop()
       timer_CALL t_fc3rot%start()
-      CALL ip_cart2pat(D3, S%nat3, U(:,:,1), U(:,:,2), U(:,:,3))
+      CALL ip_cart2pat_gemm(D3, S%nat3, U(:,:,2), U(:,:,1), U(:,:,3))
       timer_CALL t_fc3rot%stop()
       timer_CALL t_fc3m2%start()
-      V3sq = REAL( CONJG(D3)*D3 , kind=DP)
+      DO k = 1, S%nat3
+        DO j = 1, S%nat3
+          DO i = 1, S%nat3
+            V3sq(i,j,k) = REAL(CONJG(D3(j,i,k))*D3(j,i,k), kind=DP)
+          ENDDO
+        ENDDO
+      ENDDO
       timer_CALL t_fc3m2%stop()
       !
       DO it = 1,nconf
@@ -776,6 +795,7 @@ CONTAINS
     selfnrg_wq = -0.5_dp * selfnrg
     !
     DEALLOCATE(U, V3sq, D3, selfnrg)
+    CALL Dqr%deallocate()
     !
   END FUNCTION selfnrg_omega_q
   !
@@ -787,7 +807,6 @@ CONTAINS
     USE input_fc,         ONLY : ph_system_info
     USE fc2_interpolate,  ONLY : forceconst2_grid, freq_phq_safe, bose_phq, set_nu0
     USE fc3_interpolate,  ONLY : forceconst3, ip_cart2pat
-    use thutils, only: freq_in_grid
     !
     IMPLICIT NONE
     !
@@ -815,16 +834,7 @@ CONTAINS
     ! FUNCTION RESULT:
     REAL(DP)    :: spectralf(ne,S%nat3,nconf)
     character(100) :: filename
-    real(dp) :: freqs(S%nat3, grid%nqtot)
-    real(dp) :: max_freq
-    real(dp) :: ener1(size(ener))
     !
-    call freq_in_grid(S, fc2, grid, freqs)
-    max_freq = MAXVAL(freqs) * 1.1_dp
-
-    do i = 1, size(ener)
-      ener1(i) = (i-1) * max_freq / REAL(size(ener), DP)
-    enddo
     ! Once we have the self-energy, the rest is trivial
     selfnrg = selfnrg_omega_q(xq0, nconf, T, sigma, S, grid, fc2, fc3, ne, ener, freq1, U1)
     !
@@ -841,7 +851,7 @@ CONTAINS
             delta = 0._dp
           ENDIF
           self2(ie,i,it) = selfnrg(ie,i,it) * 2 * omega
-          denom = (ener1(ie)**2 - omega**2 - delta)**2 + gamma**2
+          denom = (ener(ie)**2 - omega**2 - delta)**2 + gamma**2
           ! IF(ABS(denom)/=0._dp)THEN
           spectralf(ie,i,it) = - gamma / denom
           ! ELSE
@@ -856,7 +866,7 @@ CONTAINS
       write(filename,'(A,I2.2,A)') 'self-energy-anh-', it, '.dat'
       open(unit=10, file=filename, status='replace')
       do ie = 1, ne
-        write(10,'(100E25.8)') ener1(ie), self2(ie,:,it)
+        write(10,'(100E25.8)') ener(ie), self2(ie,:,it)
       enddo
       close(10)
     enddo
@@ -1402,5 +1412,3 @@ CONTAINS
   !
   !
 END MODULE linewidth
-
-

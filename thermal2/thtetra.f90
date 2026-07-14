@@ -131,7 +131,7 @@ CONTAINS
       wg%en(1) = input%e0 / RY_TO_CMM1
     else
       do iw = 1, input%n_omega
-        wg%en(iw) = (iw-1) * wg%max_f / REAL(input%n_omega, dp)
+        wg%en(iw) = (iw-1) * wg%max_f / REAL(input%n_omega-1, dp)
       enddo
     endif
     !
@@ -162,7 +162,7 @@ CONTAINS
     if(present(mult)) then
       mult_ = mult
     else
-      mult_ = 1.05_dp
+      mult_ = 1._dp
     end if
     !
     call tetra_init_grid_sym(grid, S, fc2, wg, input, mult_)

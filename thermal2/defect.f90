@@ -1013,6 +1013,31 @@ contains
     close(10)
   end subroutine
   !
+  subroutine write_self_matrix(filename, en, self_energy)
+    character(*), intent(in) :: filename
+    real(dp), intent(in) :: en(:)
+    complex(dp), intent(in) :: self_energy(:,:,:,:)
+    !
+    integer :: iw, iq, j, jp
+    complex(dp) :: sigma
+    !
+    if(.not. ionode) return
+    open(10, file=filename)
+    write(10, "(A)") "# energy(cm^-1) iq j jp Re[Sigma_jjp] Im[Sigma_jjp]"
+    do iw = 1, size(self_energy,4)
+      do iq = 1, size(self_energy,3)
+        do j = 1, size(self_energy,1)
+          do jp = 1, size(self_energy,2)
+            sigma = self_energy(j,jp,iq,iw) * RY_TO_CMM1**2
+            write(10, "(E20.8,X,I8,2I5,2E24.12)") &
+              en(iw)*RY_TO_CMM1, iq, j, jp, real(sigma, dp), aimag(sigma)
+          enddo
+        enddo
+      enddo
+    enddo
+    close(10)
+  end subroutine
+  !
   subroutine write_freq(filename, grid, freqs)
     character(*), intent(in) :: filename
     type(q_grid), intent(in) :: grid

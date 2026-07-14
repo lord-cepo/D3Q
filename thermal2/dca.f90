@@ -12,7 +12,7 @@ module dca
     quter_cmplx, fftinterp_mat2_cmplx, quter_R
   use defect, only : tetra_from_self_cart, write_spf_ndiag, write_spf, &
     write_self, write_dos, tetra_from_self_diag, find_where, tetra_from_self, &
-    interpolate_self_on_shell, write_lw
+    interpolate_self_on_shell, write_lw, write_self_matrix
   use input_fc, only: ph_system_info, allocate_fc2_grid
   use q_grids, only: q_grid, q_grid_copy, q_grid_symmetrize, setup_simple_grid
   ! use mpi_thermal, only: mpi_bsum, ionode, num_procs, my_id, ierr
@@ -724,6 +724,8 @@ contains
       call write_self('self-dca.dat', wg%en, self_out_diag)
      case('self')
       call write_self('self-dca.dat', wg%en, self_out_diag)
+     case('selfmat')
+      call write_self_matrix('selfmat-dca.dat', wg%en, self_out_grid)
      case('dos')
       do iw = 1+my_id, input%n_omega, num_procs
         call tetra_from_self(S, out_grid, out_freqs, self_out_grid(:,:,:,iw), wg%en(iw)**2, out_den_weights)

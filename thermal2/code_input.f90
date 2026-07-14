@@ -188,7 +188,7 @@ CONTAINS
     !
     ! The following variables are used for spectre and final state calculations
     INTEGER  :: ne = -1                 ! number of energies on which to sample the spectral decomposition
-    REAL(DP) :: de = 1._dp, e0 = 0._dp  ! energy step and minimum
+    REAL(DP) :: de = -1._dp, e0 = 0._dp ! energy step and minimum; de<0 means auto for spectral LW
     REAL(DP) :: sigma_e  = -1._dp       ! smearing used for delta of e in plots, like jdos, phdos and final state decomposition
     INTEGER  :: nu_initial = 0          ! initial mode for final state decomposition, set to
     ! zero to get the sum of all modes at e_initial
@@ -518,14 +518,25 @@ CONTAINS
       input%prefix = prefix
     ENDIF
     !
-    IF(TRIM(input%calculation) == 'spf' .and. ne < 0) &
-      CALL errore('READ_INPUT', 'Missing ne for spf calculation', 1)
+    IF((TRIM(input%calculation) == 'spf' .or. &
+      TRIM(input%calculation) == 'eps' .or. &
+      TRIM(input%calculation) == 'refl' .or. &
+      TRIM(input%calculation) == 'selfnrg') .and. ne < 0) &
+      CALL errore('READ_INPUT', 'Missing ne for spectral/self-energy calculation', 1)
+    IF(de < 0._dp .and. .not. (TRIM(input%calculation) == 'spf' .or. &
+      TRIM(input%calculation) == 'eps' .or. &
+      TRIM(input%calculation) == 'refl' .or. &
+      TRIM(input%calculation) == 'selfnrg')) de = 1._dp
 
     input%ne = ne
     input%de = de
     input%e0 = e0
     IF(sigma_e<0._dp)THEN
-      input%sigma_e = 5*de
+      IF(de > 0._dp) THEN
+        input%sigma_e = 5*de
+      ELSE
+        input%sigma_e = sigma_e
+      ENDIF
     ELSE
       input%sigma_e = sigma_e
     ENDIF
