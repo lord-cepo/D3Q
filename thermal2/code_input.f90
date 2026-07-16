@@ -150,7 +150,7 @@ CONTAINS
     CHARACTER(256) :: file_mat2_minus  = INVALID ! default = file_mat2//'_m'
     CHARACTER(256) :: file_dzeu = INVALID
     CHARACTER(256) :: prefix     = INVALID ! default: calculation.mode
-    character(8)   :: asr3 = "diff"                ! apply sum rule to phonon defect force constants
+    character(8)   :: asr3 = "local"               ! local or project ASR on phonon defect FCs
     !
     CHARACTER(256) :: outdir = './'              ! where to write output files
     CHARACTER(8)   :: asr2 = "no"                ! apply sum rule to phonon force constants

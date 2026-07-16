@@ -1847,7 +1847,7 @@ contains
     integer, intent(in) :: grid(3)
     real(dp), intent(inout) :: fc2RR(:,:,:,:)
     !
-    if(trim(asr) /= 'no') call asr3(fc2RR)
+    if(trim(asr) /= 'no') call asr3(fc2RR, asr)
     call div_mass_RR(S, Sd, grid, fc2RR)
     if(trim(asr) /= 'no') call print_message("ASR applied to DRR")
   end subroutine
@@ -2077,28 +2077,73 @@ contains
   !   !
   ! end subroutine
   !
-  subroutine asr3(fc2RR)
+  subroutine asr3(fc2RR, method)
+    ! Enforce translational ASR on a defect FC matrix while preserving the
+    ! exchange symmetry Phi(I,J)=Phi(J,I).  I=(R,atom,Cartesian).
+    !
+    ! method='local' applies the least-Frobenius-norm symmetric correction on
+    ! the existing FC support.  method='diff' retains the previous diagonal
+    ! correction for comparison; it does not generally satisfy ASR exactly.
+    ! method='project' applies the reference dense P*Phi*P projection, where
+    ! P removes the three uniform translations.  Both give Phi*T=0.
     use mpi_thermal, only : ionode
     real(dp), intent(inout) :: fc2RR(:,:,:,:)
-    integer :: i, j, a, b
-    integer :: iR1, iR2, nR, nat
-    real(dp) :: max_diff
-    real(dp), allocatable :: delta(:,:,:,:)
+    character(*), intent(in), optional :: method
+    character(16) :: selected_method
+    integer :: nR, nat, n, iR1, iR2, i, j, a, b, row, col
+    real(dp) :: max_asr_before, max_asr_after, max_exchange
+    real(dp), allocatable :: matrix(:,:), asr_before(:,:,:,:), asr_after(:,:,:,:)
     !
     nR = size(fc2RR, 4)
-    nat = size(fc2RR, 1)/3
+    nat = size(fc2RR, 1) / 3
+    n = 3 * nat * nR
+    selected_method = 'local'
+    if (present(method)) selected_method = adjustl(trim(method))
+    if (selected_method == 'legacy') selected_method = 'diff'
     !
-    allocate(delta(3,3,nat,nR))
+    allocate(asr_before(3,3,nat,nR), asr_after(3,3,nat,nR), matrix(n,n))
+    call asr3_residual(fc2RR, asr_before)
+    max_asr_before = maxval(abs(asr_before))
     !
-    delta = 0._dp
     do iR1 = 1, nR
       do i = 1, nat
         do a = 1, 3
-          do b = 1, 3
-            do iR2 = 1, nR
-              do j = 1, nat
-                delta(a,b,i,iR1) = delta(a,b,i,iR1) + fc2RR(a + 3*(i-1), b + 3*(j-1), iR1, iR2) + &
-                  fc2RR(b + 3*(i-1), a + 3*(j-1), iR1, iR2)
+          row = a + 3*(i-1) + 3*nat*(iR1-1)
+          do iR2 = 1, nR
+            do j = 1, nat
+              do b = 1, 3
+                col = b + 3*(j-1) + 3*nat*(iR2-1)
+                matrix(row,col) = fc2RR(a + 3*(i-1), b + 3*(j-1), iR1, iR2)
+              enddo
+            enddo
+          enddo
+        enddo
+      enddo
+    enddo
+    select case (trim(selected_method))
+    case ('local')
+      ! Symmetrize once before applying the constrained correction, so both
+      ! exchange symmetry and ASR are imposed simultaneously.
+      matrix = 0.5_dp * (matrix + transpose(matrix))
+      call asr3_local_projection(matrix)
+    case ('project')
+      matrix = 0.5_dp * (matrix + transpose(matrix))
+      call asr3_global_projection(matrix)
+    case ('diff')
+      call asr3_diff_correction(matrix, nat, nR)
+    case default
+      call errore('asr3', 'unknown ASR method: '//trim(selected_method), 1)
+    end select
+    !
+    do iR1 = 1, nR
+      do i = 1, nat
+        do a = 1, 3
+          row = a + 3*(i-1) + 3*nat*(iR1-1)
+          do iR2 = 1, nR
+            do j = 1, nat
+              do b = 1, 3
+                col = b + 3*(j-1) + 3*nat*(iR2-1)
+                fc2RR(a + 3*(i-1), b + 3*(j-1), iR1, iR2) = matrix(row,col)
               enddo
             enddo
           enddo
@@ -2106,32 +2151,199 @@ contains
       enddo
     enddo
     !
+    call asr3_residual(fc2RR, asr_after)
+    max_asr_after = maxval(abs(asr_after))
+    max_exchange = maxval(abs(matrix - transpose(matrix)))
+    if (ionode) then
+      write(*,"(A,A)") 'ASR3 method: ', trim(selected_method)
+      write(*,"(A,E20.8)") 'max exchange residual after ASR3: ', max_exchange
+      write(*,"(A,E20.8)") 'max ASR residual before ASR3: ', max_asr_before
+      write(*,"(A,E20.8)") 'max ASR residual after ASR3:  ', max_asr_after
+      open(91, file='asr3_residual.dat', status='replace', action='write')
+      write(91,'(A,A)') '# method ', trim(selected_method)
+      write(91,'(A)') '# R1 atom cart |ASR residual| before |ASR residual| after'
+      do iR1 = 1, nR
+        do i = 1, nat
+          do a = 1, 3
+            write(91,'(3I7,2ES24.14)') iR1, i, a, &
+              sqrt(sum(asr_before(a,:,i,iR1)**2)), sqrt(sum(asr_after(a,:,i,iR1)**2))
+          enddo
+        enddo
+      enddo
+      close(91)
+    endif
+  end subroutine asr3
+  !
+  subroutine asr3_diff_correction(matrix, nat, nR)
+    ! Original ASR3 implementation: alter only the same-atom, same-cell
+    ! blocks.  It is retained to quantify its residual, not as a strict ASR.
+    real(dp), intent(inout) :: matrix(:,:)
+    integer, intent(in) :: nat, nR
+    integer :: iR1, iR2, i, j, a, b, row, col, row_t, col_t, n3
+    real(dp) :: delta
+    !
+    n3 = 3 * nat
     do iR1 = 1, nR
       do i = 1, nat
         do a = 1, 3
           do b = 1, 3
-            fc2RR(a + 3*(i-1), b + 3*(i-1), iR1, iR1) = &
-              fc2RR(a + 3*(i-1), b + 3*(i-1), iR1, iR1) - delta(a,b,i,iR1)/2
+            delta = 0._dp
+            do iR2 = 1, nR
+              do j = 1, nat
+                row = a + 3*(i-1) + n3*(iR1-1)
+                col = b + 3*(j-1) + n3*(iR2-1)
+                row_t = b + 3*(i-1) + n3*(iR1-1)
+                col_t = a + 3*(j-1) + n3*(iR2-1)
+                delta = delta + matrix(row,col) + matrix(row_t,col_t)
+              enddo
+            enddo
+            row = a + 3*(i-1) + n3*(iR1-1)
+            col = b + 3*(i-1) + n3*(iR1-1)
+            matrix(row,col) = matrix(row,col) - delta / 2._dp
           enddo
         enddo
       enddo
     enddo
-    !
-    max_diff = 0._dp
+  end subroutine asr3_diff_correction
+  !
+  subroutine asr3_residual(fc2RR, residual)
+    real(dp), intent(in) :: fc2RR(:,:,:,:)
+    real(dp), intent(out) :: residual(:,:,:,:)
+    integer :: nR, nat, iR1, iR2, i, j, a, b
+    ! residual(a,b,i,R1) = sum_{R2,j} Phi_ia,jb(R1,R2)
+    nR = size(fc2RR, 4)
+    nat = size(fc2RR, 1) / 3
+    if (any(shape(residual) /= [3, 3, nat, nR])) &
+      call errore('asr3_residual', 'incompatible residual shape', 1)
+    residual = 0._dp
     do iR1 = 1, nR
-      do a = 1, 3
-        do b = 1, 3
-          do i = 1, nat
-            max_diff = max(max_diff, abs(fc2RR(a+3*(i-1), b+3*(i-1), iR1, iR1) - &
-              fc2RR(b+3*(i-1), a+3*(i-1), iR1, iR1)))
+      do i = 1, nat
+        do a = 1, 3
+          do b = 1, 3
+            do iR2 = 1, nR
+              do j = 1, nat
+                residual(a,b,i,iR1) = residual(a,b,i,iR1) + &
+                  fc2RR(a + 3*(i-1), b + 3*(j-1), iR1, iR2)
+              enddo
+            enddo
           enddo
         enddo
       enddo
     enddo
+  end subroutine asr3_residual
+  !
+  subroutine asr3_global_projection(matrix)
+    ! K <- P K P, P = I - T (T^T T)^-1 T^T for uniform translations.
+    real(dp), intent(inout) :: matrix(:,:)
+    integer :: n, n_per_cart, i, j, alpha, beta
+    real(dp), allocatable :: row_sum(:,:), col_sum(:,:), total_sum(:,:)
     !
-    if (ionode) write(*,"(A,E20.8)") "max_diff after ASR3: ", max_diff
+    n = size(matrix, 1)
+    if (size(matrix, 2) /= n .or. mod(n, 3) /= 0) &
+      call errore('asr3_global_projection', 'matrix must be square with dimension divisible by 3', 1)
+    n_per_cart = n / 3
+    allocate(row_sum(n,3), col_sum(3,n), total_sum(3,3))
+    row_sum = 0._dp
+    col_sum = 0._dp
+    total_sum = 0._dp
+    do i = 1, n
+      do j = 1, n
+        beta = modulo(j-1, 3) + 1
+        alpha = modulo(i-1, 3) + 1
+        row_sum(i,beta) = row_sum(i,beta) + matrix(i,j)
+        col_sum(alpha,j) = col_sum(alpha,j) + matrix(i,j)
+        total_sum(alpha,beta) = total_sum(alpha,beta) + matrix(i,j)
+      enddo
+    enddo
+    do i = 1, n
+      alpha = modulo(i-1, 3) + 1
+      do j = 1, n
+        beta = modulo(j-1, 3) + 1
+        matrix(i,j) = matrix(i,j) - row_sum(i,beta) / real(n_per_cart,dp) &
+          - col_sum(alpha,j) / real(n_per_cart,dp) &
+          + total_sum(alpha,beta) / real(n_per_cart*n_per_cart,dp)
+      enddo
+    enddo
+  end subroutine asr3_global_projection
+  !
+  subroutine asr3_local_projection(matrix)
+    ! Minimum-Frobenius-norm symmetric correction with support restricted to
+    ! FC elements already nonzero (plus all on-site 3x3 blocks).  It solves
+    ! min ||dK||_F subject to dK=dK^T and (K+dK)T=0.
+    real(dp), intent(inout) :: matrix(:,:)
+    integer :: n, m, nvar, i, j, c1, c2, info
+    integer, allocatable :: ii(:), jj(:), ipiv(:)
+    logical, allocatable :: allowed(:,:)
+    real(dp) :: threshold, weight_inverse, correction
+    real(dp), allocatable :: normal(:,:), rhs(:)
     !
-  end subroutine
+    n = size(matrix, 1)
+    if (size(matrix, 2) /= n .or. mod(n, 3) /= 0) &
+      call errore('asr3_local_projection', 'matrix must be square with dimension divisible by 3', 1)
+    m = 3 * n
+    threshold = max(1.e-14_dp, 1.e-12_dp * maxval(abs(matrix)))
+    allocate(allowed(n,n))
+    allowed = .false.
+    do i = 1, n
+      allowed(i,i) = .true.
+      do j = i + 1, n
+        if (abs(matrix(i,j)) > threshold .or. abs(matrix(j,i)) > threshold) then
+          allowed(i,j) = .true.
+          allowed(j,i) = .true.
+        endif
+      enddo
+    enddo
+    nvar = 0
+    do i = 1, n
+      do j = i, n
+        if (allowed(i,j)) nvar = nvar + 1
+      enddo
+    enddo
+    allocate(ii(nvar), jj(nvar), normal(m,m), rhs(m), ipiv(m))
+    nvar = 0
+    do i = 1, n
+      do j = i, n
+        if (.not. allowed(i,j)) cycle
+        nvar = nvar + 1
+        ii(nvar) = i
+        jj(nvar) = j
+      enddo
+    enddo
+    ! rhs is -K*T.  Constraint (i,beta) is stored at i+n*(beta-1).
+    rhs = 0._dp
+    do i = 1, n
+      do j = 1, n
+        rhs(i + n*(modulo(j-1,3))) = rhs(i + n*(modulo(j-1,3))) - matrix(i,j)
+      enddo
+    enddo
+    ! Assemble C W^-1 C^T.  A diagonal correction has Frobenius weight 1;
+    ! an off-diagonal symmetric pair has weight 2.
+    normal = 0._dp
+    do i = 1, nvar
+      c1 = ii(i) + n * modulo(jj(i)-1, 3)
+      c2 = jj(i) + n * modulo(ii(i)-1, 3)
+      weight_inverse = 1._dp
+      if (ii(i) /= jj(i)) weight_inverse = 0.5_dp
+      normal(c1,c1) = normal(c1,c1) + weight_inverse
+      if (c2 /= c1) then
+        normal(c2,c2) = normal(c2,c2) + weight_inverse
+        normal(c1,c2) = normal(c1,c2) + weight_inverse
+        normal(c2,c1) = normal(c2,c1) + weight_inverse
+      endif
+    enddo
+    call dgesv(m, 1, normal, m, ipiv, rhs, m, info)
+    if (info /= 0) call errore('asr3_local_projection', 'singular local ASR constraint system', info)
+    do i = 1, nvar
+      c1 = ii(i) + n * modulo(jj(i)-1, 3)
+      c2 = jj(i) + n * modulo(ii(i)-1, 3)
+      weight_inverse = 1._dp
+      if (ii(i) /= jj(i)) weight_inverse = 0.5_dp
+      correction = weight_inverse * rhs(c1)
+      if (c2 /= c1) correction = correction + weight_inverse * rhs(c2)
+      matrix(ii(i),jj(i)) = matrix(ii(i),jj(i)) + correction
+      if (ii(i) /= jj(i)) matrix(jj(i),ii(i)) = matrix(jj(i),ii(i)) + correction
+    enddo
+  end subroutine asr3_local_projection
   !
   subroutine write_fc2_sc_RR(S, fc2_sc, filename)
     type(ph_system_info), intent(in) :: S

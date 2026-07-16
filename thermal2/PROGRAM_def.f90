@@ -248,7 +248,9 @@ program defectp
     DRR = fc_sc2RR(sc_grid, S, Sd, fc2d%fc)! - fc_uc2RR(fc2_treated)
   endif ! ---------------------------------------------------------------------------------------
   !
-  call asr3(DRR)
+  ! asr3='local' preserves the existing FC support; asr3='project' applies
+  ! the dense P*Phi*P reference projection; asr3='diff' is the old method.
+  if(trim(input%asr3) /= 'no') call asr3(DRR, input%asr3)
   call div_mass0_RR(S, Sd, sc_grid, DRR)
   CALL fc2_sc%allocate(S, Sd, sc_grid)
   fc2_sc%eps = 1._dp - Sd%amass(Sd%ityp(fc2_sc%defects(3,1))) / S%amass(S%ityp(fc2_sc%defects(1,1)))
@@ -277,19 +279,20 @@ program defectp
   !   write(233, "(1000E20.8)") p
   ! enddo
   ! close(233)
+  ! deallocate(p)
   ! stop 1
 
-  !call div_mass_fc2(Sd, fc2d)
-  !call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
-  !open(138, file="band.dat")
-  !allocate(p(Sd%nat3))
-  !do iq = 1, out_grid%nqtot
+  ! call div_mass_fc2(Sd, fc2d)
+  ! call fc2_recenter(Sd, fc2d, fc2d_centered, 2)
+  ! open(138, file="band.dat")
+  ! allocate(p(Sd%nat3))
+  ! do iq = 1, out_grid%nqtot
   !  call freq_phq(out_grid%xq(:,iq), Sd, fc2d_centered, p)
   !  write(138,"(1000E20.8)") p
-  !enddo
-  !close(138)
-  ! call full_born_analytical(input, S, fc2_centered, in_grid, sym_grid, out_grid)
+  ! enddo
+  ! close(138)
   ! stop 1
+  ! call full_born_analytical(input, S, fc2_centered, in_grid, sym_grid, out_grid)
   !
   ! open(123, file="ge-wvel.dat")
   ! do iq = 1, out_grid%nqtot
