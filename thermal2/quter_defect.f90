@@ -2174,6 +2174,111 @@ contains
     endif
   end subroutine asr3
   !
+  subroutine asr3_centered_local(S, fc)
+    ! Apply the local symmetric ASR correction to a center5 representation.
+    ! fc is mass weighted on entry/output; the constrained correction itself
+    ! is made in bare-FC units, where uniform displacements are translations.
+    use mpi_thermal, only : ionode
+    type(ph_system_info), intent(in) :: S
+    type(forceconst2_sc), intent(inout) :: fc
+    integer :: nmax, nsite, nmat, ir1, ir2, is1, is2, ia, ib, ja, jb
+    integer :: jn1, jn2, max_r1, i, j
+    integer, allocatable :: site1(:,:), site2(:), multiplicity(:,:)
+    integer, allocatable :: sites(:,:)
+    real(dp), allocatable :: matrix(:,:), residual(:,:)
+    real(dp) :: threshold, max_asr, max_exchange
+    !
+    if (fc%n_R2 < 1) call errore('asr3_centered_local', 'empty centered FC', 1)
+    max_r1 = maxval(fc%n_R1)
+    nmax = fc%n_R2 + sum(fc%n_R1)
+    allocate(sites(3,nmax), site1(max_r1,fc%n_R2), site2(fc%n_R2))
+    site1 = 0
+    nsite = 0
+    do ir2 = 1, fc%n_R2
+      call centered_site_index(fc%yR2(:,ir2), sites, nsite, site2(ir2))
+      do ir1 = 1, fc%n_R1(ir2)
+        call centered_site_index(fc%yR1(:,ir1,ir2), sites, nsite, site1(ir1,ir2))
+      enddo
+    enddo
+    !
+    nmat = S%nat3 * nsite
+    allocate(matrix(nmat,nmat), multiplicity(nsite,nsite))
+    matrix = 0._dp
+    multiplicity = 0
+    do ir2 = 1, fc%n_R2
+      is2 = site2(ir2)
+      do ir1 = 1, fc%n_R1(ir2)
+        is1 = site1(ir1,ir2)
+        multiplicity(is1,is2) = multiplicity(is1,is2) + 1
+        do ia = 1, S%nat3
+          do ib = 1, S%nat3
+            matrix(ia+S%nat3*(is1-1), ib+S%nat3*(is2-1)) = &
+              matrix(ia+S%nat3*(is1-1), ib+S%nat3*(is2-1)) + &
+              fc%fc(ia,ib,ir1,ir2) / (S%sqrtmm1(ia)*S%sqrtmm1(ib))
+          enddo
+        enddo
+      enddo
+    enddo
+    matrix = 0.5_dp * (matrix + transpose(matrix))
+    call asr3_local_projection(matrix)
+    ! A sparse correction must not require a block absent from center5.
+    threshold = max(1.e-14_dp, 1.e-12_dp*maxval(abs(matrix)))
+    do is1 = 1, nsite
+      do is2 = 1, nsite
+        if (multiplicity(is1,is2) /= 0) cycle
+        if (maxval(abs(matrix(S%nat3*(is1-1)+1:S%nat3*is1, &
+          S%nat3*(is2-1)+1:S%nat3*is2))) > threshold) &
+          call errore('asr3_centered_local', 'local ASR needs a missing centered block', 1)
+      enddo
+    enddo
+    ! Restore the centered sparse representation and its mass weighting.
+    do ir2 = 1, fc%n_R2
+      is2 = site2(ir2)
+      do ir1 = 1, fc%n_R1(ir2)
+        is1 = site1(ir1,ir2)
+        do ia = 1, S%nat3
+          do ib = 1, S%nat3
+            fc%fc(ia,ib,ir1,ir2) = matrix(ia+S%nat3*(is1-1), &
+              ib+S%nat3*(is2-1)) * S%sqrtmm1(ia)*S%sqrtmm1(ib) / &
+              real(multiplicity(is1,is2),dp)
+          enddo
+        enddo
+      enddo
+    enddo
+    allocate(residual(nmat,3))
+    residual = 0._dp
+    do i = 1, nmat
+      do j = 1, nmat
+        residual(i,modulo(j-1,3)+1) = residual(i,modulo(j-1,3)+1) + matrix(i,j)
+      enddo
+    enddo
+    max_asr = maxval(abs(residual))
+    max_exchange = maxval(abs(matrix-transpose(matrix)))
+    if (ionode) then
+      write(*,'(A,I8)') 'centered local ASR sites: ', nsite
+      write(*,'(A,E20.8)') 'max centered exchange residual: ', max_exchange
+      write(*,'(A,E20.8)') 'max centered ASR residual: ', max_asr
+    endif
+  contains
+    subroutine centered_site_index(R, all_sites, nsites, index)
+      integer, intent(in) :: R(3)
+      integer, intent(inout) :: all_sites(:,:), nsites
+      integer, intent(out) :: index
+      integer :: k
+      do k = 1, nsites
+        if (all(all_sites(:,k) == R)) then
+          index = k
+          return
+        endif
+      enddo
+      nsites = nsites + 1
+      if (nsites > size(all_sites,2)) &
+        call errore('asr3_centered_local', 'site-list allocation too small', 1)
+      all_sites(:,nsites) = R
+      index = nsites
+    end subroutine centered_site_index
+  end subroutine asr3_centered_local
+  !
   subroutine asr3_diff_correction(matrix, nat, nR)
     ! Original ASR3 implementation: alter only the same-atom, same-cell
     ! blocks.  It is retained to quantify its residual, not as a strict ASR.
@@ -2268,13 +2373,13 @@ contains
   !
   subroutine asr3_local_projection(matrix)
     ! Minimum-Frobenius-norm symmetric correction with support restricted to
-    ! FC elements already nonzero (plus all on-site 3x3 blocks).  It solves
+    ! FC elements already nonzero.  It solves
     ! min ||dK||_F subject to dK=dK^T and (K+dK)T=0.
     real(dp), intent(inout) :: matrix(:,:)
     integer :: n, m, nvar, i, j, c1, c2, info
     integer, allocatable :: ii(:), jj(:), ipiv(:)
     logical, allocatable :: allowed(:,:)
-    real(dp) :: threshold, weight_inverse, correction
+    real(dp) :: threshold, weight_inverse, correction, regularizer
     real(dp), allocatable :: normal(:,:), rhs(:)
     !
     n = size(matrix, 1)
@@ -2285,8 +2390,7 @@ contains
     allocate(allowed(n,n))
     allowed = .false.
     do i = 1, n
-      allowed(i,i) = .true.
-      do j = i + 1, n
+      do j = i, n
         if (abs(matrix(i,j)) > threshold .or. abs(matrix(j,i)) > threshold) then
           allowed(i,j) = .true.
           allowed(j,i) = .true.
@@ -2316,8 +2420,10 @@ contains
         rhs(i + n*(modulo(j-1,3))) = rhs(i + n*(modulo(j-1,3))) - matrix(i,j)
       enddo
     enddo
-    ! Assemble C W^-1 C^T.  A diagonal correction has Frobenius weight 1;
-    ! an off-diagonal symmetric pair has weight 2.
+    ! Assemble C W^-1 C^T.  center5 makes some ASR equations exactly
+    ! redundant.  A tiny diagonal Tikhonov term selects the same minimum-norm
+    ! solution to working precision without the prohibitive dense SVD of the
+    ! full centered representation.
     normal = 0._dp
     do i = 1, nvar
       c1 = ii(i) + n * modulo(jj(i)-1, 3)
@@ -2331,8 +2437,12 @@ contains
         normal(c2,c1) = normal(c2,c1) + weight_inverse
       endif
     enddo
+    regularizer = 1.e-14_dp * max(1._dp, maxval(abs(normal)))
+    do i = 1, m
+      normal(i,i) = normal(i,i) + regularizer
+    enddo
     call dgesv(m, 1, normal, m, ipiv, rhs, m, info)
-    if (info /= 0) call errore('asr3_local_projection', 'singular local ASR constraint system', info)
+    if (info /= 0) call errore('asr3_local_projection', 'regularized local ASR solution failed', info)
     do i = 1, nvar
       c1 = ii(i) + n * modulo(jj(i)-1, 3)
       c2 = jj(i) + n * modulo(ii(i)-1, 3)

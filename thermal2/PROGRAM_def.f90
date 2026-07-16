@@ -250,17 +250,26 @@ program defectp
   !
   ! asr3='local' preserves the existing FC support; asr3='project' applies
   ! the dense P*Phi*P reference projection; asr3='diff' is the old method.
-  if(trim(input%asr3) /= 'no') call asr3(DRR, input%asr3)
+  if(trim(input%asr3) /= 'no') then
+    if(trim(input%asr3) == 'localc') then
+      call asr3(DRR, 'local')
+    else
+      call asr3(DRR, input%asr3)
+    endif
+  endif
   call div_mass0_RR(S, Sd, sc_grid, DRR)
   CALL fc2_sc%allocate(S, Sd, sc_grid)
   fc2_sc%eps = 1._dp - Sd%amass(Sd%ityp(fc2_sc%defects(3,1))) / S%amass(S%ityp(fc2_sc%defects(1,1)))
   fc2_sc%fc = DRR - fc_uc2RR(fc2_treated)
   deallocate(DRR)
+  call diagnose_acoustic_vertex(S, fc2_sc, 'vertex_acoustic_limits_uncentered.dat')
   !
   call fc2_sc_centered%allocate(S, Sd, sc_grid)
   fc2_sc_centered%fc = fc2_sc%fc
   CALL fc2_sc_centered%center(sc_grid, S)
   fc2_sc_centered%eps = fc2_sc%eps
+  if(trim(input%asr3) == 'localc') call asr3_centered_local(S, fc2_sc_centered)
+  call diagnose_acoustic_vertex(S, fc2_sc_centered, 'vertex_acoustic_limits.dat')
   !
   CALL setup_grid(input%grid_type_in, S%bg, input%nk_in(1), &
     input%nk_in(2), input%nk_in(3),&
@@ -312,6 +321,67 @@ program defectp
 
   CALL stop_mpi()
 contains
+  subroutine diagnose_acoustic_vertex(S, fc, filename)
+    ! Check the final, centered FC defect vertex.  For an ASR-respecting
+    ! vertex, V(q,0)T and V(0,q)T vanish and T^dag V(q,q)T is O(q^2).
+    type(ph_system_info), intent(in) :: S
+    type(forceconst2_sc), intent(in) :: fc
+    character(*), intent(in) :: filename
+    real(dp) :: q0(3), q(3), translations(S%nat3,3), qnorm, tnorm
+    complex(dp) :: v00(S%nat3,S%nat3), vq0(S%nat3,S%nat3)
+    complex(dp) :: v0q(S%nat3,S%nat3), vqq(S%nat3,S%nat3)
+    complex(dp) :: a00(3,3), aq0(3,3), a0q(3,3), aqq(3,3)
+    integer :: idir, ia, jn, istep
+    !
+    translations = 0._dp
+    do ia = 1, S%nat
+      do idir = 1, 3
+        jn = idir + 3*(ia-1)
+        ! Gamma acoustic eigenvectors in this mass-weighted representation.
+        translations(jn,idir) = 1._dp / S%sqrtmm1(jn)
+      enddo
+    enddo
+    do idir = 1, 3
+      tnorm = sqrt(sum(translations(:,idir)**2))
+      translations(:,idir) = translations(:,idir) / tnorm
+    enddo
+    !
+    q0 = 0._dp
+    call fc%r2q(q0, q0, v00)
+    a00 = matmul(transpose(translations), matmul(v00, translations))
+    open(94, file=filename, status='replace', action='write')
+    write(94,'(A)') '# direction step |q| ||T^dag V(0,0)T|| ||T^dag V(q,0)T|| '// &
+      '||T^dag V(0,q)T|| ||T^dag V(q,q)T|| ||V(q,0)T|| '// &
+      '||T^dag V(0,q)|| ||T^dag V(q,q)T||/|q|^2'
+    do idir = 1, 3
+      do istep = 1, 4
+        q = S%bg(:,idir) * real(istep,dp) / real(4*fc%nq(idir), dp)
+        qnorm = sqrt(dot_product(q,q))
+        call fc%r2q(q, q0, vq0)
+        call fc%r2q(q0, q, v0q)
+        call fc%r2q(q, q, vqq)
+        aq0 = matmul(transpose(translations), matmul(vq0, translations))
+        a0q = matmul(transpose(translations), matmul(v0q, translations))
+        aqq = matmul(transpose(translations), matmul(vqq, translations))
+        write(94,'(2I4,8ES24.14)') idir, istep, qnorm, frobenius_norm(a00), &
+          frobenius_norm(aq0), frobenius_norm(a0q), frobenius_norm(aqq), &
+          frobenius_norm(matmul(vq0, translations)), &
+          frobenius_norm(matmul(transpose(translations), v0q)), &
+          frobenius_norm(aqq)/qnorm**2
+      enddo
+    enddo
+    close(94)
+    if(ionode) then
+      write(*,'(A,ES20.8)') '||T^dag V(0,0)T||: ', frobenius_norm(a00)
+      write(*,'(A,A)') 'wrote ', trim(filename)
+    endif
+  end subroutine diagnose_acoustic_vertex
+  !
+  real(dp) function frobenius_norm(matrix)
+    complex(dp), intent(in) :: matrix(:,:)
+    frobenius_norm = sqrt(sum(abs(matrix)**2))
+  end function frobenius_norm
+  !
   ! subroutine distance_uc(fc2_centered, S, filename)
   !   type(forceconst2_grid), intent(in) :: fc2_centered
   !   type(ph_system_info), intent(in) :: S
